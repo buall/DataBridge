@@ -1,0 +1,7 @@
+node_modules/
+dist/
+bin/
+.gocache/
+data/
+*.tsbuildinfo
+.DS_Store

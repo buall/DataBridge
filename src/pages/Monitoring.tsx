@@ -1,0 +1,79 @@
+import { AlertTriangle, Check, CircleX, Clock3, Database, Gauge, Rows3, Square } from "lucide-react";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import type { MigrationJob } from "../types";
+import { Badge, Button, Card } from "../components/UI";
+
+const stages = [
+  ["precheck", "预检查"],
+  ["schema", "结构迁移"],
+  ["data", "全量数据"],
+  ["constraints", "约束与索引"],
+  ["validation", "一致性校验"],
+];
+
+export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (job: MigrationJob) => void }) {
+  const [job, setJob] = useState<MigrationJob | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let stopped = false;
+    async function refresh() {
+      try {
+        const next = await api.migration(jobId);
+        if (stopped) return;
+        setJob(next);
+        setError("");
+        if (next.status === "completed") {
+          onComplete(next);
+          return;
+        }
+        if (next.status === "running" || next.status === "pending") {
+          window.setTimeout(refresh, 800);
+        }
+      } catch (reason) {
+        if (!stopped) {
+          setError(reason instanceof Error ? reason.message : "无法获取任务状态");
+          window.setTimeout(refresh, 1600);
+        }
+      }
+    }
+    refresh();
+    return () => { stopped = true; };
+  }, [jobId, onComplete]);
+
+  async function cancel() {
+    await api.cancelMigration(jobId);
+  }
+
+  if (!job) return <div className="empty-state"><div>PG</div><h2>正在启动迁移引擎</h2><p>{error || "连接源端与目标端数据库..."}</p></div>;
+
+  const failed = job.status === "failed" || job.status === "cancelled";
+  const currentStage = Math.max(0, stages.findIndex(([id]) => id === job.stage));
+  const elapsed = Math.max(1, (Date.now() - new Date(job.startedAt).getTime()) / 1000);
+  const rowsPerSecond = Math.round(job.rowsCopied / elapsed);
+  return (
+    <div className="page-stack">
+      {error && <div className="error-banner">{error}</div>}
+      {failed && <div className="error-banner">{job.error || "迁移任务已取消"}</div>}
+      <div className="runtime-heading"><div><div><Badge tone={failed ? "red" : "blue"}>{failed ? job.status === "failed" ? "失败" : "已取消" : "运行中"}</Badge><h2>{job.sourceName} → {job.targetName}</h2></div><p>{job.sourceDatabase} → {job.targetDatabase} · 任务 ID {job.id}</p></div><div>{!failed && <Button variant="danger" onClick={cancel}><Square size={15} />终止任务</Button>}</div></div>
+      <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>已迁移 {formatNumber(job.rowsCopied)} / {formatNumber(job.rowsTotal)} 行</span><span>{job.currentTable ? `当前：${job.currentTable}` : `${job.tablesDone} / ${job.tablesTotal} 张表`}</span></footer></Card>
+      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label="实时吞吐" value={`${formatNumber(rowsPerSecond)} 行/s`} detail="进程内实时估算" /><RuntimeMetric icon={<Rows3 />} label="已迁移行数" value={formatNumber(job.rowsCopied)} detail={`${job.tablesDone} 张表已完成`} /><RuntimeMetric icon={<Clock3 />} label="运行时长" value={formatDuration(elapsed * 1000)} detail="从任务启动开始" /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : "持续监控中"} warning={failed} /></div>
+      <div className="monitor-grid">
+        <Card className="chart-card migration-detail"><div className="section-title compact"><div><h3>逐表迁移状态</h3><p>源端精确计数与 binary COPY 结果</p></div><Badge tone="green">实时</Badge></div><div className="migration-table-list">{job.results.length ? job.results.map((result) => <div className="migration-table-row" key={result.table}><Database size={16}/><strong>{result.table}</strong><span>{formatNumber(result.copiedRows)} 行</span>{result.error ? <Badge tone="red">失败</Badge> : <Badge tone={result.valid ? "green" : "blue"}>{result.valid ? "已校验" : "已复制"}</Badge>}</div>) : <div className="loading-copy">等待第一张表迁移完成...</div>}</div></Card>
+        <Card className="phase-card"><h3>执行阶段</h3>{stages.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
+      </div>
+      <Card className="event-card"><div className="section-title compact"><div><h3>实时事件</h3><p>后端迁移引擎产生的真实执行日志</p></div></div>{[...job.events].reverse().slice(0, 12).map((event,index)=><div className="event-row" key={`${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Database size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</Card>
+    </div>
+  );
+}
+
+function RuntimeMetric({ icon, label, value, detail, warning = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warning?: boolean }) {
+  return <Card className="runtime-metric"><span className={warning ? "warning" : ""}>{icon}</span><div><small>{label}</small><strong>{value}</strong><em className={warning ? "warning" : ""}>{detail}</em></div></Card>;
+}
+
+function stageLabel(stage: string) {
+  return stages.find(([id]) => id === stage)?.[1] ?? stage;
+}
+function formatNumber(value: number) { return new Intl.NumberFormat("zh-CN").format(value); }
+function formatDuration(value: number) { const seconds = Math.round(value / 1000); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }
