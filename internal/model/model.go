@@ -7,6 +7,7 @@ import (
 
 type ConnectionInput struct {
 	Name     string `json:"name"`
+	Note     string `json:"note,omitempty"`
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	Username string `json:"username"`
@@ -14,16 +15,29 @@ type ConnectionInput struct {
 	SSLMode  string `json:"sslMode"`
 }
 
+type UpdateConnectionInput struct {
+	Name     string `json:"name"`
+	Note     string `json:"note,omitempty"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password,omitempty"`
+	SSLMode  string `json:"sslMode"`
+}
+
 type Connection struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
+	Note      string    `json:"note,omitempty"`
 	Type      string    `json:"type"`
 	Host      string    `json:"host"`
 	Port      int       `json:"port"`
+	Region    string    `json:"region,omitempty"`
 	Username  string    `json:"username"`
 	SSLMode   string    `json:"sslMode"`
 	Status    string    `json:"status"`
 	LatencyMS int64     `json:"latency"`
+	Version   string    `json:"version,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	Password  string    `json:"-"`
 }
@@ -31,6 +45,10 @@ type Connection struct {
 type DatabaseInfo struct {
 	Name string `json:"name"`
 	Size int64  `json:"sizeBytes"`
+}
+
+type CreateDatabaseRequest struct {
+	Name string `json:"name"`
 }
 
 type TableInfo struct {
@@ -43,6 +61,7 @@ type TableInfo struct {
 
 type MigrationRequest struct {
 	Name             string   `json:"name"`
+	Engine           string   `json:"engine"`
 	SourceID         string   `json:"sourceId"`
 	SourceDatabase   string   `json:"sourceDatabase"`
 	TargetID         string   `json:"targetId"`

@@ -11,21 +11,38 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, error) {
+func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, string, error) {
 	start := time.Now()
 	conn, err := pgx.Connect(ctx, DSN(input.Host, input.Port, input.Username, input.Password, "postgres", input.SSLMode))
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer conn.Close(ctx)
 	if err := conn.Ping(ctx); err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return time.Since(start), nil
+	var version string
+	if err := conn.QueryRow(ctx, `SHOW server_version`).Scan(&version); err != nil {
+		return 0, "", err
+	}
+	return time.Since(start), version, nil
 }
 
 func Connect(ctx context.Context, connection model.Connection, database string) (*pgx.Conn, error) {
 	return pgx.Connect(ctx, DSN(connection.Host, connection.Port, connection.Username, connection.Password, database, connection.SSLMode))
+}
+
+func ServerVersion(ctx context.Context, connection model.Connection) (string, error) {
+	conn, err := Connect(ctx, connection, "postgres")
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close(ctx)
+	var version string
+	if err := conn.QueryRow(ctx, `SHOW server_version`).Scan(&version); err != nil {
+		return "", err
+	}
+	return version, nil
 }
 
 func DSN(host string, port int, username, password, database, sslMode string) string {
@@ -72,6 +89,16 @@ func Databases(ctx context.Context, connection model.Connection) ([]model.Databa
 		result = append(result, item)
 	}
 	return result, rows.Err()
+}
+
+func CreateDatabase(ctx context.Context, connection model.Connection, name string) error {
+	conn, err := Connect(ctx, connection, "postgres")
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	_, err = conn.Exec(ctx, "CREATE DATABASE "+QuoteIdent(name))
+	return err
 }
 
 func Tables(ctx context.Context, connection model.Connection, database string) ([]model.TableInfo, error) {

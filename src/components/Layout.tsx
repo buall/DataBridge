@@ -3,19 +3,20 @@ import {
   Bell,
   Cable,
   Database,
-  FileCheck2,
   LayoutDashboard,
   ListTree,
+  PanelLeftClose,
+  PanelLeftOpen,
   ScrollText,
   Settings,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { AppView } from "../types";
 
 const mainNav = [
   { id: "overview" as const, label: "总览", icon: LayoutDashboard },
   { id: "connections" as const, label: "数据连接", icon: Cable },
   { id: "migrations" as const, label: "迁移任务", icon: Activity },
-  { id: "reports" as const, label: "校验报告", icon: FileCheck2 },
   { id: "logs" as const, label: "运行日志", icon: ScrollText },
 ];
 
@@ -24,16 +25,34 @@ interface LayoutProps {
   title: string;
   subtitle: string;
   children: React.ReactNode;
+  paths: Record<AppView, string>;
   onNavigate: (view: AppView) => void;
 }
 
-export function Layout({ activeView, title, subtitle, children, onNavigate }: LayoutProps) {
+export function Layout({ activeView, title, subtitle, children, paths, onNavigate }: LayoutProps) {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("databridge:sidebar") === "collapsed";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("databridge:sidebar", sidebarCollapsed ? "collapsed" : "expanded");
+    } catch {
+      // The toggle still works when persistent browser storage is unavailable.
+    }
+  }, [sidebarCollapsed]);
+
   return (
-    <div className="app-shell">
+    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">DB</div>
-          <div>
+          <div className="brand-mark" data-label="DataBridge">DB</div>
+          <div className="brand-copy">
             <strong>DataBridge</strong>
             <span>DATABASE MIGRATION</span>
           </div>
@@ -41,36 +60,55 @@ export function Layout({ activeView, title, subtitle, children, onNavigate }: La
 
         <nav className="primary-nav" aria-label="主导航">
           {mainNav.map(({ id, label, icon: Icon }) => (
-            <button
+            <a
               className={activeView === id ? "nav-item active" : "nav-item"}
+              href={paths[id]}
               key={id}
-              onClick={() => onNavigate(id)}
+              data-label={label}
+              data-path={paths[id]}
+              title={label}
+              aria-current={activeView === id ? "page" : undefined}
+              onClick={(event) => {
+                event.preventDefault();
+                onNavigate(id);
+              }}
             >
               <Icon size={18} />
               <span>{label}</span>
-            </button>
+            </a>
           ))}
         </nav>
 
         <div className="resource-nav">
           <span className="nav-caption">资源管理</span>
-          <button><Database size={16} />数据库类型</button>
-          <button><Settings size={16} />安全与凭证</button>
-          <button><ListTree size={16} />Agent 节点</button>
+          <button title="数据库类型" data-label="数据库类型"><Database size={16} /><span>数据库类型</span></button>
+          <button title="安全与凭证" data-label="安全与凭证"><Settings size={16} /><span>安全与凭证</span></button>
+          <button title="Agent 节点" data-label="Agent 节点"><ListTree size={16} /><span>Agent 节点</span></button>
         </div>
 
         <div className="sidebar-user">
-          <div className="avatar">DB</div>
-          <div><strong>本地工作区</strong><span>单机运行</span></div>
-          <Settings size={16} />
+          <button
+            type="button"
+            className="sidebar-user-toggle"
+            aria-label={sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+            aria-expanded={!sidebarCollapsed}
+            title={sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+            data-label={sidebarCollapsed ? "展开" : "收起"}
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            <span>{sidebarCollapsed ? "展开" : "收起"}</span>
+          </button>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div>
-            <h1>{title}</h1>
-            <p>{subtitle}</p>
+          <div className="topbar-leading">
+            <div>
+              <h1>{title}</h1>
+              <p>{subtitle}</p>
+            </div>
           </div>
           <div className="topbar-actions">
             <span className="environment"><i />服务在线</span>

@@ -23,7 +23,7 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	connection, err := first.AddConnection(model.ConnectionInput{
 		Name: "source", Host: "db.example.internal", Port: 5432,
 		Username: "migration", Password: "secret-password", SSLMode: "require",
-	}, 15*time.Millisecond)
+	}, 15*time.Millisecond, "16.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,9 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	}
 	if loadedConnection.Password != "secret-password" {
 		t.Fatalf("password = %q", loadedConnection.Password)
+	}
+	if loadedConnection.Version != "16.3" {
+		t.Fatalf("version = %q", loadedConnection.Version)
 	}
 	loadedMigration, err := second.Migration(migration.ID)
 	if err != nil {

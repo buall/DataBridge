@@ -23,6 +23,7 @@ export function MigrationWizard({
   const [error, setError] = useState("");
   const [config, setConfig] = useState<MigrationConfig>({
     name: "",
+    engine: "native",
     sourceId: connections[0]?.id ?? "",
     sourceDatabase: "",
     targetId: connections[1]?.id ?? "",
@@ -107,7 +108,7 @@ export function MigrationWizard({
     try {
       await onStart({
         ...config,
-        name: config.name || `${config.sourceDatabase} → ${config.targetDatabase}`,
+        name: config.name || `${source?.name ?? config.sourceDatabase} 到 ${target?.name ?? config.targetDatabase}迁移`,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建迁移任务失败");
@@ -168,10 +169,14 @@ export function MigrationWizard({
           <div className="card-heading"><h3>迁移配置</h3><p>当前版本执行一次性全量迁移，并在完成后逐表校验行数。</p></div>
           <div className="config-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase} → ${config.targetDatabase}`} /></label>
-            <SelectField label="迁移模式" value="full" onChange={() => {}}><option value="full">全量结构 + 数据</option></SelectField>
+            <SelectField label="迁移模式" value={config.engine} onChange={(engine) => setConfig({ ...config, engine: engine as MigrationConfig["engine"] })}><option value="native">原生工具：pg_dump / pg_restore</option><option value="copy">内置引擎：binary COPY</option></SelectField>
             <SelectField label="同名对象冲突" value={config.conflictStrategy} onChange={(conflictStrategy) => setConfig({ ...config, conflictStrategy: conflictStrategy as MigrationConfig["conflictStrategy"] })}><option value="backup">备份原表后迁移</option><option value="overwrite">删除原表后迁移</option><option value="skip">存在同名表则失败</option></SelectField>
           </div>
-          <div className="scope-note"><strong>本次迁移会执行</strong><span>创建 Schema、枚举与序列</span><span>创建表并使用 binary COPY 传输数据</span><span>创建主键、唯一约束、外键和索引</span><span>同步序列值并校验逐表行数</span></div>
+          {config.engine === "native" ? (
+            <div className="scope-note"><strong>本次迁移会执行</strong><span>使用 psql 预处理目标同名对象</span><span>全选时整库 pg_dump，部分选择时按表导出</span><span>使用 pg_restore 并发恢复结构、数据、索引和约束</span><span>完成后逐表执行精确行数校验</span></div>
+          ) : (
+            <div className="scope-note"><strong>本次迁移会执行</strong><span>创建 Schema、枚举与序列</span><span>创建表并使用 binary COPY 传输数据</span><span>创建主键、唯一约束、外键和索引</span><span>同步序列值并校验逐表行数</span></div>
+          )}
         </Card>
       )}
 
@@ -179,12 +184,12 @@ export function MigrationWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行真实迁移</h3><p>任务启动后会直接写入目标数据库。请确认目标库和冲突策略正确。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={config.sourceDatabase} label="源端" /><div className="route-line"><ArrowRight /></div><Endpoint connection={target} database={config.targetDatabase} label="目标端" /></div>
-          <div className="confirmation-grid"><div><span>迁移数据表</span><strong>{config.tables.length} 张</strong></div><div><span>估算数据量</span><strong>{formatBytes(selectedBytes)}</strong></div><div><span>冲突策略</span><strong>{strategyLabel(config.conflictStrategy)}</strong></div><div><span>完成校验</span><strong>逐表精确行数</strong></div></div>
+          <div className="confirmation-grid"><div><span>迁移引擎</span><strong>{engineLabel(config.engine)}</strong></div><div><span>迁移数据表</span><strong>{config.tables.length} 张</strong></div><div><span>估算数据量</span><strong>{formatBytes(selectedBytes)}</strong></div><div><span>冲突策略</span><strong>{strategyLabel(config.conflictStrategy)}</strong></div><div><span>完成校验</span><strong>逐表精确行数</strong></div></div>
         </Card>
       )}
 
       <div className="wizard-actions">
-        <span>连接凭证仅保存在当前 API 进程内存中</span>
+        <span>连接凭证已加密保存，迁移任务和校验结果会写入本地 SQLite</span>
         <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || (step === 0 && (!config.sourceDatabase || !config.targetDatabase || (config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase))) || (step === 1 && !config.tables.length)} onClick={() => step === 3 ? start() : setStep(step + 1)}>{starting ? "正在创建任务..." : step === 3 ? "启动真实迁移" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
     </div>
@@ -193,11 +198,11 @@ export function MigrationWizard({
 
 function EndpointSelect({ title, connectionId, database, connections, databases, onConnection, onDatabase }: { title: string; connectionId: string; database: string; connections: DatabaseConnection[]; databases: DatabaseInfo[]; onConnection: (value: string) => void; onDatabase: (value: string) => void }) {
   const connection = connections.find((item) => item.id === connectionId);
-  return <div className="endpoint-select"><span>{title}</span><div className="endpoint-control stacked">{connection && <DatabaseLogo type={connection.type} />}<div><select aria-label={`${title}实例`} value={connectionId} onChange={(event) => onConnection(event.target.value)}>{connections.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}</option>)}</select><select aria-label={`${title}数据库`} value={database} onChange={(event) => onDatabase(event.target.value)}>{databases.map((item) => <option key={item.name} value={item.name}>{item.name} · {formatBytes(item.sizeBytes)}</option>)}</select></div></div></div>;
+  return <div className="endpoint-select"><span>{title}</span><div className="endpoint-control stacked">{connection && <DatabaseLogo type={connection.type} name={connection.name} />}<div><select aria-label={`${title}实例`} value={connectionId} onChange={(event) => onConnection(event.target.value)}>{connections.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.host}</option>)}</select><select aria-label={`${title}数据库`} value={database} onChange={(event) => onDatabase(event.target.value)}>{databases.map((item) => <option key={item.name} value={item.name}>{item.name} · {formatBytes(item.sizeBytes)}</option>)}</select></div></div></div>;
 }
 
 function Endpoint({ connection, database, label }: { connection?: DatabaseConnection; database: string; label: string }) {
-  return <div className="endpoint-summary">{connection && <DatabaseLogo type={connection.type} />}<div><span>{label}</span><strong>{connection?.name} / {database}</strong><small>{connection?.host}:{connection?.port}</small></div></div>;
+  return <div className="endpoint-summary">{connection && <DatabaseLogo type={connection.type} name={connection.name} />}<div><span>{label}</span><strong>{connection?.name} / {database}</strong><small>{connection?.host}:{connection?.port}</small></div></div>;
 }
 
 function formatBytes(value: number) {
@@ -213,4 +218,8 @@ function formatNumber(value: number) {
 
 function strategyLabel(value: MigrationConfig["conflictStrategy"]) {
   return value === "backup" ? "备份原表后迁移" : value === "overwrite" ? "删除原表后迁移" : "同名表时报错";
+}
+
+function engineLabel(value: MigrationConfig["engine"]) {
+  return value === "native" ? "pg_dump / pg_restore" : "内置 binary COPY";
 }

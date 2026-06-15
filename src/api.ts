@@ -33,10 +33,16 @@ export const api = {
   connections: () => request<DatabaseConnection[]>("/connections"),
   createConnection: (input: ConnectionInput) =>
     request<DatabaseConnection>("/connections", { method: "POST", body: JSON.stringify(input) }),
+  updateConnection: (connectionId: string, input: ConnectionInput & { password?: string }) =>
+    request<DatabaseConnection>(`/connections/${connectionId}`, { method: "PUT", body: JSON.stringify(input) }),
+  refreshConnection: (connectionId: string) =>
+    request<DatabaseConnection>(`/connections/${connectionId}/refresh`, { method: "POST" }),
   testConnection: (input: ConnectionInput) =>
     request<{ ok: boolean; latency: number }>("/connections/test", { method: "POST", body: JSON.stringify(input) }),
   databases: (connectionId: string) =>
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`),
+  createDatabase: (connectionId: string, name: string) =>
+    request<DatabaseInfo[]>(`/connections/${connectionId}/databases`, { method: "POST", body: JSON.stringify({ name }) }),
   tables: (connectionId: string, database: string) =>
     request<TableInfo[]>(`/connections/${connectionId}/databases/${encodeURIComponent(database)}/tables`),
   createMigration: async (config: MigrationConfig) =>

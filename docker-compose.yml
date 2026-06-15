@@ -1,0 +1,23 @@
+services:
+  databridge:
+    image: ${DATABRIDGE_IMAGE:-ghcr.io/buall/databridge:latest}
+    container_name: databridge
+    restart: unless-stopped
+    ports:
+      - "${DATABRIDGE_PORT:-8081}:8081"
+    environment:
+      DATABRIDGE_ADDR: ":8081"
+      DATABRIDGE_DB_PATH: /data/databridge.db
+      DATABRIDGE_KEY_PATH: /data/databridge.key
+      DATABRIDGE_PG_JOBS: ${DATABRIDGE_PG_JOBS:-4}
+    volumes:
+      - databridge-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/api/healthz >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  databridge-data:

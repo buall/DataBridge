@@ -1,0 +1,10 @@
+.git
+.gocache
+bin
+data
+dist
+node_modules
+*.log
+*.tsbuildinfo
+Dockerfile
+docker-compose*.yml

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,12 +62,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration) (model.Connection, error) {
+func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration, version string) (model.Connection, error) {
 	connection := model.Connection{
-		ID: newID(), Name: input.Name, Type: "PostgreSQL", Host: input.Host,
+		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: "PostgreSQL", Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
 		SSLMode: input.SSLMode, Status: "connected",
-		LatencyMS: latency.Milliseconds(), CreatedAt: time.Now().UTC(),
+		LatencyMS: latency.Milliseconds(), Version: version, CreatedAt: time.Now().UTC(),
 	}
 	encrypted, err := s.encrypt(input.Password)
 	if err != nil {
@@ -74,11 +75,11 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO connections
-		(id, name, type, host, port, username, password_encrypted, ssl_mode, status, latency_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		connection.ID, connection.Name, connection.Type, connection.Host, connection.Port,
+		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, status, latency_ms, server_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		connection.ID, connection.Name, connection.Note, connection.Type, connection.Host, connection.Port,
 		connection.Username, encrypted, connection.SSLMode, connection.Status,
-		connection.LatencyMS, connection.CreatedAt.Format(time.RFC3339Nano))
+		connection.LatencyMS, connection.Version, connection.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("save connection: %w", err)
 	}
@@ -87,8 +88,8 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, type, host, port, username, password_encrypted,
-		       ssl_mode, status, latency_ms, created_at
+		SELECT id, name, note, type, host, port, username, password_encrypted,
+		       ssl_mode, status, latency_ms, server_version, created_at
 		FROM connections ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -110,10 +111,58 @@ func (s *Store) Connections() ([]model.Connection, error) {
 
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, type, host, port, username, password_encrypted,
-		       ssl_mode, status, latency_ms, created_at
+		SELECT id, name, note, type, host, port, username, password_encrypted,
+		       ssl_mode, status, latency_ms, server_version, created_at
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
+}
+
+func (s *Store) UpdateConnectionVersion(id, version string) error {
+	if _, err := s.db.Exec(`UPDATE connections SET server_version = ? WHERE id = ?`, version, id); err != nil {
+		return fmt.Errorf("update connection version: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateConnectionHealth(id, status string, latency time.Duration, version string) error {
+	if _, err := s.db.Exec(`UPDATE connections SET status = ?, latency_ms = ?, server_version = ? WHERE id = ?`,
+		status, latency.Milliseconds(), version, id); err != nil {
+		return fmt.Errorf("update connection health: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, latency time.Duration, version string) (model.Connection, error) {
+	current, err := s.Connection(id)
+	if err != nil {
+		return model.Connection{}, err
+	}
+	password := current.Password
+	if strings.TrimSpace(input.Password) != "" {
+		password = input.Password
+	}
+	encrypted, err := s.encrypt(password)
+	if err != nil {
+		return model.Connection{}, err
+	}
+	note := strings.TrimSpace(input.Note)
+	status := "connected"
+	if _, err := s.db.Exec(`
+		UPDATE connections
+		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, status = ?, latency_ms = ?, server_version = ?
+		WHERE id = ?`,
+		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, status, latency.Milliseconds(), version, id); err != nil {
+		return model.Connection{}, fmt.Errorf("update connection: %w", err)
+	}
+	updated, err := s.Connection(id)
+	if err != nil {
+		return model.Connection{}, err
+	}
+	updated.Note = note
+	updated.Status = status
+	updated.LatencyMS = latency.Milliseconds()
+	updated.Version = version
+	return updated, nil
 }
 
 func (s *Store) AddMigration(value model.Migration, cancel context.CancelFunc) error {
@@ -214,6 +263,7 @@ func (s *Store) initialize() error {
 		CREATE TABLE IF NOT EXISTS connections (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
 			type TEXT NOT NULL,
 			host TEXT NOT NULL,
 			port INTEGER NOT NULL,
@@ -222,6 +272,7 @@ func (s *Store) initialize() error {
 			ssl_mode TEXT NOT NULL,
 			status TEXT NOT NULL,
 			latency_ms INTEGER NOT NULL,
+			server_version TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS migrations (
@@ -232,7 +283,33 @@ func (s *Store) initialize() error {
 	`); err != nil {
 		return fmt.Errorf("initialize sqlite: %w", err)
 	}
+	if err := s.ensureConnectionVersionColumn(); err != nil {
+		return err
+	}
+	if err := s.ensureConnectionNoteColumn(); err != nil {
+		return err
+	}
 	return s.recoverInterruptedMigrations()
+}
+
+func (s *Store) ensureConnectionVersionColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN server_version TEXT NOT NULL DEFAULT ''`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.server_version: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionNoteColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN note TEXT NOT NULL DEFAULT ''`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.note: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) recoverInterruptedMigrations() error {
@@ -268,9 +345,9 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var item model.Connection
 	var encrypted []byte
 	var createdAt string
-	if err := row.Scan(&item.ID, &item.Name, &item.Type, &item.Host, &item.Port,
+	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
 		&item.Username, &encrypted, &item.SSLMode, &item.Status, &item.LatencyMS,
-		&createdAt); err != nil {
+		&item.Version, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
 		}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"databridge/internal/model"
@@ -48,6 +49,9 @@ func (e *Engine) Run(
 		return fmt.Errorf("connect target: %w", err)
 	}
 	defer targetConn.Close(ctx)
+	if _, err := targetConn.Exec(ctx, "SET synchronous_commit = off"); err != nil {
+		return fmt.Errorf("configure target session: %w", err)
+	}
 
 	tables, err := loadTables(ctx, sourceConn, request.Tables)
 	if err != nil {
@@ -95,7 +99,13 @@ func (e *Engine) Run(
 		fullName := table.Schema + "." + table.Name
 		report(Progress{Stage: "data", CurrentTable: fullName, TablesDone: index, RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO", EventMessage: "开始迁移 " + fullName})
 		start := time.Now()
-		copied, copyErr := copyTable(ctx, sourceConn, targetConn, table)
+		copied, copyErr := copyTable(ctx, sourceConn, targetConn, table, func(bytes int64, elapsed time.Duration) {
+			report(Progress{
+				Stage: "data", CurrentTable: fullName, TablesDone: index,
+				RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO",
+				EventMessage: fmt.Sprintf("%s 正在迁移，已传输 %s，用时 %s", fullName, formatBytes(bytes), elapsed.Truncate(time.Second)),
+			})
+		})
 		result := model.TableResult{
 			Table: fullName, SourceRows: table.Rows, CopiedRows: copied,
 			Duration: time.Since(start),
@@ -110,10 +120,19 @@ func (e *Engine) Run(
 		report(Progress{Stage: "data", CurrentTable: fullName, TablesDone: index + 1, RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO", EventMessage: fmt.Sprintf("%s 已迁移 %d 行", fullName, copied)})
 	}
 
-	report(Progress{Stage: "constraints", TablesDone: len(tables), RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO", EventMessage: "正在创建主键、唯一约束、外键和索引"})
+	report(Progress{Stage: "constraints", TablesDone: len(tables), RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO", EventMessage: "正在创建主键、唯一约束、检查约束和索引"})
 	for _, table := range tables {
-		if err := createConstraintsAndIndexes(ctx, sourceConn, targetConn, table); err != nil {
-			return fmt.Errorf("create constraints for %s.%s: %w", table.Schema, table.Name, err)
+		if err := createNonForeignKeyConstraints(ctx, sourceConn, targetConn, table); err != nil {
+			return fmt.Errorf("create non-foreign-key constraints for %s.%s: %w", table.Schema, table.Name, err)
+		}
+		if err := createIndexes(ctx, sourceConn, targetConn, table); err != nil {
+			return fmt.Errorf("create indexes for %s.%s: %w", table.Schema, table.Name, err)
+		}
+	}
+	report(Progress{Stage: "constraints", TablesDone: len(tables), RowsTotal: totalRows, RowsCopied: copiedTotal, EventLevel: "INFO", EventMessage: "正在创建外键约束"})
+	for _, table := range tables {
+		if err := createForeignKeys(ctx, sourceConn, targetConn, table); err != nil {
+			return fmt.Errorf("create foreign keys for %s.%s: %w", table.Schema, table.Name, err)
 		}
 	}
 	if err := syncSequences(ctx, sourceConn, targetConn, schemas); err != nil {
@@ -343,7 +362,7 @@ func renameBackupIndexes(ctx context.Context, target *pgx.Conn, schema, table st
 	return nil
 }
 
-func copyTable(ctx context.Context, source, target *pgx.Conn, table tableDefinition) (int64, error) {
+func copyTable(ctx context.Context, source, target *pgx.Conn, table tableDefinition, heartbeat func(bytes int64, elapsed time.Duration)) (int64, error) {
 	var columns []string
 	for _, column := range table.Columns {
 		if column.Generated == "" {
@@ -353,12 +372,30 @@ func copyTable(ctx context.Context, source, target *pgx.Conn, table tableDefinit
 	qualified := postgres.QuoteIdent(table.Schema) + "." + postgres.QuoteIdent(table.Name)
 	columnList := strings.Join(columns, ",")
 	reader, writer := io.Pipe()
+	var bytesCopied int64
+	done := make(chan struct{})
+	if heartbeat != nil {
+		start := time.Now()
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					heartbeat(atomic.LoadInt64(&bytesCopied), time.Since(start))
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+	defer close(done)
 	var sourceErr error
 	var sourceWG sync.WaitGroup
 	sourceWG.Add(1)
 	go func() {
 		defer sourceWG.Done()
-		_, sourceErr = source.PgConn().CopyTo(ctx, writer, fmt.Sprintf("COPY %s (%s) TO STDOUT BINARY", qualified, columnList))
+		_, sourceErr = source.PgConn().CopyTo(ctx, countingWriter{writer: writer, bytes: &bytesCopied}, fmt.Sprintf("COPY %s (%s) TO STDOUT BINARY", qualified, columnList))
 		_ = writer.CloseWithError(sourceErr)
 	}()
 	tag, targetErr := target.PgConn().CopyFrom(ctx, reader, fmt.Sprintf("COPY %s (%s) FROM STDIN BINARY", qualified, columnList))
@@ -373,32 +410,66 @@ func copyTable(ctx context.Context, source, target *pgx.Conn, table tableDefinit
 	return tag.RowsAffected(), nil
 }
 
-func createConstraintsAndIndexes(ctx context.Context, source, target *pgx.Conn, table tableDefinition) error {
+type countingWriter struct {
+	writer io.Writer
+	bytes  *int64
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	atomic.AddInt64(w.bytes, int64(n))
+	return n, err
+}
+
+func createNonForeignKeyConstraints(ctx context.Context, source, target *pgx.Conn, table tableDefinition) error {
 	rows, err := source.Query(ctx, `
 		SELECT conname, pg_get_constraintdef(oid, true)
 		FROM pg_constraint
-		WHERE conrelid = $1::regclass AND contype IN ('p','u','f','c')
-		ORDER BY CASE contype WHEN 'p' THEN 1 WHEN 'u' THEN 2 WHEN 'c' THEN 3 ELSE 4 END`,
+		WHERE conrelid = $1::regclass AND contype IN ('p','u','c')
+		ORDER BY CASE contype WHEN 'p' THEN 1 WHEN 'u' THEN 2 ELSE 3 END`,
 		table.Schema+"."+table.Name)
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	qualified := postgres.QuoteIdent(table.Schema) + "." + postgres.QuoteIdent(table.Name)
 	for rows.Next() {
 		var name, definition string
 		if err := rows.Scan(&name, &definition); err != nil {
-			rows.Close()
 			return err
 		}
 		if _, err := target.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", qualified, postgres.QuoteIdent(name), definition)); err != nil {
-			rows.Close()
 			return err
 		}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	return rows.Err()
+}
+
+func createForeignKeys(ctx context.Context, source, target *pgx.Conn, table tableDefinition) error {
+	rows, err := source.Query(ctx, `
+		SELECT conname, pg_get_constraintdef(oid, true)
+		FROM pg_constraint
+		WHERE conrelid = $1::regclass AND contype = 'f'
+		ORDER BY conname`,
+		table.Schema+"."+table.Name)
+	if err != nil {
 		return err
 	}
+	defer rows.Close()
+	qualified := postgres.QuoteIdent(table.Schema) + "." + postgres.QuoteIdent(table.Name)
+	for rows.Next() {
+		var name, definition string
+		if err := rows.Scan(&name, &definition); err != nil {
+			return err
+		}
+		if _, err := target.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", qualified, postgres.QuoteIdent(name), definition)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func createIndexes(ctx context.Context, source, target *pgx.Conn, table tableDefinition) error {
 	indexRows, err := source.Query(ctx, `
 		SELECT indexdef FROM pg_indexes
 		WHERE schemaname=$1 AND tablename=$2
@@ -480,4 +551,17 @@ func uniqueSchemas(tables []tableDefinition) []string {
 
 func quoteLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func formatBytes(value int64) string {
+	const unit = 1024
+	if value < unit {
+		return fmt.Sprintf("%d B", value)
+	}
+	div, exp := int64(unit), 0
+	for n := value / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(value)/float64(div), "KMGTPE"[exp])
 }

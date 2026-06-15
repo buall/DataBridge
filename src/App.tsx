@@ -1,28 +1,59 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { Layout } from "./components/Layout";
 import { Connections } from "./pages/Connections";
+import { Logs } from "./pages/Logs";
+import { MigrationList } from "./pages/MigrationList";
 import { MigrationWizard } from "./pages/MigrationWizard";
 import { Monitoring } from "./pages/Monitoring";
 import { Overview } from "./pages/Overview";
 import { Report } from "./pages/Report";
 import type { AppView, DatabaseConnection, MigrationConfig, MigrationJob, MigrationStage } from "./types";
 
+type AppRoute = {
+  view: AppView;
+  stage: MigrationStage;
+  jobId: string | null;
+};
+
+const routes: Record<AppView, string> = {
+  overview: "/",
+  connections: "/connections",
+  migrations: "/migrations",
+  logs: "/logs",
+};
+
 const viewMeta: Record<AppView, [string, string]> = {
   overview: ["工作台总览", "数据迁移运行态势与近期任务"],
   connections: ["数据连接", "统一管理源端与目标端实例"],
-  migrations: ["创建迁移任务", "配置源端、目标端与迁移对象"],
-  reports: ["迁移校验报告", "查看已完成任务的真实校验结果"],
+  migrations: ["迁移任务", "查看任务列表、运行状态和历史结果"],
   logs: ["运行日志", "查看 Agent、任务与系统审计事件"],
 };
 
+function routeFromPath(pathname: string): AppRoute {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === "/connections") return { view: "connections", stage: "list", jobId: null };
+  if (path === "/logs") return { view: "logs", stage: "list", jobId: null };
+  if (path === "/migrations/new") return { view: "migrations", stage: "wizard", jobId: null };
+  if (path.startsWith("/migrations/")) {
+    const jobId = decodeURIComponent(path.slice("/migrations/".length));
+    return { view: "migrations", stage: "list", jobId: jobId || null };
+  }
+  if (path === "/migrations") return { view: "migrations", stage: "list", jobId: null };
+  return { view: "overview", stage: "list", jobId: null };
+}
+
+function pathForJob(job: MigrationJob) {
+  return `/migrations/${encodeURIComponent(job.id)}`;
+}
+
 export default function App() {
-  const [view, setView] = useState<AppView>("overview");
+  const [route, setRoute] = useState<AppRoute>(() => routeFromPath(window.location.pathname));
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);
-  const [migrationStage, setMigrationStage] = useState<MigrationStage>("wizard");
-  const [activeJob, setActiveJob] = useState<MigrationJob | null>(null);
   const [migrations, setMigrations] = useState<MigrationJob[]>([]);
   const [loadError, setLoadError] = useState("");
+  const activeJob = useMemo(() => route.jobId ? migrations.find((job) => job.id === route.jobId) ?? null : null, [migrations, route.jobId]);
+  const { view, stage: migrationStage } = route;
 
   useEffect(() => {
     Promise.all([api.connections(), api.migrations()])
@@ -34,50 +65,75 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const handlePopState = () => setRoute(routeFromPath(window.location.pathname));
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  useEffect(() => {
     window.scrollTo({ top: 0, behavior: "auto" });
-  }, [view, migrationStage]);
+  }, [route]);
+
+  useEffect(() => {
+    if (route.view !== "migrations" || route.stage !== "list" || !route.jobId || !migrations.length) return;
+    const job = migrations.find((item) => item.id === route.jobId);
+    if (!job) return;
+    setRoute((current) => current.jobId === job.id ? {
+      view: "migrations",
+      stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+      jobId: job.id,
+    } : current);
+  }, [migrations, route]);
+
+  function pushRoute(path: string) {
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+    setRoute(routeFromPath(path));
+  }
 
   function navigate(next: AppView) {
-    setView(next);
-    if (next === "migrations" && migrationStage === "report") setMigrationStage("wizard");
+    pushRoute(routes[next]);
   }
   function createMigration() {
-    setMigrationStage("wizard");
-    setView("migrations");
+    pushRoute("/migrations/new");
+  }
+  function openMigration(job: MigrationJob) {
+    const path = pathForJob(job);
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+    setRoute({
+      view: "migrations",
+      stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+      jobId: job.id,
+    });
   }
   async function startMigration(config: MigrationConfig) {
     const job = await api.createMigration(config);
-    setActiveJob(job);
     setMigrations((current) => [job, ...current]);
-    setMigrationStage("running");
+    window.history.pushState(null, "", pathForJob(job));
+    setRoute({ view: "migrations", stage: "running", jobId: job.id });
   }
   const completeMigration = useCallback((job: MigrationJob) => {
-    setActiveJob(job);
     setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    setMigrationStage("report");
-    setView("reports");
+    window.history.replaceState(null, "", pathForJob(job));
+    setRoute({ view: "migrations", stage: "report", jobId: job.id });
   }, []);
 
   let content: React.ReactNode;
-  if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={createMigration} onConnections={() => navigate("connections")} />;
-  else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} />;
-  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : <MigrationWizard connections={connections} onStart={startMigration} />;
-  else if (view === "reports") content = activeJob ? <Report job={activeJob} /> : <NoReport />;
-  else content = <EmptyLogs />;
+  if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={createMigration} onConnections={() => navigate("connections")} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
+  else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onCreateMigration={createMigration} />;
+  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={createMigration} onOpen={openMigration} /> : <MigrationList migrations={migrations} onCreate={createMigration} onOpen={openMigration} />;
+  else content = <Logs migrations={migrations} />;
 
   const meta = view === "migrations" && migrationStage === "running" && activeJob
     ? [activeJob.name, `任务 ID ${activeJob.id}`]
-    : view === "reports" && activeJob
+    : view === "migrations" && migrationStage === "wizard"
+      ? ["创建迁移任务", "配置源端、目标端与迁移对象"]
+    : view === "migrations" && migrationStage === "report" && activeJob
       ? ["迁移校验报告", `${activeJob.name} · ${new Date(activeJob.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];
 
-  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} onNavigate={navigate}>{loadError && <div className="error-banner">{loadError}。请确认 Go API 已启动。</div>}{content}</Layout>;
-}
-
-function EmptyLogs() {
-  return <div className="empty-state"><div>LOG</div><h2>运行日志</h2><p>任务启动后，Agent 与系统事件会汇总显示在这里。</p></div>;
-}
-
-function NoReport() {
-  return <div className="empty-state"><div>OK</div><h2>暂无校验报告</h2><p>完成一次 PostgreSQL 迁移后，逐表校验结果会显示在这里。</p></div>;
+  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate}>{loadError && <div className="error-banner">{loadError}。请确认 Go API 已启动。</div>}{content}</Layout>;
 }

@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"databridge/internal/migrate"
@@ -21,18 +24,29 @@ import (
 )
 
 type Server struct {
-	store  *store.Store
-	engine *migrate.Engine
+	store     *store.Store
+	engine    *migrate.Engine
+	geoClient *http.Client
+	geoMu     sync.Mutex
+	geoCache  map[string]string
 }
 
 func New(appStore *store.Store) http.Handler {
-	server := &Server{store: appStore, engine: migrate.New()}
+	server := &Server{
+		store:     appStore,
+		engine:    migrate.New(),
+		geoClient: &http.Client{Timeout: 2 * time.Second},
+		geoCache:  make(map[string]string),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", server.health)
 	mux.HandleFunc("GET /api/connections", server.listConnections)
 	mux.HandleFunc("POST /api/connections/test", server.testConnection)
 	mux.HandleFunc("POST /api/connections", server.createConnection)
+	mux.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
+	mux.HandleFunc("POST /api/connections/{id}/refresh", server.refreshConnection)
 	mux.HandleFunc("GET /api/connections/{id}/databases", server.listDatabases)
+	mux.HandleFunc("POST /api/connections/{id}/databases", server.createDatabase)
 	mux.HandleFunc("GET /api/connections/{id}/databases/{database}/tables", server.listTables)
 	mux.HandleFunc("POST /api/migrations", server.createMigration)
 	mux.HandleFunc("GET /api/migrations/{id}", server.getMigration)
@@ -46,13 +60,42 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) listConnections(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.Connections()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
+	items = s.withConnectionVersions(r.Context(), items)
+	items = s.withConnectionRegions(r.Context(), items)
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) withConnectionVersions(ctx context.Context, items []model.Connection) []model.Connection {
+	for index := range items {
+		if items[index].Version != "" {
+			continue
+		}
+		versionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		version, err := postgres.ServerVersion(versionCtx, items[index])
+		cancel()
+		if err != nil {
+			log.Printf("connection[%s] version discovery failed: %v", items[index].ID, err)
+			continue
+		}
+		items[index].Version = version
+		if err := s.store.UpdateConnectionVersion(items[index].ID, version); err != nil {
+			log.Printf("connection[%s] version persistence failed: %v", items[index].ID, err)
+		}
+	}
+	return items
+}
+
+func (s *Server) withConnectionRegions(ctx context.Context, items []model.Connection) []model.Connection {
+	for index := range items {
+		items[index].Region = s.connectionRegion(ctx, items[index].Host)
+	}
+	return items
 }
 
 func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
@@ -62,12 +105,12 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	latency, err := postgres.Test(ctx, input)
+	latency, version, err := postgres.Test(ctx, input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency": latency.Milliseconds()})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency": latency.Milliseconds(), "version": version})
 }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
@@ -77,17 +120,253 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	latency, err := postgres.Test(ctx, input)
+	latency, version, err := postgres.Test(ctx, input)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
 		return
 	}
-	connection, err := s.store.AddConnection(input, latency)
+	connection, err := s.store.AddConnection(input, latency, version)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
+	connection.Region = s.connectionRegion(r.Context(), connection.Host)
 	writeJSON(w, http.StatusCreated, connection)
+}
+
+func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Connection(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "connection not found")
+		return
+	}
+	var input model.UpdateConnectionInput
+	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, input) {
+		return
+	}
+	password := current.Password
+	if strings.TrimSpace(input.Password) != "" {
+		password = input.Password
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	latency, version, err := postgres.Test(ctx, model.ConnectionInput{
+		Name:     input.Name,
+		Note:     input.Note,
+		Host:     input.Host,
+		Port:     input.Port,
+		Username: input.Username,
+		Password: password,
+		SSLMode:  input.SSLMode,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+		return
+	}
+	connection, err := s.store.UpdateConnection(current.ID, input, latency, version)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	connection.Region = s.connectionRegion(r.Context(), connection.Host)
+	writeJSON(w, http.StatusOK, connection)
+}
+
+func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
+	connection, err := s.store.Connection(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "connection not found")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	latency, version, err := postgres.Test(ctx, model.ConnectionInput{
+		Name:     connection.Name,
+		Host:     connection.Host,
+		Port:     connection.Port,
+		Username: connection.Username,
+		Password: connection.Password,
+		SSLMode:  connection.SSLMode,
+	})
+	if err != nil {
+		_ = s.store.UpdateConnectionHealth(connection.ID, "warning", 0, connection.Version)
+		writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+		return
+	}
+	if err := s.store.UpdateConnectionHealth(connection.ID, "connected", latency, version); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	connection.Status = "connected"
+	connection.LatencyMS = latency.Milliseconds()
+	connection.Version = version
+	connection.Region = s.connectionRegion(r.Context(), connection.Host)
+	writeJSON(w, http.StatusOK, connection)
+}
+
+func (s *Server) connectionRegion(ctx context.Context, host string) string {
+	key := strings.TrimSpace(strings.Trim(host, "[]"))
+	if key == "" {
+		return "未知"
+	}
+	s.geoMu.Lock()
+	if value, ok := s.geoCache[key]; ok {
+		s.geoMu.Unlock()
+		return value
+	}
+	s.geoMu.Unlock()
+
+	region := s.lookupRegion(ctx, key)
+
+	s.geoMu.Lock()
+	s.geoCache[key] = region
+	s.geoMu.Unlock()
+	return region
+}
+
+func (s *Server) lookupRegion(ctx context.Context, host string) string {
+	ip, ok := parseIP(host)
+	if !ok {
+		resolved, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil || len(resolved) == 0 {
+			return "未知"
+		}
+		for _, item := range resolved {
+			parsed, valid := parseIP(item.IP.String())
+			if !valid {
+				continue
+			}
+			if isLocalIP(parsed) {
+				return "内网"
+			}
+			ip = parsed
+			ok = true
+			break
+		}
+		if !ok {
+			return "未知"
+		}
+	}
+	if isLocalIP(ip) {
+		return "内网"
+	}
+	if !ip.Is4() {
+		return "未知"
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(lookupCtx, http.MethodGet, "http://ip-api.com/json/"+ip.String()+"?fields=status,country,regionName,city", nil)
+	if err != nil {
+		return "未知"
+	}
+	response, err := s.geoClient.Do(request)
+	if err != nil {
+		return "未知"
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "未知"
+	}
+	var payload struct {
+		Status     string `json:"status"`
+		Country    string `json:"country"`
+		RegionName string `json:"regionName"`
+		City       string `json:"city"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return "未知"
+	}
+	if payload.Status != "success" {
+		return "未知"
+	}
+	return formatRegionLabel(payload.Country, payload.RegionName, payload.City)
+}
+
+func parseIP(value string) (netip.Addr, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(strings.Trim(value, "[]")))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+func isLocalIP(addr netip.Addr) bool {
+	return addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsUnspecified()
+}
+
+func formatRegionLabel(country, regionName, city string) string {
+	country = strings.TrimSpace(country)
+	regionName = strings.TrimSpace(regionName)
+	city = strings.TrimSpace(city)
+	if country == "" {
+		return "未知"
+	}
+	countryCN := translateCountry(country)
+	switch country {
+	case "Hong Kong":
+		return "香港"
+	case "Taiwan":
+		return "台湾"
+	case "Macao":
+		return "澳门"
+	case "China":
+		if city != "" && city != countryCN {
+			return city
+		}
+		if regionName != "" && regionName != countryCN {
+			return regionName
+		}
+		return countryCN
+	default:
+		return countryCN
+	}
+}
+
+func translateCountry(country string) string {
+	switch country {
+	case "China":
+		return "中国"
+	case "Hong Kong":
+		return "香港"
+	case "Taiwan":
+		return "台湾"
+	case "Macao":
+		return "澳门"
+	case "United States":
+		return "美国"
+	case "Singapore":
+		return "新加坡"
+	case "Japan":
+		return "日本"
+	case "South Korea":
+		return "韩国"
+	case "Germany":
+		return "德国"
+	case "United Kingdom":
+		return "英国"
+	case "France":
+		return "法国"
+	case "Canada":
+		return "加拿大"
+	case "Australia":
+		return "澳大利亚"
+	case "Netherlands":
+		return "荷兰"
+	case "India":
+		return "印度"
+	case "Indonesia":
+		return "印度尼西亚"
+	case "Thailand":
+		return "泰国"
+	case "Malaysia":
+		return "马来西亚"
+	case "Vietnam":
+		return "越南"
+	default:
+		return country
+	}
 }
 
 func (s *Server) listDatabases(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +383,35 @@ func (s *Server) listDatabases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
+	connection, err := s.store.Connection(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "connection not found")
+		return
+	}
+	var request model.CreateDatabaseRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	name := strings.TrimSpace(request.Name)
+	if !validDatabaseName(name) {
+		writeError(w, http.StatusBadRequest, "invalid_database", "database name must start with a letter or underscore and contain only letters, numbers, underscores or hyphens")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	if err := postgres.CreateDatabase(ctx, connection, name); err != nil {
+		writeError(w, http.StatusBadGateway, "database_create_failed", err.Error())
+		return
+	}
+	items, err := postgres.Databases(ctx, connection)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "database_created_refresh_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, items)
 }
 
 func (s *Server) listTables(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +442,13 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 	if request.ConflictStrategy == "" {
 		request.ConflictStrategy = "backup"
 	}
+	if request.Engine == "" {
+		request.Engine = "copy"
+	}
+	if request.Engine != "copy" && request.Engine != "native" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "unsupported migration engine")
+		return
+	}
 	source, err := s.store.Connection(request.SourceID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_source", "source connection not found")
@@ -152,7 +467,7 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 		TargetName: target.Name, SourceDatabase: request.SourceDatabase,
 		TargetDatabase: request.TargetDatabase, Request: request,
 		Results: []model.TableResult{},
-		Events:  []model.Event{{Time: now, Level: "INFO", Message: "迁移任务已创建"}},
+		Events:  []model.Event{{Time: now, Level: "INFO", Message: "迁移任务已创建，迁移引擎：" + migrationEngineLabel(request.Engine)}},
 	}
 	if value.Name == "" {
 		value.Name = request.SourceDatabase + " → " + request.TargetDatabase
@@ -167,8 +482,11 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runMigration(ctx context.Context, id string, source, target model.Connection, request model.MigrationRequest) {
-	log.Printf("migration[%s] started: %s/%s -> %s/%s, tables=%d",
-		id, source.Name, request.SourceDatabase, target.Name, request.TargetDatabase, len(request.Tables))
+	if request.Engine == "" {
+		request.Engine = "copy"
+	}
+	log.Printf("migration[%s] started: %s/%s -> %s/%s, tables=%d, engine=%s",
+		id, source.Name, request.SourceDatabase, target.Name, request.TargetDatabase, len(request.Tables), request.Engine)
 	_ = s.store.UpdateMigration(id, func(item *model.Migration) {
 		item.Status = model.StatusRunning
 		item.Stage = "precheck"
@@ -198,7 +516,15 @@ func (s *Server) runMigration(ctx context.Context, id string, source, target mod
 			}
 		})
 	}
-	err := s.engine.Run(ctx, source, target, request, reporter)
+	var err error
+	switch request.Engine {
+	case "native":
+		err = s.engine.RunNativePostgres(ctx, source, target, request, reporter)
+	case "copy":
+		err = s.engine.Run(ctx, source, target, request, reporter)
+	default:
+		err = fmt.Errorf("unsupported migration engine %q", request.Engine)
+	}
 	finished := time.Now()
 	if err != nil {
 		log.Printf("migration[%s] failed after %s: %v", id, finished.Sub(requestStartedAt(s.store, id)), err)
@@ -264,8 +590,12 @@ func calculateProgress(progress migrate.Progress, tableTotal int) int {
 	switch progress.Stage {
 	case "precheck":
 		return 5
+	case "target-prep":
+		return 10
 	case "schema":
 		return 15
+	case "dump":
+		return 30
 	case "data":
 		if progress.RowsTotal > 0 {
 			return 15 + int(float64(progress.RowsCopied)/float64(progress.RowsTotal)*70)
@@ -274,6 +604,8 @@ func calculateProgress(progress migrate.Progress, tableTotal int) int {
 			return 15 + progress.TablesDone*70/tableTotal
 		}
 		return 15
+	case "restore":
+		return 80
 	case "constraints":
 		return 88
 	case "validation":
@@ -283,6 +615,13 @@ func calculateProgress(progress migrate.Progress, tableTotal int) int {
 	default:
 		return 0
 	}
+}
+
+func migrationEngineLabel(engine string) string {
+	if engine == "native" {
+		return "pg_dump / pg_restore"
+	}
+	return "内置 COPY"
 }
 
 func upsertResult(item *model.Migration, result model.TableResult) {
@@ -306,6 +645,38 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 	if input.Port < 1 || input.Port > 65535 {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "port must be between 1 and 65535")
 		return false
+	}
+	return true
+}
+
+func validateConnectionUpdate(w http.ResponseWriter, input model.UpdateConnectionInput) bool {
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "name, host and username are required")
+		return false
+	}
+	if input.Port == 0 {
+		input.Port = 5432
+	}
+	if input.Port < 1 || input.Port > 65535 {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "port must be between 1 and 65535")
+		return false
+	}
+	return true
+}
+
+func validDatabaseName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for index, value := range name {
+		letter := value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+		digit := value >= '0' && value <= '9'
+		if index == 0 && !letter && value != '_' {
+			return false
+		}
+		if !letter && !digit && value != '_' && value != '-' {
+			return false
+		}
 	}
 	return true
 }
