@@ -4,6 +4,7 @@ import {
   Cable,
   Database,
   LayoutDashboard,
+  LogOut,
   ListTree,
   PanelLeftClose,
   PanelLeftOpen,
@@ -27,9 +28,10 @@ interface LayoutProps {
   children: React.ReactNode;
   paths: Record<AppView, string>;
   onNavigate: (view: AppView) => void;
+  onLogout: () => void;
 }
 
-export function Layout({ activeView, title, subtitle, children, paths, onNavigate }: LayoutProps) {
+export function Layout({ activeView, title, subtitle, children, paths, onNavigate, onLogout }: LayoutProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -113,6 +115,7 @@ export function Layout({ activeView, title, subtitle, children, paths, onNavigat
           <div className="topbar-actions">
             <span className="environment"><i />服务在线</span>
             <button className="icon-button" aria-label="通知"><Bell size={18} /></button>
+            <button className="icon-button" aria-label="退出登录" title="退出登录" onClick={onLogout}><LogOut size={18} /></button>
             <div className="avatar dark">DB</div>
           </div>
         </header>

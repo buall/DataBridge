@@ -29,6 +29,7 @@ type Server struct {
 	geoClient *http.Client
 	geoMu     sync.Mutex
 	geoCache  map[string]string
+	auth      authConfig
 }
 
 func New(appStore *store.Store) http.Handler {
@@ -37,27 +38,66 @@ func New(appStore *store.Store) http.Handler {
 		engine:    migrate.New(),
 		geoClient: &http.Client{Timeout: 2 * time.Second},
 		geoCache:  make(map[string]string),
+		auth:      loadAuthConfig(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", server.health)
-	mux.HandleFunc("GET /api/connections", server.listConnections)
-	mux.HandleFunc("POST /api/connections/test", server.testConnection)
-	mux.HandleFunc("POST /api/connections", server.createConnection)
-	mux.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
-	mux.HandleFunc("POST /api/connections/{id}/refresh", server.refreshConnection)
-	mux.HandleFunc("GET /api/connections/{id}/databases", server.listDatabases)
-	mux.HandleFunc("POST /api/connections/{id}/databases", server.createDatabase)
-	mux.HandleFunc("GET /api/connections/{id}/databases/{database}/tables", server.listTables)
-	mux.HandleFunc("POST /api/migrations", server.createMigration)
-	mux.HandleFunc("GET /api/migrations/{id}", server.getMigration)
-	mux.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
-	mux.HandleFunc("GET /api/migrations", server.listMigrations)
+	mux.HandleFunc("GET /api/auth/session", server.authSession)
+	mux.HandleFunc("POST /api/auth/login", server.login)
+	mux.HandleFunc("POST /api/auth/logout", server.logout)
+	protected := http.NewServeMux()
+	protected.HandleFunc("GET /api/connections", server.listConnections)
+	protected.HandleFunc("POST /api/connections/test", server.testConnection)
+	protected.HandleFunc("POST /api/connections", server.createConnection)
+	protected.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
+	protected.HandleFunc("POST /api/connections/{id}/refresh", server.refreshConnection)
+	protected.HandleFunc("GET /api/connections/{id}/databases", server.listDatabases)
+	protected.HandleFunc("POST /api/connections/{id}/databases", server.createDatabase)
+	protected.HandleFunc("GET /api/connections/{id}/databases/{database}/tables", server.listTables)
+	protected.HandleFunc("POST /api/migrations", server.createMigration)
+	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
+	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
+	protected.HandleFunc("GET /api/migrations", server.listMigrations)
+	mux.Handle("/api/", server.auth.authMiddleware(protected))
 	mux.Handle("/", staticHandler())
 	return recoverMiddleware(corsMiddleware(mux))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
+	authenticated := s.auth.enabled() && s.auth.validSession(r)
+	if !s.auth.enabled() && s.auth.localOnlyBypass && isLocalRequest(r) {
+		authenticated = true
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": authenticated,
+		"username":      s.auth.username,
+		"configured":    s.auth.enabled(),
+	})
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !s.auth.checkPassword(strings.TrimSpace(input.Username), input.Password) {
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "用户名或密码不正确")
+		return
+	}
+	s.auth.setSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "username": s.auth.username})
+}
+
+func (s *Server) logout(w http.ResponseWriter, _ *http.Request) {
+	s.auth.clearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
@@ -704,16 +744,33 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
+	allowedOrigins := parseAllowedOrigins(os.Getenv("DATABRIDGE_CORS_ORIGIN"))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" && allowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func parseAllowedOrigins(value string) map[string]bool {
+	origins := make(map[string]bool)
+	for _, origin := range strings.Split(value, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			origins[origin] = true
+		}
+	}
+	return origins
 }
 
 func recoverMiddleware(next http.Handler) http.Handler {

@@ -180,6 +180,8 @@ npm run build
 启动 Go API 和生产前端静态服务，默认端口为 `8081`：
 
 ```bash
+DATABRIDGE_AUTH_PASSWORD='替换为高强度密码' \
+DATABRIDGE_SESSION_SECRET='替换为至少32字节的随机字符串' \
 npm run dev:api
 ```
 
@@ -200,6 +202,26 @@ Vite 默认将 `/api` 代理到 `127.0.0.1:8081`。如需修改代理目标：
 VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 ```
 
+如果前端开发服务器和 API 分开运行，并且浏览器需要跨端口携带登录 Cookie，请在启动 API 时允许 Vite 来源：
+
+```bash
+DATABRIDGE_AUTH_PASSWORD='替换为高强度密码' \
+DATABRIDGE_SESSION_SECRET='替换为至少32字节的随机字符串' \
+DATABRIDGE_CORS_ORIGIN=http://127.0.0.1:5173 \
+npm run dev:api
+```
+
+## 登录与公网部署
+
+DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部署时必须设置：
+
+- `DATABRIDGE_AUTH_USER`：登录用户名，默认 `admin`。
+- `DATABRIDGE_AUTH_PASSWORD`：登录密码。建议使用长随机密码。
+- `DATABRIDGE_SESSION_SECRET`：会话签名密钥。建议使用 `openssl rand -base64 32` 生成。
+- `DATABRIDGE_COOKIE_SECURE`：HTTPS 部署时设置为 `true`，让浏览器只通过 HTTPS 发送会话 Cookie。
+
+未设置 `DATABRIDGE_AUTH_PASSWORD` 时，服务只允许本机回环地址访问业务 API，方便本地开发，但不适合公网部署。建议公网前置 HTTPS 反向代理，并只开放必要端口。
+
 ## Docker 镜像
 
 项目提供多阶段 `Dockerfile`，运行镜像包含：
@@ -217,6 +239,12 @@ docker build -t databridge:local .
 ```
 
 运行容器：
+
+```bash
+export DATABRIDGE_AUTH_PASSWORD='替换为高强度密码'
+export DATABRIDGE_SESSION_SECRET="$(openssl rand -base64 32)"
+docker compose up -d
+```
 
 ```bash
 docker run --rm \

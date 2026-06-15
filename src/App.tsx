@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { Layout } from "./components/Layout";
 import { Connections } from "./pages/Connections";
+import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
 import { MigrationList } from "./pages/MigrationList";
 import { MigrationWizard } from "./pages/MigrationWizard";
@@ -51,18 +52,38 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPath(window.location.pathname));
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);
   const [migrations, setMigrations] = useState<MigrationJob[]>([]);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authConfigured, setAuthConfigured] = useState(true);
   const [loadError, setLoadError] = useState("");
   const activeJob = useMemo(() => route.jobId ? migrations.find((job) => job.id === route.jobId) ?? null : null, [migrations, route.jobId]);
   const { view, stage: migrationStage } = route;
 
   useEffect(() => {
+    api.session()
+      .then((session) => {
+        setAuthenticated(session.authenticated);
+        setAuthConfigured(session.configured);
+      })
+      .catch(() => setAuthenticated(false))
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
     Promise.all([api.connections(), api.migrations()])
       .then(([connectionItems, migrationItems]) => {
         setConnections(connectionItems);
         setMigrations(migrationItems);
       })
-      .catch((error) => setLoadError(error.message));
-  }, []);
+      .catch((error) => {
+        if (error && typeof error === "object" && "status" in error && error.status === 401) {
+          setAuthenticated(false);
+          return;
+        }
+        setLoadError(error.message);
+      });
+  }, [authenticated]);
 
   useEffect(() => {
     const handlePopState = () => setRoute(routeFromPath(window.location.pathname));
@@ -120,6 +141,25 @@ export default function App() {
     window.history.replaceState(null, "", pathForJob(job));
     setRoute({ view: "migrations", stage: "report", jobId: job.id });
   }, []);
+  async function login(username: string, password: string) {
+    const session = await api.login(username, password);
+    setAuthenticated(session.authenticated);
+    setAuthConfigured(session.configured);
+    setLoadError("");
+  }
+  async function logout() {
+    await api.logout().catch(() => undefined);
+    setConnections([]);
+    setMigrations([]);
+    setAuthenticated(false);
+  }
+
+  if (!authChecked) {
+    return <main className="login-page"><div className="loading-copy">正在检查登录状态...</div></main>;
+  }
+  if (!authenticated) {
+    return <Login configured={authConfigured} onLogin={login} />;
+  }
 
   let content: React.ReactNode;
   if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={createMigration} onConnections={() => navigate("connections")} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
@@ -135,5 +175,5 @@ export default function App() {
       ? ["迁移校验报告", `${activeJob.name} · ${new Date(activeJob.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];
 
-  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate}>{loadError && <div className="error-banner">{loadError}。请确认 Go API 已启动。</div>}{content}</Layout>;
+  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}。请确认 Go API 已启动。</div>}{content}</Layout>;
 }

@@ -9,6 +9,12 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
+export type AuthSession = {
+  authenticated: boolean;
+  username: string;
+  configured: boolean;
+};
+
 function normalizeMigration(job: MigrationJob): MigrationJob {
   return {
     ...job,
@@ -20,16 +26,23 @@ function normalizeMigration(job: MigrationJob): MigrationJob {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: "include",
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.message ?? `请求失败 (${response.status})`);
+    const error = new Error(body?.message ?? `请求失败 (${response.status})`);
+    Object.assign(error, { status: response.status, code: body?.code });
+    throw error;
   }
   return body as T;
 }
 
 export const api = {
+  session: () => request<AuthSession>("/auth/session"),
+  login: (username: string, password: string) =>
+    request<AuthSession>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   connections: () => request<DatabaseConnection[]>("/connections"),
   createConnection: (input: ConnectionInput) =>
     request<DatabaseConnection>("/connections", { method: "POST", body: JSON.stringify(input) }),
