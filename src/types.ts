@@ -20,6 +20,7 @@ export interface DatabaseConnection {
 }
 
 export interface ConnectionInput {
+  type: DatabaseType;
   name: string;
   note?: string;
   host: string;
@@ -32,6 +33,14 @@ export interface ConnectionInput {
 export interface DatabaseInfo {
   name: string;
   sizeBytes: number;
+}
+
+export interface SeedDataResult {
+  database: string;
+  table: string;
+  rows: number;
+  mode: string;
+  template: string;
 }
 
 export interface TableInfo {
@@ -65,6 +74,21 @@ export interface MigrationEvent {
   time: string;
   level: string;
   message: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  time: string;
+  level: string;
+  action: string;
+  resourceType: string;
+  resourceID: string;
+  resourceName: string;
+  connectionName: string;
+  database: string;
+  status: string;
+  message: string;
+  detail: string;
 }
 
 export interface TableResult {

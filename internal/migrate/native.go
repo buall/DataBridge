@@ -125,6 +125,23 @@ func (e *Engine) RunNativePostgres(
 	return nil
 }
 
+func (e *Engine) RunNative(
+	ctx context.Context,
+	source model.Connection,
+	target model.Connection,
+	request model.MigrationRequest,
+	report Reporter,
+) error {
+	switch source.Type {
+	case "PostgreSQL":
+		return e.RunNativePostgres(ctx, source, target, request, report)
+	case "MySQL":
+		return e.RunNativeMySQL(ctx, source, target, request, report)
+	default:
+		return fmt.Errorf("unsupported native migration type %q", source.Type)
+	}
+}
+
 func pgDumpArgs(connection model.Connection, database string, tables []tableDefinition, dumpPath string, jobs int, dumpAll bool) []string {
 	args := []string{
 		"--format=directory",
@@ -349,6 +366,63 @@ func runLoggedCommand(ctx context.Context, name string, args []string, password,
 	return nil
 }
 
+func runLoggedCommandToWriter(ctx context.Context, name string, args []string, env []string, stage string, stdin io.Reader, stdout io.Writer, heartbeat func(time.Duration) string, report Reporter) error {
+	start := time.Now()
+	path, err := toolPath(name)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = env
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	if stdout != nil {
+		cmd.Stdout = stdout
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scanCommandOutput(stderr, name, stage, report)
+	}()
+	if heartbeat != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if message := heartbeat(time.Since(start)); message != "" {
+						report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: message})
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+	err = cmd.Wait()
+	close(done)
+	wg.Wait()
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: fmt.Sprintf("%s 执行完成，用时 %s", name, time.Since(start).Truncate(time.Second))})
+	return nil
+}
+
 func writeFilteredRestoreList(ctx context.Context, dumpPath, listPath, password, sslMode string) error {
 	output, err := runCommandOutput(ctx, "pg_restore", []string{"--list", dumpPath}, password, sslMode)
 	if err != nil {
@@ -383,12 +457,18 @@ func runCommandOutput(ctx context.Context, name string, args []string, password,
 }
 
 func postgresToolPath(name string) (string, error) {
+	return toolPath(name)
+}
+
+func toolPath(name string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
 	}
 	for _, candidate := range []string{
 		filepath.Join("/opt/homebrew/opt/libpq/bin", name),
 		filepath.Join("/usr/local/opt/libpq/bin", name),
+		filepath.Join("/opt/homebrew/opt/mysql-client/bin", name),
+		filepath.Join("/usr/local/opt/mysql-client/bin", name),
 		filepath.Join("/opt/homebrew/bin", name),
 		filepath.Join("/usr/local/bin", name),
 	} {
@@ -404,6 +484,14 @@ func postgresCommandEnv(password, sslMode string) []string {
 		sslMode = "prefer"
 	}
 	return append(os.Environ(), "PGPASSWORD="+password, "PGSSLMODE="+sslMode)
+}
+
+func mysqlToolPath(name string) (string, error) {
+	return toolPath(name)
+}
+
+func mysqlCommandEnv(password string) []string {
+	return append(os.Environ(), "MYSQL_PWD="+password)
 }
 
 func commandHeartbeat(name string) func(time.Duration) string {

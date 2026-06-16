@@ -6,6 +6,7 @@ import (
 )
 
 type ConnectionInput struct {
+	Type     string `json:"type"`
 	Name     string `json:"name"`
 	Note     string `json:"note,omitempty"`
 	Host     string `json:"host"`
@@ -16,6 +17,7 @@ type ConnectionInput struct {
 }
 
 type UpdateConnectionInput struct {
+	Type     string `json:"type,omitempty"`
 	Name     string `json:"name"`
 	Note     string `json:"note,omitempty"`
 	Host     string `json:"host"`
@@ -49,6 +51,21 @@ type DatabaseInfo struct {
 
 type CreateDatabaseRequest struct {
 	Name string `json:"name"`
+}
+
+type SeedDataRequest struct {
+	Database string `json:"database"`
+	Rows     int    `json:"rows"`
+	Mode     string `json:"mode,omitempty"`
+	Template string `json:"template,omitempty"`
+}
+
+type SeedDataResult struct {
+	Database string `json:"database"`
+	Table    string `json:"table"`
+	Rows     int    `json:"rows"`
+	Mode     string `json:"mode"`
+	Template string `json:"template"`
 }
 
 type TableInfo struct {

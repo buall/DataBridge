@@ -64,7 +64,7 @@ export function Login({ configured, onLogin }: LoginProps) {
           {error && <div className="form-error left">{error}</div>}
           <button className="button primary login-submit" disabled={submitting || !username || !password} type="submit">
             <LogIn size={16} />
-            {submitting ? "登录中" : "登录"}
+            {submitting ? "正在登录..." : "登录"}
           </button>
         </form>
       </section>

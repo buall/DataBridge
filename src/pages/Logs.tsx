@@ -1,7 +1,7 @@
 import { AlertTriangle, CheckCircle2, Clock3, Database, Info, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge, Card } from "../components/UI";
-import type { MigrationEvent, MigrationJob } from "../types";
+import type { AuditLogEntry, MigrationEvent, MigrationJob } from "../types";
 
 interface LogEntry extends MigrationEvent {
   jobId: string;
@@ -13,25 +13,37 @@ interface LogEntry extends MigrationEvent {
   targetDatabase: string;
 }
 
-export function Logs({ migrations }: { migrations: MigrationJob[] }) {
+export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[]; auditLogs?: AuditLogEntry[] }) {
   const [query, setQuery] = useState("");
   const entries = useMemo(
-    () =>
-      migrations
-        .flatMap((job) =>
-          job.events.map((event) => ({
-            ...event,
-            jobId: job.id,
-            jobName: job.name,
-            jobStatus: job.status,
-            sourceName: job.sourceName,
-            targetName: job.targetName,
-            sourceDatabase: job.sourceDatabase,
-            targetDatabase: job.targetDatabase,
-          })),
-        )
-        .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()),
-    [migrations],
+    () => {
+      const migrationEntries = migrations.flatMap((job) =>
+        job.events.map((event) => ({
+          ...event,
+          jobId: job.id,
+          jobName: job.name,
+          jobStatus: job.status,
+          sourceName: job.sourceName,
+          targetName: job.targetName,
+          sourceDatabase: job.sourceDatabase,
+          targetDatabase: job.targetDatabase,
+        })),
+      );
+      const auditEntries = auditLogs.map((event) => ({
+        time: event.time,
+        level: event.level,
+        message: event.detail ? `${event.message} · ${event.detail}` : event.message,
+        jobId: event.id,
+        jobName: event.action,
+        jobStatus: "completed" as MigrationJob["status"],
+        sourceName: event.connectionName || event.resourceName || "系统操作",
+        targetName: event.status || "完成",
+        sourceDatabase: event.database || "—",
+        targetDatabase: event.resourceType || "connection",
+      }));
+      return [...migrationEntries, ...auditEntries].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+    },
+    [migrations, auditLogs],
   );
 
   const filtered = useMemo(() => {
@@ -53,7 +65,7 @@ export function Logs({ migrations }: { migrations: MigrationJob[] }) {
       <div className="page-heading">
         <div>
           <h2>运行日志</h2>
-          <p>汇总迁移任务执行事件，按最新时间排序。</p>
+          <p>按时间汇总迁移事件。</p>
         </div>
         <label className="search-box small">
           <Search size={15} />
@@ -62,7 +74,7 @@ export function Logs({ migrations }: { migrations: MigrationJob[] }) {
       </div>
 
       <div className="log-summary-grid">
-        <LogSummary title="任务数量" value={migrations.length} detail="已持久化迁移任务" />
+        <LogSummary title="任务数量" value={migrations.length} detail="已保存任务" />
         <LogSummary title="事件总数" value={entries.length} detail={latest ? `最近 ${formatTime(latest.time)}` : "暂无任务事件"} tone="blue" />
         <LogSummary title="告警事件" value={warnings} detail="WARN 级别事件" tone="orange" />
         <LogSummary title="错误事件" value={errors} detail="ERROR 级别事件" tone={errors ? "red" : "green"} />
@@ -72,7 +84,7 @@ export function Logs({ migrations }: { migrations: MigrationJob[] }) {
         <div className="section-title compact">
           <div>
             <h3>事件列表</h3>
-            <p>{entries.length ? "来自后端迁移引擎保存的任务事件。" : "当前还没有迁移事件可展示。"}</p>
+            <p>{entries.length ? "来自后端迁移引擎的事件。" : "当前还没有迁移事件。"}</p>
           </div>
         </div>
         {filtered.length ? (
@@ -95,8 +107,8 @@ export function Logs({ migrations }: { migrations: MigrationJob[] }) {
           <div className="inline-empty">
             <Clock3 size={22} />
             <div>
-              <strong>{entries.length ? "没有匹配的日志" : "暂无运行日志"}</strong>
-              <span>{entries.length ? "换一个关键词再试。" : "启动迁移任务后，执行事件会在这里按时间汇总展示。"}</span>
+              <strong>{entries.length ? "未找到匹配日志" : "暂无运行日志"}</strong>
+              <span>{entries.length ? "换个关键词再试。" : "启动迁移后，这里会按时间展示事件。"}</span>
             </div>
           </div>
         )}

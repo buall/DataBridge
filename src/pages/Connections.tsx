@@ -1,19 +1,21 @@
-import { Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ConnectionInput, DatabaseConnection, DatabaseInfo } from "../types";
+import type { ConnectionInput, DatabaseConnection, DatabaseInfo, DatabaseType, SeedDataResult } from "../types";
 import { Badge, Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag } from "../components/UI";
 
 export function Connections({
   connections,
   onAdd,
   onUpdate,
+  onDelete,
   onCreateMigration,
 }: {
   connections: DatabaseConnection[];
   onAdd: (connection: DatabaseConnection) => void;
   onUpdate: (connection: DatabaseConnection) => void;
-  onCreateMigration: () => void;
+  onDelete: (connectionId: string) => void;
+  onCreateMigration: (sourceId?: string) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: { name: string; note: string; host: string; port: string; username: string; password: string; sslMode: string }; submitting: boolean; error: string } | null>(null);
@@ -21,13 +23,31 @@ export function Connections({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [databaseModal, setDatabaseModal] = useState<{ connection: DatabaseConnection; databases: DatabaseInfo[]; loading: boolean; error: string } | null>(null);
   const [createDatabaseModal, setCreateDatabaseModal] = useState<{ connection: DatabaseConnection; name: string; submitting: boolean; error: string } | null>(null);
+  const [seedDataModal, setSeedDataModal] = useState<{ connection: DatabaseConnection; database: string; rows: string; mode: "append" | "replace"; template: "users" | "orders" | "products"; databases: DatabaseInfo[]; loading: boolean; submitting: boolean; error: string; result: SeedDataResult | null } | null>(null);
+  const [deleteModal, setDeleteModal] = useState<{ connection: DatabaseConnection; submitting: boolean; error: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [manualCopyValue, setManualCopyValue] = useState("");
   const [actionError, setActionError] = useState("");
   const [query, setQuery] = useState("");
-  const [form, setForm] = useState({ name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
+  const [form, setForm] = useState<{ type: DatabaseType; name: string; note: string; host: string; port: string; username: string; password: string; sslMode: string }>({ type: "PostgreSQL", name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const filtered = connections.filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+
+  function fallbackCopyText(value: string) {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.readOnly = true;
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, value.length);
+    const copied = typeof document.execCommand === "function" && document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  }
 
   useEffect(() => {
     if (!openMenu) return;
@@ -52,7 +72,7 @@ export function Connections({
       const connection = await api.createConnection(input);
       onAdd(connection);
       setShowForm(false);
-      setForm({ name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
+      setForm({ type: "PostgreSQL", name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "连接失败");
     } finally {
@@ -67,6 +87,10 @@ export function Connections({
       const connection = await api.refreshConnection(id);
       onUpdate(connection);
     } catch (error) {
+      const connection = connections.find((item) => item.id === id);
+      if (connection) {
+        onUpdate({ ...connection, status: "warning", latency: 0 });
+      }
       setActionError(error instanceof Error ? error.message : "连接测试失败");
     } finally {
       setTesting(null);
@@ -93,6 +117,17 @@ export function Connections({
     setCreateDatabaseModal({ connection, name: "", submitting: false, error: "" });
   }
 
+  async function openSeedData(connection: DatabaseConnection) {
+    setOpenMenu(null);
+    setSeedDataModal({ connection, database: "", rows: "100", mode: "append", template: "users", databases: [], loading: true, submitting: false, error: "", result: null });
+    try {
+      const databases = await api.databases(connection.id);
+      setSeedDataModal({ connection, database: databases[0]?.name ?? "", rows: "100", mode: "append", template: "users", databases, loading: false, submitting: false, error: "", result: null });
+    } catch (error) {
+      setSeedDataModal({ connection, database: "", rows: "100", mode: "append", template: "users", databases: [], loading: false, submitting: false, error: error instanceof Error ? error.message : "加载数据库失败", result: null });
+    }
+  }
+
   function openEditConnection(connection: DatabaseConnection) {
     setOpenMenu(null);
     setEditModal({
@@ -111,12 +146,18 @@ export function Connections({
     });
   }
 
+  function openDeleteConnection(connection: DatabaseConnection) {
+    setOpenMenu(null);
+    setDeleteModal({ connection, submitting: false, error: "" });
+  }
+
   async function submitEditConnection(event: React.FormEvent) {
     event.preventDefault();
     if (!editModal) return;
     setEditModal({ ...editModal, submitting: true, error: "" });
     try {
       const updated = await api.updateConnection(editModal.connection.id, {
+        type: editModal.connection.type,
         ...editModal.form,
         port: Number(editModal.form.port),
       });
@@ -141,32 +182,70 @@ export function Connections({
     }
   }
 
-  async function copyAddress(connection: DatabaseConnection) {
-    setOpenMenu(null);
-    const value = `${connection.host}:${connection.port}`;
+  async function confirmDeleteConnection() {
+    if (!deleteModal) return;
+    setDeleteModal({ ...deleteModal, submitting: true, error: "" });
     try {
-      const clipboard = navigator.clipboard?.writeText(value);
-      if (clipboard) {
-        await clipboard;
-      } else {
-        throw new Error("clipboard unavailable");
-      }
-      setCopied(connection.id);
-      window.setTimeout(() => setCopied(null), 1400);
-    } catch {
-      setActionError("复制失败，请检查浏览器剪贴板权限。");
+      await api.deleteConnection(deleteModal.connection.id);
+      onDelete(deleteModal.connection.id);
+      setDeleteModal(null);
+    } catch (error) {
+      setDeleteModal({ ...deleteModal, submitting: false, error: error instanceof Error ? error.message : "删除连接失败" });
     }
   }
 
-  function startMigration() {
+  async function submitSeedData(event: React.FormEvent) {
+    event.preventDefault();
+    if (!seedDataModal) return;
+    setSeedDataModal({ ...seedDataModal, submitting: true, error: "", result: null });
+    try {
+      const result = await api.seedData(seedDataModal.connection.id, seedDataModal.database, Number(seedDataModal.rows), seedDataModal.mode, seedDataModal.template);
+      setSeedDataModal({ ...seedDataModal, submitting: false, error: "", result });
+    } catch (error) {
+      setSeedDataModal({ ...seedDataModal, submitting: false, error: error instanceof Error ? error.message : "写入假数据失败", result: null });
+    }
+  }
+
+  async function copyAddress(connection: DatabaseConnection) {
     setOpenMenu(null);
-    onCreateMigration();
+    setActionError("");
+    setManualCopyValue("");
+    const value = `${connection.host}:${connection.port}`;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const copied = fallbackCopyText(value);
+        if (!copied) {
+          setManualCopyValue(value);
+          setActionError(`当前浏览器不支持自动复制，请手动复制：${value}`);
+          return;
+        }
+      }
+      setCopied(connection.id);
+      window.setTimeout(() => setCopied(null), 1400);
+    } catch (error) {
+      console.error("Copy address failed", error);
+      const copied = fallbackCopyText(value);
+      if (!copied) {
+        setManualCopyValue(value);
+        setActionError(`当前浏览器不支持自动复制，请手动复制：${value}`);
+        return;
+      }
+      setCopied(connection.id);
+      window.setTimeout(() => setCopied(null), 1400);
+    }
+  }
+
+  function startMigration(connectionId?: string) {
+    setOpenMenu(null);
+    onCreateMigration(connectionId);
   }
 
   return (
     <div className="page-stack">
       <div className="page-heading">
-        <div><h2>数据连接</h2><p>统一管理迁移源端和目标端实例。</p></div>
+        <div><h2>数据连接</h2><p>统一管理迁移源端和目标端。</p></div>
         <Button onClick={() => setShowForm(true)}><Plus size={17} />新建连接</Button>
       </div>
       <div className="toolbar">
@@ -174,6 +253,17 @@ export function Connections({
         <span>共 {filtered.length} 个连接</span>
       </div>
       {actionError && <div className="error-banner">{actionError}</div>}
+      {manualCopyValue && (
+        <div className="error-banner">
+          <strong>手动复制：</strong>
+          <input
+            readOnly
+            value={manualCopyValue}
+            onFocus={(event) => event.currentTarget.select()}
+            aria-label="手动复制主机地址"
+          />
+        </div>
+      )}
       <div className="connections-grid">
         {filtered.map((connection) => (
           <Card className="connection-card" key={connection.id}>
@@ -191,8 +281,9 @@ export function Connections({
                     <button onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>{testing === connection.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>刷新状态</span></button>
                     <button onClick={() => showDatabases(connection)}><Database size={15} /><span>查看数据库</span></button>
                     <button onClick={() => openCreateDatabase(connection)}><Plus size={15} /><span>创建数据库</span></button>
-                    <button onClick={startMigration}><Play size={15} /><span>发起迁移</span></button>
-                    <button onClick={() => copyAddress(connection)}><Copy size={15} /><span>{copied === connection.id ? "已复制" : "复制地址"}</span></button>
+                    <button onClick={() => openSeedData(connection)}><WandSparkles size={15} /><span>写入假数据</span></button>
+                    <button onClick={() => startMigration(connection.id)}><Play size={15} /><span>发起迁移</span></button>
+                    <button className="danger-action" onClick={() => openDeleteConnection(connection)}><Trash2 size={15} /><span>删除连接</span></button>
                   </div>
                 )}
               </div>
@@ -204,10 +295,10 @@ export function Connections({
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>
             </dl>
             <div className="connection-card-foot">
-              <Badge tone={connection.status === "connected" ? "green" : "orange"}>{connection.status === "connected" ? "已连接" : "需验证"}</Badge>
-              <button onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>
-                {testing === connection.id ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}
-                {testing === connection.id ? "测试中" : `${connection.latency}ms`}
+              <Badge tone={connection.status === "connected" ? "green" : "red"}>{connection.status === "connected" ? "已连接" : "连接失败"}</Badge>
+              <button className={connection.status === "connected" ? "health-action healthy" : "health-action failed"} onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>
+                {testing === connection.id ? <RefreshCw size={14} className="spin" /> : connection.status === "connected" ? <Check size={14} /> : <AlertTriangle size={14} />}
+                {testing === connection.id ? "正在测试..." : connection.status === "connected" ? `${connection.latency}ms` : "网络不可达"}
               </button>
             </div>
           </Card>
@@ -218,12 +309,12 @@ export function Connections({
         <div className="modal-backdrop" onMouseDown={() => setDatabaseModal(null)}>
           <div className="modal database-modal" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>{databaseModal.connection.name} 的数据库</h3><p>{databaseModal.connection.host}:{databaseModal.connection.port}</p></div><div className="modal-head-actions"><Button type="button" variant="secondary" onClick={() => openCreateDatabase(databaseModal.connection)}><Plus size={15} />创建数据库</Button><button type="button" className="plain-icon" onClick={() => setDatabaseModal(null)}><X /></button></div></div>
-            {databaseModal.loading && <div className="loading-copy">正在读取数据库...</div>}
+            {databaseModal.loading && <div className="loading-copy">正在加载数据库...</div>}
             {databaseModal.error && <div className="form-error left">{databaseModal.error}</div>}
             {!databaseModal.loading && !databaseModal.error && (
               <div className="connection-database-list">
                 {databaseModal.databases.map((database) => <div key={database.name}><strong>{database.name}</strong><span>{formatBytes(database.sizeBytes)}</span></div>)}
-                {!databaseModal.databases.length && <div className="loading-copy">没有可连接的数据库。</div>}
+                {!databaseModal.databases.length && <div className="loading-copy">暂无可用数据库。</div>}
               </div>
             )}
           </div>
@@ -235,26 +326,56 @@ export function Connections({
           <form className="modal create-database-modal" onSubmit={submitCreateDatabase} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>创建数据库</h3><p>{createDatabaseModal.connection.name} · {createDatabaseModal.connection.host}:{createDatabaseModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setCreateDatabaseModal(null)}><X /></button></div>
             <label className="field"><span>数据库名称</span><input required autoFocus value={createDatabaseModal.name} onChange={(event) => setCreateDatabaseModal({ ...createDatabaseModal, name: event.target.value, error: "" })} placeholder="例如 app_prod" /></label>
-            <p className="field-hint">名称最多 63 个字符，支持字母、数字、下划线和短横线，首字符必须是字母或下划线。</p>
+            <p className="field-hint">最多 63 个字符，使用字母或下划线开头，只包含字母、数字、下划线或短横线。</p>
             {createDatabaseModal.error && <div className="form-error left">{createDatabaseModal.error}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setCreateDatabaseModal(null)}>取消</Button><Button type="submit" disabled={createDatabaseModal.submitting}>{createDatabaseModal.submitting ? "正在创建..." : "创建数据库"}</Button></div>
           </form>
         </div>
       )}
 
+      {seedDataModal && (
+        <div className="modal-backdrop" onMouseDown={() => setSeedDataModal(null)}>
+          <form className="modal seed-data-modal" onSubmit={submitSeedData} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-head"><div><h3>写入假数据</h3><p>{seedDataModal.connection.name} · {seedDataModal.connection.host}:{seedDataModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setSeedDataModal(null)}><X /></button></div>
+            <p className="field-hint">可按模板生成演示数据。每个模板会写入自己的演示表，默认追加写入，也可切换为覆盖写入。</p>
+            {seedDataModal.loading ? <div className="loading-copy">正在加载数据库...</div> : <>
+              <label className="field"><span>目标数据库</span><select value={seedDataModal.database} onChange={(event) => setSeedDataModal({ ...seedDataModal, database: event.target.value, error: "", result: null })}>{seedDataModal.databases.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+              <label className="field"><span>写入模板</span><select value={seedDataModal.template} onChange={(event) => setSeedDataModal({ ...seedDataModal, template: event.target.value as "users" | "orders" | "products", error: "", result: null })}><option value="users">用户数据</option><option value="orders">订单数据</option><option value="products">商品数据</option></select></label>
+              <label className="field"><span>写入方式</span><select value={seedDataModal.mode} onChange={(event) => setSeedDataModal({ ...seedDataModal, mode: event.target.value as "append" | "replace", error: "", result: null })}><option value="append">追加写入</option><option value="replace">覆盖写入</option></select></label>
+              <label className="field"><span>写入条数</span><input type="number" min={1} max={50000} value={seedDataModal.rows} onChange={(event) => setSeedDataModal({ ...seedDataModal, rows: event.target.value, error: "", result: null })} /></label>
+            </>}
+            {seedDataModal.error && <div className="form-error left">{seedDataModal.error}</div>}
+            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setSeedDataModal(null)}>关闭</Button><Button type="submit" disabled={seedDataModal.loading || seedDataModal.submitting || !seedDataModal.database}>{seedDataModal.submitting ? "正在写入..." : "开始写入"}</Button></div>
+          </form>
+        </div>
+      )}
+
+      {deleteModal && (
+        <div className="modal-backdrop" onMouseDown={() => setDeleteModal(null)}>
+          <div className="modal delete-connection-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-head"><div><h3>删除连接</h3><p>{deleteModal.connection.name} · {deleteModal.connection.host}:{deleteModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setDeleteModal(null)}><X /></button></div>
+            <p className="delete-warning">删除后将清除这条连接的已保存凭证，且不能再基于它查看数据库或发起迁移。</p>
+            <p className="delete-warning">历史迁移记录会保留，但不会再关联这条连接继续操作。</p>
+            {deleteModal.error && <div className="form-error left">{deleteModal.error}</div>}
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setDeleteModal(null)}>取消</Button><Button type="button" variant="danger" disabled={deleteModal.submitting} onClick={confirmDeleteConnection}>{deleteModal.submitting ? "正在删除..." : "删除连接"}</Button></div>
+          </div>
+        </div>
+      )}
+
       {editModal && (
         <div className="modal-backdrop" onMouseDown={() => setEditModal(null)}>
           <form className="modal" onSubmit={submitEditConnection} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><h3>编辑连接信息</h3><p>{editModal.connection.name} · 更新后会重新测试连接。</p></div><button type="button" className="plain-icon" onClick={() => setEditModal(null)}><X /></button></div>
+            <div className="modal-head"><div><h3>编辑连接信息</h3><p>{editModal.connection.name} · 保存后会重新测试连接。</p></div><button type="button" className="plain-icon" onClick={() => setEditModal(null)}><X /></button></div>
             <label className="field"><span>连接名称</span><input required value={editModal.form.name} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, name: e.target.value }, error: "" })} /></label>
-            <label className="field"><span>数据库类型</span><select disabled><option>PostgreSQL</option></select></label>
+            <label className="field"><span>数据库类型</span><select disabled><option>{editModal.connection.type}</option></select></label>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={editModal.form.host} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, host: e.target.value }, error: "" })} /></label><label className="field port"><span>端口</span><input required type="number" value={editModal.form.port} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, port: e.target.value }, error: "" })} /></label></div>
             <label className="field"><span>用户名</span><input required value={editModal.form.username} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, username: e.target.value }, error: "" })} /></label>
             <label className="field"><span>密码</span><input type="password" value={editModal.form.password} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, password: e.target.value }, error: "" })} placeholder="留空则保持当前密码不变" /></label>
             <label className="field"><span>SSL 模式</span><select value={editModal.form.sslMode} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode: e.target.value }, error: "" })}><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></select></label>
             <label className="field"><span>备注</span><input value={editModal.form.note} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, note: e.target.value }, error: "" })} placeholder="可选，记录用途、环境或负责人" /></label>
             {editModal.error && <div className="form-error left">{editModal.error}</div>}
-            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setEditModal(null)}>取消</Button><Button type="submit" disabled={editModal.submitting}>{editModal.submitting ? "正在更新..." : "保存并测试"}</Button></div>
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setEditModal(null)}>取消</Button><Button type="submit" disabled={editModal.submitting}>{editModal.submitting ? "正在保存..." : "保存并测试"}</Button></div>
           </form>
         </div>
       )}
@@ -262,16 +383,16 @@ export function Connections({
       {showForm && (
         <div className="modal-backdrop" onMouseDown={() => setShowForm(false)}>
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证将加密存储，连接测试通过后即可用于迁移。</p></div><button type="button" className="plain-icon" onClick={() => setShowForm(false)}><X /></button></div>
+            <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={() => setShowForm(false)}><X /></button></div>
             <label className="field"><span>连接名称</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
-            <label className="field"><span>数据库类型</span><select disabled><option>PostgreSQL</option></select></label>
+            <label className="field"><span>数据库类型</span><select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as DatabaseType, port: e.target.value === "MySQL" ? "3306" : "5432", sslMode: e.target.value === "MySQL" ? "prefer" : "prefer" })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option></select></label>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>端口</span><input required type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} /></label></div>
             <label className="field"><span>用户名</span><input required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="migration_user" /></label>
             <label className="field"><span>密码</span><input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-            <label className="field"><span>SSL 模式</span><select value={form.sslMode} onChange={(e) => setForm({ ...form, sslMode: e.target.value })}><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></select></label>
+            <label className="field"><span>SSL 模式</span><select value={form.sslMode} onChange={(e) => setForm({ ...form, sslMode: e.target.value })}>{form.type === "MySQL" ? <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option></> : <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></>}</select></label>
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
-            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setShowForm(false)}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在测试连接..." : "测试并保存"}</Button></div>
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setShowForm(false)}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>
           </form>
         </div>
       )}

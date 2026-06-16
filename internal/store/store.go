@@ -29,6 +29,21 @@ type Store struct {
 	cancels map[string]context.CancelFunc
 }
 
+type AuditLog struct {
+	ID             string
+	Time           time.Time
+	Level          string
+	Action         string
+	ResourceType   string
+	ResourceID     string
+	ResourceName   string
+	ConnectionName string
+	Database       string
+	Status         string
+	Message        string
+	Detail         string
+}
+
 func New(databasePath, keyPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
@@ -64,7 +79,7 @@ func (s *Store) Close() error {
 
 func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration, version string) (model.Connection, error) {
 	connection := model.Connection{
-		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: "PostgreSQL", Host: input.Host,
+		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
 		SSLMode: input.SSLMode, Status: "connected",
 		LatencyMS: latency.Milliseconds(), Version: version, CreatedAt: time.Now().UTC(),
@@ -149,9 +164,9 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	status := "connected"
 	if _, err := s.db.Exec(`
 		UPDATE connections
-		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, status = ?, latency_ms = ?, server_version = ?
+		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
 		WHERE id = ?`,
-		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, status, latency.Milliseconds(), version, id); err != nil {
+		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, status, latency.Milliseconds(), version, current.Type, id); err != nil {
 		return model.Connection{}, fmt.Errorf("update connection: %w", err)
 	}
 	updated, err := s.Connection(id)
@@ -163,6 +178,78 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	updated.LatencyMS = latency.Milliseconds()
 	updated.Version = version
 	return updated, nil
+}
+
+func (s *Store) DeleteConnection(id string) error {
+	result, err := s.db.Exec(`DELETE FROM connections WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete connection: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete connection rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) AddAuditLog(entry AuditLog) error {
+	if entry.ID == "" {
+		entry.ID = newID()
+	}
+	if entry.Time.IsZero() {
+		entry.Time = time.Now().UTC()
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO audit_logs
+		(id, time, level, action, resource_type, resource_id, resource_name, connection_name, database_name, status, message, detail)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.ID,
+		entry.Time.Format(time.RFC3339Nano),
+		entry.Level,
+		entry.Action,
+		entry.ResourceType,
+		entry.ResourceID,
+		entry.ResourceName,
+		entry.ConnectionName,
+		entry.Database,
+		entry.Status,
+		entry.Message,
+		entry.Detail,
+	); err != nil {
+		return fmt.Errorf("save audit log: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) AuditLogs() ([]AuditLog, error) {
+	rows, err := s.db.Query(`
+		SELECT id, time, level, action, resource_type, resource_id, resource_name, connection_name, database_name, status, message, detail
+		FROM audit_logs
+		ORDER BY time DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list audit logs: %w", err)
+	}
+	defer rows.Close()
+	var result []AuditLog
+	for rows.Next() {
+		var item AuditLog
+		var at string
+		if err := rows.Scan(&item.ID, &at, &item.Level, &item.Action, &item.ResourceType, &item.ResourceID, &item.ResourceName, &item.ConnectionName, &item.Database, &item.Status, &item.Message, &item.Detail); err != nil {
+			return nil, err
+		}
+		item.Time, err = time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return nil, fmt.Errorf("parse audit log time: %w", err)
+		}
+		result = append(result, item)
+	}
+	if result == nil {
+		result = []AuditLog{}
+	}
+	return result, rows.Err()
 }
 
 func (s *Store) AddMigration(value model.Migration, cancel context.CancelFunc) error {
@@ -279,6 +366,20 @@ func (s *Store) initialize() error {
 			id TEXT PRIMARY KEY,
 			data BLOB NOT NULL,
 			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS audit_logs (
+			id TEXT PRIMARY KEY,
+			time TEXT NOT NULL,
+			level TEXT NOT NULL,
+			action TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			resource_id TEXT NOT NULL,
+			resource_name TEXT NOT NULL,
+			connection_name TEXT NOT NULL DEFAULT '',
+			database_name TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL,
+			detail TEXT NOT NULL DEFAULT ''
 		);
 	`); err != nil {
 		return fmt.Errorf("initialize sqlite: %w", err)

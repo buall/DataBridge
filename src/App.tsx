@@ -9,12 +9,14 @@ import { MigrationWizard } from "./pages/MigrationWizard";
 import { Monitoring } from "./pages/Monitoring";
 import { Overview } from "./pages/Overview";
 import { Report } from "./pages/Report";
+import type { AuditLogEntry } from "./types";
 import type { AppView, DatabaseConnection, MigrationConfig, MigrationJob, MigrationStage } from "./types";
 
 type AppRoute = {
   view: AppView;
   stage: MigrationStage;
   jobId: string | null;
+  sourceId: string | null;
 };
 
 const routes: Record<AppView, string> = {
@@ -31,17 +33,19 @@ const viewMeta: Record<AppView, [string, string]> = {
   logs: ["运行日志", "查看 Agent、任务与系统审计事件"],
 };
 
-function routeFromPath(pathname: string): AppRoute {
-  const path = pathname.replace(/\/+$/, "") || "/";
-  if (path === "/connections") return { view: "connections", stage: "list", jobId: null };
-  if (path === "/logs") return { view: "logs", stage: "list", jobId: null };
-  if (path === "/migrations/new") return { view: "migrations", stage: "wizard", jobId: null };
+function routeFromPath(input: string): AppRoute {
+  const url = new URL(input, window.location.origin);
+  const path = url.pathname.replace(/\/+$/, "") || "/";
+  const sourceId = url.searchParams.get("sourceId");
+  if (path === "/connections") return { view: "connections", stage: "list", jobId: null, sourceId: null };
+  if (path === "/logs") return { view: "logs", stage: "list", jobId: null, sourceId: null };
+  if (path === "/migrations/new") return { view: "migrations", stage: "wizard", jobId: null, sourceId };
   if (path.startsWith("/migrations/")) {
     const jobId = decodeURIComponent(path.slice("/migrations/".length));
-    return { view: "migrations", stage: "list", jobId: jobId || null };
+    return { view: "migrations", stage: "list", jobId: jobId || null, sourceId: null };
   }
-  if (path === "/migrations") return { view: "migrations", stage: "list", jobId: null };
-  return { view: "overview", stage: "list", jobId: null };
+  if (path === "/migrations") return { view: "migrations", stage: "list", jobId: null, sourceId: null };
+  return { view: "overview", stage: "list", jobId: null, sourceId: null };
 }
 
 function pathForJob(job: MigrationJob) {
@@ -52,6 +56,7 @@ export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPath(window.location.pathname));
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);
   const [migrations, setMigrations] = useState<MigrationJob[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authConfigured, setAuthConfigured] = useState(true);
@@ -71,10 +76,11 @@ export default function App() {
 
   useEffect(() => {
     if (!authenticated) return;
-    Promise.all([api.connections(), api.migrations()])
-      .then(([connectionItems, migrationItems]) => {
+    Promise.all([api.connections(), api.migrationsWithAudit()])
+      .then(([connectionItems, migrationData]) => {
         setConnections(connectionItems);
-        setMigrations(migrationItems);
+        setMigrations(migrationData.migrations);
+        setAuditLogs(migrationData.auditLogs);
       })
       .catch((error) => {
         if (error && typeof error === "object" && "status" in error && error.status === 401) {
@@ -103,6 +109,7 @@ export default function App() {
       view: "migrations",
       stage: job.status === "running" || job.status === "pending" ? "running" : "report",
       jobId: job.id,
+      sourceId: null,
     } : current);
   }, [migrations, route]);
 
@@ -116,8 +123,9 @@ export default function App() {
   function navigate(next: AppView) {
     pushRoute(routes[next]);
   }
-  function createMigration() {
-    pushRoute("/migrations/new");
+  function createMigration(sourceId?: string) {
+    const path = sourceId ? `/migrations/new?sourceId=${encodeURIComponent(sourceId)}` : "/migrations/new";
+    pushRoute(path);
   }
   function openMigration(job: MigrationJob) {
     const path = pathForJob(job);
@@ -128,18 +136,19 @@ export default function App() {
       view: "migrations",
       stage: job.status === "running" || job.status === "pending" ? "running" : "report",
       jobId: job.id,
+      sourceId: null,
     });
   }
   async function startMigration(config: MigrationConfig) {
     const job = await api.createMigration(config);
     setMigrations((current) => [job, ...current]);
     window.history.pushState(null, "", pathForJob(job));
-    setRoute({ view: "migrations", stage: "running", jobId: job.id });
+    setRoute({ view: "migrations", stage: "running", jobId: job.id, sourceId: null });
   }
   const completeMigration = useCallback((job: MigrationJob) => {
     setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     window.history.replaceState(null, "", pathForJob(job));
-    setRoute({ view: "migrations", stage: "report", jobId: job.id });
+    setRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
   }, []);
   async function login(username: string, password: string) {
     const session = await api.login(username, password);
@@ -162,10 +171,10 @@ export default function App() {
   }
 
   let content: React.ReactNode;
-  if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={createMigration} onConnections={() => navigate("connections")} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
-  else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onCreateMigration={createMigration} />;
-  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={createMigration} onOpen={openMigration} /> : <MigrationList migrations={migrations} onCreate={createMigration} onOpen={openMigration} />;
-  else content = <Logs migrations={migrations} />;
+  if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={() => createMigration()} onConnections={() => navigate("connections")} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
+  else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onCreateMigration={createMigration} />;
+  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} /> : <MigrationList migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} />;
+  else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 
   const meta = view === "migrations" && migrationStage === "running" && activeJob
     ? [activeJob.name, `任务 ID ${activeJob.id}`]
@@ -175,5 +184,5 @@ export default function App() {
       ? ["迁移校验报告", `${activeJob.name} · ${new Date(activeJob.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];
 
-  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}。请确认 Go API 已启动。</div>}{content}</Layout>;
+  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
 }
