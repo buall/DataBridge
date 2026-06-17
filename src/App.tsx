@@ -261,5 +261,5 @@ export default function App() {
       ? ["备份任务结果", `${activeBackup.name} · ${new Date(activeBackup.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];
 
-  return <Layout activeView={view} title={meta[0]} subtitle={meta[1]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
+  return <Layout activeView={view} title={meta[0]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
 }

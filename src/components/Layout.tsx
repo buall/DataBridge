@@ -1,13 +1,13 @@
 import {
   Activity,
   Archive,
-  Bell,
   Cable,
   Cloud,
   Database,
   LayoutDashboard,
   LogOut,
   ListTree,
+  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   ScrollText,
@@ -30,14 +30,17 @@ const mainNav = [
 interface LayoutProps {
   activeView: AppView;
   title: string;
-  subtitle: string;
   children: React.ReactNode;
   paths: Record<AppView, string>;
   onNavigate: (view: AppView) => void;
   onLogout: () => void;
 }
 
-export function Layout({ activeView, title, subtitle, children, paths, onNavigate, onLogout }: LayoutProps) {
+export function Layout({ activeView, title, children, paths, onNavigate, onLogout }: LayoutProps) {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 960px)").matches;
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -46,6 +49,26 @@ export function Layout({ activeView, title, subtitle, children, paths, onNavigat
       return false;
     }
   });
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(max-width: 960px)");
+    const update = (event?: MediaQueryListEvent) => {
+      const nextIsMobile = event ? event.matches : media.matches;
+      setIsMobile(nextIsMobile);
+      if (!nextIsMobile) {
+        setMobileNavOpen(false);
+      }
+    };
+    update();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
 
   useEffect(() => {
     try {
@@ -55,8 +78,32 @@ export function Layout({ activeView, title, subtitle, children, paths, onNavigat
     }
   }, [sidebarCollapsed]);
 
+  useEffect(() => {
+    if (!isMobile) return;
+    setMobileNavOpen(false);
+  }, [activeView, isMobile]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    const previousOverflow = document.body.style.overflow;
+    if (mobileNavOpen) {
+      document.body.style.overflow = "hidden";
+    }
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isMobile, mobileNavOpen]);
+
+  const shellClassName = [
+    "app-shell",
+    sidebarCollapsed && !isMobile ? "sidebar-collapsed" : "",
+    isMobile ? "mobile-shell" : "",
+    mobileNavOpen ? "mobile-nav-open" : "",
+  ].filter(Boolean).join(" ");
+
   return (
-    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <div className={shellClassName}>
+      {isMobile && mobileNavOpen ? <button type="button" className="sidebar-scrim" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)} /> : null}
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark" data-label="DataBridge">DB</div>
@@ -98,14 +145,20 @@ export function Layout({ activeView, title, subtitle, children, paths, onNavigat
           <button
             type="button"
             className="sidebar-user-toggle"
-            aria-label={sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
-            aria-expanded={!sidebarCollapsed}
-            title={sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
-            data-label={sidebarCollapsed ? "展开" : "收起"}
-            onClick={() => setSidebarCollapsed((current) => !current)}
+            aria-label={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+            aria-expanded={isMobile ? mobileNavOpen : !sidebarCollapsed}
+            title={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+            data-label={isMobile ? "关闭" : sidebarCollapsed ? "展开" : "收起"}
+            onClick={() => {
+              if (isMobile) {
+                setMobileNavOpen(false);
+                return;
+              }
+              setSidebarCollapsed((current) => !current);
+            }}
           >
-            {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-            <span>{sidebarCollapsed ? "展开" : "收起"}</span>
+            {isMobile ? <PanelLeftClose size={16} /> : sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            <span>{isMobile ? "关闭" : sidebarCollapsed ? "展开" : "收起"}</span>
           </button>
         </div>
       </aside>
@@ -113,14 +166,22 @@ export function Layout({ activeView, title, subtitle, children, paths, onNavigat
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-leading">
-            <div>
+            {isMobile ? (
+              <button
+                type="button"
+                className="icon-button mobile-nav-button"
+                aria-label={mobileNavOpen ? "关闭导航菜单" : "打开导航菜单"}
+                aria-expanded={mobileNavOpen}
+                onClick={() => setMobileNavOpen((current) => !current)}
+              >
+                <Menu size={18} />
+              </button>
+            ) : null}
+            <div className="topbar-copy">
               <h1>{title}</h1>
-              <p>{subtitle}</p>
             </div>
           </div>
           <div className="topbar-actions">
-            <span className="environment"><i />服务在线</span>
-            <button className="icon-button" aria-label="通知"><Bell size={18} /></button>
             <button className="icon-button" aria-label="退出登录" title="退出登录" onClick={onLogout}><LogOut size={18} /></button>
             <div className="avatar dark">DB</div>
           </div>
