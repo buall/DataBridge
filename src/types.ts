@@ -1,6 +1,6 @@
 export type DatabaseType = "PostgreSQL" | "MySQL" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
-export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs";
+export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report";
 
 export interface DatabaseConnection {
@@ -116,6 +116,19 @@ export interface BackupConfig {
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  notificationEnabled?: boolean;
+  notificationMethod?: "webhook" | "email";
+  notificationTarget?: string;
+}
+
+export interface SMTPSettings {
+  enabled: boolean;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  passwordSet?: boolean;
+  from: string;
 }
 
 export interface MigrationEvent {
@@ -190,6 +203,9 @@ export interface BackupJob {
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  notificationEnabled?: boolean;
+  notificationMethod?: "webhook" | "email";
+  notificationTarget?: string;
   nextRunAt?: string;
   lastRunAt?: string;
   artifactName?: string;

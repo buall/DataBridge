@@ -330,6 +330,14 @@ h1, h2, h3, h4, p { margin: 0; }
 .schedule-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; max-width: 680px; }
 .schedule-editor-modal { width: min(620px, calc(100vw - 32px)); }
 .schedule-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px; }
+.scheduled-options { display: grid; gap: 16px; }
+.notification-panel { max-width: 680px; border-top: 1px solid var(--border); padding-top: 4px; }
+.notification-panel .toggle-row { border-bottom: 0; }
+.notification-grid { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(260px, 1.35fr); gap: 14px; margin-top: 4px; }
+.notification-target-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 82px; align-items: end; gap: 10px; }
+.notification-target-row .button { height: 44px; }
+.notification-test-result { margin: 8px 0 0; color: var(--muted); font-size: 11px; font-weight: 700; }
+.modal-notification-panel { max-width: none; margin-top: 16px; }
 .time-select-field { position: relative; min-width: 0; }
 .time-select-control { position: relative; height: 44px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; background: #fff; transition: border-color .16s ease, box-shadow .16s ease; }
 .time-select-control:hover { border-color: #c7d1df; }
@@ -376,6 +384,17 @@ h1, h2, h3, h4, p { margin: 0; }
 .empty-state { min-height: 600px; display: grid; place-content: center; justify-items: center; color: var(--muted); }.empty-state > div { width: 64px; height: 64px; display: grid; place-items: center; color: var(--blue); background: var(--blue-50); border-radius: 16px; font-weight: 700; }.empty-state h2 { margin: 18px 0 8px; color: #172033; }.empty-state p { font-size: 12px; }
 .inline-empty { min-height: 120px; border: 1px dashed var(--border); border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 13px; color: var(--muted); background: rgba(255,255,255,.45); }
 .inline-empty strong, .inline-empty span { display: block; }.inline-empty strong { color: #172033; font-size: 13px; }.inline-empty span { margin-top: 5px; font-size: 11px; }
+.settings-card { overflow: hidden; }
+.settings-form { padding: 0 22px 22px; display: grid; gap: 18px; }
+.settings-grid { display: grid; grid-template-columns: 1.2fr .55fr 1fr 1fr; gap: 16px; }
+.settings-wide { grid-column: span 2; }
+.settings-actions { min-height: 42px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; color: var(--muted); font-size: 11px; }
+.settings-actions em { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-style: normal; font-weight: 700; }
+.helper-card { min-height: 78px; padding: 18px 22px; display: flex; align-items: center; gap: 14px; color: var(--muted); }
+.helper-card svg { color: var(--blue); }
+.helper-card strong, .helper-card span { display: block; }
+.helper-card strong { color: #172033; font-size: 13px; }
+.helper-card span { margin-top: 5px; font-size: 11px; }
 .spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1280px) {

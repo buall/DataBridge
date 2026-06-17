@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/smtp"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -90,7 +93,10 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
+	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
+	protected.HandleFunc("PUT /api/settings/smtp", server.updateSMTPSettings)
 	protected.HandleFunc("POST /api/backups", server.createBackup)
+	protected.HandleFunc("POST /api/backups/notification-test", server.testBackupNotification)
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
 	protected.HandleFunc("PUT /api/backups/{id}", server.updateBackup)
 	protected.HandleFunc("POST /api/backups/{id}/trigger", server.triggerBackup)
@@ -1035,6 +1041,8 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Destination: destinationLabel, Request: request, ScheduleMode: request.ScheduleMode,
 		ScheduleFrequency: request.ScheduleFrequency, ScheduleTime: request.ScheduleTime,
 		ScheduleWeekday: request.ScheduleWeekday, ScheduleMonthDay: request.ScheduleMonthDay,
+		Notification: request.Notification, NotificationEnabled: request.Notification.Enabled,
+		NotificationMethod: request.Notification.Method, NotificationTarget: request.Notification.Target,
 		NextRunAt: nextRunAt,
 		Events:    []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
 	}
@@ -1136,6 +1144,18 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
+	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && updatedJob.Notification.Enabled {
+		if notifyErr := s.sendBackupNotification(updatedJob, err == nil); notifyErr != nil {
+			log.Printf("backup[%s] notification failed: %v", id, notifyErr)
+			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: "WARN", Message: "备份通知发送失败：" + notifyErr.Error()})
+			})
+		} else {
+			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: "INFO", Message: "备份通知已发送"})
+			})
+		}
+	}
 }
 
 func backupDatabases(request model.BackupRequest) []string {
@@ -1315,6 +1335,16 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 	if request.ScheduleMonthDay == 0 {
 		request.ScheduleMonthDay = item.ScheduleMonthDay
 	}
+	if !request.Notification.Enabled && request.Notification.Method == "" && request.Notification.Target == "" {
+		request.Notification.Enabled = item.Notification.Enabled || item.NotificationEnabled
+		if item.Notification.Method != "" || item.Notification.Target != "" {
+			request.Notification.Method = item.Notification.Method
+			request.Notification.Target = item.Notification.Target
+		} else {
+			request.Notification.Method = item.NotificationMethod
+			request.Notification.Target = item.NotificationTarget
+		}
+	}
 	if request.Name == "" {
 		request.Name = item.Name
 	}
@@ -1334,6 +1364,10 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 		request.ScheduleTime = ""
 		request.ScheduleWeekday = 0
 		request.ScheduleMonthDay = 0
+		request.Notification = model.BackupNotification{}
+		request.NotificationEnabled = false
+		request.NotificationMethod = ""
+		request.NotificationTarget = ""
 		return
 	}
 	if request.ScheduleFrequency == "" {
@@ -1348,6 +1382,210 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 	if request.ScheduleMonthDay < 1 || request.ScheduleMonthDay > 28 {
 		request.ScheduleMonthDay = 1
 	}
+	normalizeBackupNotification(request)
+	if request.Notification.Enabled {
+		if request.Notification.Method != "webhook" && request.Notification.Method != "email" {
+			request.Notification.Method = "webhook"
+		}
+		request.Notification.Target = strings.TrimSpace(request.Notification.Target)
+		if request.Notification.Target == "" {
+			request.Notification.Enabled = false
+		}
+	}
+	request.NotificationEnabled = request.Notification.Enabled
+	request.NotificationMethod = request.Notification.Method
+	request.NotificationTarget = request.Notification.Target
+}
+
+func normalizeBackupNotification(request *model.BackupRequest) {
+	if request.Notification.Enabled || request.Notification.Method != "" || request.Notification.Target != "" {
+		if request.Notification.Method == "" {
+			request.Notification.Method = request.NotificationMethod
+		}
+		if request.Notification.Target == "" {
+			request.Notification.Target = request.NotificationTarget
+		}
+		request.Notification.Enabled = request.Notification.Enabled || request.NotificationEnabled
+	}
+	if request.Notification.Method == "" {
+		request.Notification.Method = request.NotificationMethod
+	}
+	if request.Notification.Target == "" {
+		request.Notification.Target = request.NotificationTarget
+	}
+	if request.Notification.Enabled == false {
+		request.Notification.Enabled = request.NotificationEnabled
+	}
+	request.NotificationEnabled = request.Notification.Enabled
+	request.NotificationMethod = request.Notification.Method
+	request.NotificationTarget = request.Notification.Target
+}
+
+func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error {
+	if !job.Notification.Enabled {
+		return nil
+	}
+	switch job.Notification.Method {
+	case "webhook":
+		return s.sendBackupWebhook(job, success)
+	case "email":
+		return s.sendBackupEmail(job, success)
+	default:
+		return fmt.Errorf("不支持的通知方式")
+	}
+}
+
+func (s *Server) sendBackupWebhook(job model.BackupJob, success bool) error {
+	target, err := url.Parse(strings.TrimSpace(job.Notification.Target))
+	if err != nil || target.Scheme == "" || target.Host == "" {
+		return fmt.Errorf("webhook 地址无效")
+	}
+	message := backupNotificationText(job, success)
+	markdownMessage := backupNotificationMarkdown(job, success)
+	payload := map[string]any{
+		"jobId":          job.ID,
+		"jobName":        job.Name,
+		"success":        success,
+		"status":         backupNotificationStatus(success),
+		"text":           message,
+		"markdown":       markdownMessage,
+		"sourceName":     job.SourceName,
+		"sourceType":     job.SourceType,
+		"sourceDatabase": job.SourceDatabase,
+		"destination":    job.Destination,
+		"finishedAt":     time.Now().Format(time.RFC3339),
+	}
+	payload = webhookPayloadForTarget(target.Host, payload, message, markdownMessage)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("构造 webhook 通知失败")
+	}
+	req, err := http.NewRequest(http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("创建 webhook 请求失败")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("发送 webhook 失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook 返回 %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func webhookPayloadForTarget(host string, payload map[string]any, message string, markdownMessage string) map[string]any {
+	lowerHost := strings.ToLower(host)
+	switch {
+	case strings.Contains(lowerHost, "dingtalk.com"):
+		title := strings.SplitN(message, "\n", 2)[0]
+		return map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": title, "text": markdownMessage}}
+	case strings.Contains(lowerHost, "feishu.cn"), strings.Contains(lowerHost, "larksuite.com"):
+		return map[string]any{"msg_type": "interactive", "card": map[string]any{"elements": []map[string]any{{"tag": "markdown", "content": markdownMessage}}}}
+	case strings.Contains(lowerHost, "qyapi.weixin.qq.com"):
+		return map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": markdownMessage}}
+	case strings.Contains(lowerHost, "hooks.slack.com"):
+		return map[string]any{"text": markdownMessage}
+	default:
+		return payload
+	}
+}
+
+func (s *Server) sendBackupEmail(job model.BackupJob, success bool) error {
+	settings, err := s.store.SMTPSettings()
+	if err != nil {
+		return err
+	}
+	if !settings.Enabled || settings.Host == "" || settings.Port <= 0 || settings.From == "" {
+		return fmt.Errorf("未配置邮件服务")
+	}
+	to := strings.TrimSpace(job.Notification.Target)
+	if to == "" {
+		return fmt.Errorf("邮件收件人不能为空")
+	}
+	addr := net.JoinHostPort(settings.Host, strconv.Itoa(settings.Port))
+	subject := fmt.Sprintf("DataBridge 备份%s：%s", backupNotificationStatus(success), job.Name)
+	msg := strings.Join([]string{
+		"To: " + to,
+		"From: " + settings.From,
+		"Subject: " + subject,
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		backupNotificationText(job, success),
+	}, "\r\n")
+	var auth smtp.Auth
+	if settings.Username != "" {
+		auth = smtp.PlainAuth("", settings.Username, settings.Password, settings.Host)
+	}
+	return smtp.SendMail(addr, auth, settings.From, []string{to}, []byte(msg))
+}
+
+func backupNotificationStatus(success bool) string {
+	if success {
+		return "成功"
+	}
+	return "失败"
+}
+
+func backupNotificationText(job model.BackupJob, success bool) string {
+	return strings.Join([]string{
+		fmt.Sprintf("DataBridge 备份%s", backupNotificationStatus(success)),
+		fmt.Sprintf("任务名称：%s", job.Name),
+		fmt.Sprintf("源数据库：%s", job.SourceDatabase),
+		fmt.Sprintf("目标位置：%s", job.Destination),
+		fmt.Sprintf("任务 ID：%s", job.ID),
+	}, "\n")
+}
+
+func backupNotificationMarkdown(job model.BackupJob, success bool) string {
+	return strings.Join([]string{
+		fmt.Sprintf("**DataBridge 备份%s**", backupNotificationStatus(success)),
+		fmt.Sprintf("任务名称：%s", job.Name),
+		fmt.Sprintf("源数据库：%s", job.SourceDatabase),
+		fmt.Sprintf("目标位置：%s", job.Destination),
+		fmt.Sprintf("任务 ID：%s", job.ID),
+	}, "\n")
+}
+
+func (s *Server) testBackupNotification(w http.ResponseWriter, r *http.Request) {
+	var input model.BackupNotificationTestRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.Method = strings.TrimSpace(input.Method)
+	input.Target = strings.TrimSpace(input.Target)
+	if input.Method != "webhook" && input.Method != "email" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "不支持的通知方式")
+		return
+	}
+	if input.Target == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请填写通知目标")
+		return
+	}
+	now := time.Now()
+	job := model.BackupJob{
+		ID:             "notification-test",
+		Name:           "通知测试",
+		SourceName:     "DataBridge",
+		SourceType:     "System",
+		SourceDatabase: "system",
+		Destination:    "notification-test",
+		FinishedAt:     &now,
+		Notification: model.BackupNotification{
+			Enabled: true,
+			Method:  input.Method,
+			Target:  input.Target,
+		},
+	}
+	if err := s.sendBackupNotification(job, true); err != nil {
+		writeError(w, http.StatusBadRequest, "notification_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "测试通知已发送"})
 }
 
 func nextBackupRun(request model.BackupRequest, after time.Time) (time.Time, error) {
@@ -1451,6 +1689,10 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.ScheduleTime = input.ScheduleTime
 	request.ScheduleWeekday = input.ScheduleWeekday
 	request.ScheduleMonthDay = input.ScheduleMonthDay
+	request.NotificationEnabled = input.NotificationEnabled
+	request.NotificationMethod = input.NotificationMethod
+	request.NotificationTarget = input.NotificationTarget
+	request.Notification = input.Notification
 	normalizeBackupSchedule(&request)
 	next, err := nextBackupRun(request, time.Now())
 	if err != nil {
@@ -1466,6 +1708,10 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.ScheduleTime = request.ScheduleTime
 		item.ScheduleWeekday = request.ScheduleWeekday
 		item.ScheduleMonthDay = request.ScheduleMonthDay
+		item.Notification = request.Notification
+		item.NotificationEnabled = request.Notification.Enabled
+		item.NotificationMethod = request.Notification.Method
+		item.NotificationTarget = request.Notification.Target
 		item.NextRunAt = &next
 		item.Events = append(item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
 	}); err != nil {
@@ -1509,6 +1755,39 @@ func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) getSMTPSettings(w http.ResponseWriter, _ *http.Request) {
+	settings, err := s.store.SMTPSettings()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	settings.Password = ""
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateSMTPSettings(w http.ResponseWriter, r *http.Request) {
+	var input model.SMTPSettings
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.Host = strings.TrimSpace(input.Host)
+	input.Username = strings.TrimSpace(input.Username)
+	input.From = strings.TrimSpace(input.From)
+	if input.Enabled {
+		if input.Host == "" || input.Port <= 0 || input.From == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "请完整填写 SMTP 主机、端口和发件人")
+			return
+		}
+	}
+	settings, err := s.store.UpdateSMTPSettings(input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	settings.Password = ""
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func calculateProgress(progress migrate.Progress, tableTotal int) int {

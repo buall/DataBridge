@@ -192,6 +192,8 @@ const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "�
 function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () => void; onSave: (config: BackupConfig) => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [testingNotification, setTestingNotification] = useState(false);
+  const [notificationTestResult, setNotificationTestResult] = useState("");
   const [form, setForm] = useState<BackupConfig>({
     name: job.name,
     sourceId: "",
@@ -204,6 +206,9 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     scheduleTime: job.scheduleTime ?? "02:00:00",
     scheduleWeekday: job.scheduleWeekday ?? 1,
     scheduleMonthDay: job.scheduleMonthDay ?? 1,
+    notificationEnabled: job.notificationEnabled ?? false,
+    notificationMethod: job.notificationMethod ?? "webhook",
+    notificationTarget: job.notificationTarget ?? "",
   });
 
   async function submit(event: FormEvent) {
@@ -218,6 +223,20 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     }
   }
 
+  async function testNotification() {
+    setTestingNotification(true);
+    setNotificationTestResult("");
+    setError("");
+    try {
+      const result = await api.testBackupNotification(form.notificationMethod ?? "webhook", form.notificationTarget?.trim() ?? "");
+      setNotificationTestResult(result.message);
+    } catch (reason) {
+      setNotificationTestResult(reason instanceof Error ? reason.message : "测试通知发送失败");
+    } finally {
+      setTestingNotification(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop">
       <form className="modal schedule-editor-modal" onSubmit={submit}>
@@ -229,6 +248,16 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
           <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
           {form.scheduleFrequency === "weekly" && <SelectField label="每周" value={form.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
           {form.scheduleFrequency === "monthly" && <SelectField label="每月" value={form.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+        </div>
+        <div className="notification-panel modal-notification-panel">
+          <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
+          {form.notificationEnabled && (
+            <div className="notification-grid">
+              <SelectField label="通知方式" value={form.notificationMethod ?? "webhook"} onChange={(notificationMethod) => { setNotificationTestResult(""); setForm({ ...form, notificationMethod: notificationMethod as BackupConfig["notificationMethod"], notificationTarget: "" }); }}><option value="webhook">Webhook</option><option value="email">Email</option></SelectField>
+              <div className="notification-target-row"><label className="field"><span>{form.notificationMethod === "email" ? "收件邮箱" : "Webhook URL"}</span><input value={form.notificationTarget ?? ""} onChange={(event) => { setNotificationTestResult(""); setForm({ ...form, notificationTarget: event.target.value }); }} placeholder={form.notificationMethod === "email" ? "ops@databridge.local" : "https://example.com/webhook"} /></label><Button type="button" variant="secondary" disabled={testingNotification || !form.notificationTarget?.trim()} onClick={testNotification}>{testingNotification ? "测试中..." : "测试"}</Button></div>
+            </div>
+          )}
+          {notificationTestResult && <p className="notification-test-result">{notificationTestResult}</p>}
         </div>
         <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>取消</Button><Button disabled={saving} type="submit">{saving ? "保存中..." : "保存计划"}</Button></div>
       </form>

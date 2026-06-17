@@ -10,6 +10,7 @@ import type {
   RemoteStorage,
   RemoteStorageInput,
   SeedDataResult,
+  SMTPSettings,
   TableInfo,
 } from "./types";
 
@@ -134,9 +135,14 @@ export const api = {
     normalizeBackup(await request<BackupJob>("/backups", { method: "POST", body: JSON.stringify(config) })),
   updateBackup: async (id: string, config: BackupConfig) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}`, { method: "PUT", body: JSON.stringify(config) })),
+  testBackupNotification: (method: "webhook" | "email", target: string) =>
+    request<{ message: string }>("/backups/notification-test", { method: "POST", body: JSON.stringify({ method, target }) }),
   backup: async (id: string) => normalizeBackup(await request<BackupJob>(`/backups/${id}`)),
   triggerBackup: async (id: string) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}/trigger`, { method: "POST" })),
   cancelBackup: (id: string) =>
     request<{ ok: boolean }>(`/backups/${id}/cancel`, { method: "POST" }),
+  smtpSettings: () => request<SMTPSettings>("/settings/smtp"),
+  updateSMTPSettings: (input: SMTPSettings) =>
+    request<SMTPSettings>("/settings/smtp", { method: "PUT", body: JSON.stringify(input) }),
 };

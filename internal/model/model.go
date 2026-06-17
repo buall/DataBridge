@@ -135,18 +135,43 @@ type MigrationRequest struct {
 }
 
 type BackupRequest struct {
-	Name              string         `json:"name"`
-	SourceID          string         `json:"sourceId"`
-	SourceDatabase    string         `json:"sourceDatabase"`
-	SourceDatabases   []string       `json:"sourceDatabases,omitempty"`
-	DestinationType   string         `json:"destinationType"`
-	Destination       string         `json:"destination"`
-	ScheduleMode      string         `json:"scheduleMode,omitempty"`
-	ScheduleFrequency string         `json:"scheduleFrequency,omitempty"`
-	ScheduleTime      string         `json:"scheduleTime,omitempty"`
-	ScheduleWeekday   int            `json:"scheduleWeekday,omitempty"`
-	ScheduleMonthDay  int            `json:"scheduleMonthDay,omitempty"`
-	Storage           *RemoteStorage `json:"-"`
+	Name                string             `json:"name"`
+	SourceID            string             `json:"sourceId"`
+	SourceDatabase      string             `json:"sourceDatabase"`
+	SourceDatabases     []string           `json:"sourceDatabases,omitempty"`
+	DestinationType     string             `json:"destinationType"`
+	Destination         string             `json:"destination"`
+	ScheduleMode        string             `json:"scheduleMode,omitempty"`
+	ScheduleFrequency   string             `json:"scheduleFrequency,omitempty"`
+	ScheduleTime        string             `json:"scheduleTime,omitempty"`
+	ScheduleWeekday     int                `json:"scheduleWeekday,omitempty"`
+	ScheduleMonthDay    int                `json:"scheduleMonthDay,omitempty"`
+	Notification        BackupNotification `json:"notification,omitempty"`
+	NotificationEnabled bool               `json:"notificationEnabled,omitempty"`
+	NotificationMethod  string             `json:"notificationMethod,omitempty"`
+	NotificationTarget  string             `json:"notificationTarget,omitempty"`
+	Storage             *RemoteStorage     `json:"-"`
+}
+
+type BackupNotification struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Method  string `json:"method,omitempty"`
+	Target  string `json:"target,omitempty"`
+}
+
+type BackupNotificationTestRequest struct {
+	Method string `json:"method"`
+	Target string `json:"target"`
+}
+
+type SMTPSettings struct {
+	Enabled     bool   `json:"enabled"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Username    string `json:"username,omitempty"`
+	Password    string `json:"password,omitempty"`
+	PasswordSet bool   `json:"passwordSet,omitempty"`
+	From        string `json:"from"`
 }
 
 type MigrationStatus string
@@ -241,28 +266,32 @@ type Migration struct {
 }
 
 type BackupJob struct {
-	ID                string          `json:"id"`
-	Name              string          `json:"name"`
-	Status            MigrationStatus `json:"status"`
-	Stage             string          `json:"stage"`
-	Progress          int             `json:"progress"`
-	StartedAt         time.Time       `json:"startedAt"`
-	FinishedAt        *time.Time      `json:"finishedAt,omitempty"`
-	Error             string          `json:"error,omitempty"`
-	SourceName        string          `json:"sourceName"`
-	SourceType        string          `json:"sourceType"`
-	SourceDatabase    string          `json:"sourceDatabase"`
-	DestinationType   string          `json:"destinationType"`
-	Destination       string          `json:"destination"`
-	ScheduleMode      string          `json:"scheduleMode,omitempty"`
-	ScheduleFrequency string          `json:"scheduleFrequency,omitempty"`
-	ScheduleTime      string          `json:"scheduleTime,omitempty"`
-	ScheduleWeekday   int             `json:"scheduleWeekday,omitempty"`
-	ScheduleMonthDay  int             `json:"scheduleMonthDay,omitempty"`
-	NextRunAt         *time.Time      `json:"nextRunAt,omitempty"`
-	LastRunAt         *time.Time      `json:"lastRunAt,omitempty"`
-	ArtifactName      string          `json:"artifactName,omitempty"`
-	ArtifactSize      int64           `json:"artifactSize,omitempty"`
-	Events            []Event         `json:"events"`
-	Request           BackupRequest   `json:"request,omitempty"`
+	ID                  string             `json:"id"`
+	Name                string             `json:"name"`
+	Status              MigrationStatus    `json:"status"`
+	Stage               string             `json:"stage"`
+	Progress            int                `json:"progress"`
+	StartedAt           time.Time          `json:"startedAt"`
+	FinishedAt          *time.Time         `json:"finishedAt,omitempty"`
+	Error               string             `json:"error,omitempty"`
+	SourceName          string             `json:"sourceName"`
+	SourceType          string             `json:"sourceType"`
+	SourceDatabase      string             `json:"sourceDatabase"`
+	DestinationType     string             `json:"destinationType"`
+	Destination         string             `json:"destination"`
+	ScheduleMode        string             `json:"scheduleMode,omitempty"`
+	ScheduleFrequency   string             `json:"scheduleFrequency,omitempty"`
+	ScheduleTime        string             `json:"scheduleTime,omitempty"`
+	ScheduleWeekday     int                `json:"scheduleWeekday,omitempty"`
+	ScheduleMonthDay    int                `json:"scheduleMonthDay,omitempty"`
+	Notification        BackupNotification `json:"notification,omitempty"`
+	NotificationEnabled bool               `json:"notificationEnabled,omitempty"`
+	NotificationMethod  string             `json:"notificationMethod,omitempty"`
+	NotificationTarget  string             `json:"notificationTarget,omitempty"`
+	NextRunAt           *time.Time         `json:"nextRunAt,omitempty"`
+	LastRunAt           *time.Time         `json:"lastRunAt,omitempty"`
+	ArtifactName        string             `json:"artifactName,omitempty"`
+	ArtifactSize        int64              `json:"artifactSize,omitempty"`
+	Events              []Event            `json:"events"`
+	Request             BackupRequest      `json:"request,omitempty"`
 }

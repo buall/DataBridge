@@ -12,6 +12,7 @@ import { MigrationWizard } from "./pages/MigrationWizard";
 import { Monitoring } from "./pages/Monitoring";
 import { Overview } from "./pages/Overview";
 import { Report } from "./pages/Report";
+import { Settings } from "./pages/Settings";
 import { Storages } from "./pages/Storages";
 import type { AuditLogEntry } from "./types";
 import type { AppView, BackupConfig, BackupJob, DatabaseConnection, MigrationConfig, MigrationJob, MigrationStage, RemoteStorage } from "./types";
@@ -30,6 +31,7 @@ const routes: Record<AppView, string> = {
   migrations: "/migrations",
   backups: "/backups",
   logs: "/logs",
+  settings: "/settings",
 };
 
 const viewMeta: Record<AppView, [string, string]> = {
@@ -39,6 +41,7 @@ const viewMeta: Record<AppView, [string, string]> = {
   migrations: ["迁移任务", "查看任务列表、运行状态和历史结果"],
   backups: ["备份任务", "查看备份列表、运行状态和备份产物"],
   logs: ["运行日志", "查看 Agent、任务与系统审计事件"],
+  settings: ["系统设置", "配置全局通知和服务参数"],
 };
 
 function routeFromPath(input: string): AppRoute {
@@ -48,6 +51,7 @@ function routeFromPath(input: string): AppRoute {
   if (path === "/connections") return { view: "connections", stage: "list", jobId: null, sourceId: null };
   if (path === "/storages") return { view: "storages", stage: "list", jobId: null, sourceId: null };
   if (path === "/logs") return { view: "logs", stage: "list", jobId: null, sourceId: null };
+  if (path === "/settings") return { view: "settings", stage: "list", jobId: null, sourceId: null };
   if (path === "/backups/new") return { view: "backups", stage: "wizard", jobId: null, sourceId };
   if (path.startsWith("/backups/")) {
     const jobId = decodeURIComponent(path.slice("/backups/".length));
@@ -240,6 +244,7 @@ export default function App() {
   else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} />;
   else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} /> : <MigrationList migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} />;
   else if (view === "backups") content = (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} onComplete={completeBackup} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} />;
+  else if (view === "settings") content = <Settings />;
   else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 
   const meta = view === "migrations" && migrationStage === "running" && activeJob

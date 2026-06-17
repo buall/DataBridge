@@ -21,6 +21,8 @@ export function BackupWizard({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+  const [testingNotification, setTestingNotification] = useState(false);
+  const [notificationTestResult, setNotificationTestResult] = useState("");
   const [config, setConfig] = useState<BackupConfig>({
     name: "",
     sourceId: connections[0]?.id ?? "",
@@ -33,6 +35,9 @@ export function BackupWizard({
     scheduleTime: "02:00:00",
     scheduleWeekday: 1,
     scheduleMonthDay: 1,
+    notificationEnabled: false,
+    notificationMethod: "webhook",
+    notificationTarget: "",
   });
 
   useEffect(() => {
@@ -71,14 +76,32 @@ export function BackupWizard({
     setStarting(true);
     setError("");
     try {
+      const scheduled = config.scheduleMode === "scheduled";
       await onStart({
         ...config,
+        notificationEnabled: scheduled ? config.notificationEnabled : false,
+        notificationMethod: scheduled ? config.notificationMethod : undefined,
+        notificationTarget: scheduled ? config.notificationTarget?.trim() : "",
         sourceDatabase: config.sourceDatabases.join(", "),
         name: config.name || `${source?.name ?? databaseLabel} / ${databaseLabel} 备份`,
       });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建备份任务失败");
       setStarting(false);
+    }
+  }
+
+  async function testNotification() {
+    setTestingNotification(true);
+    setNotificationTestResult("");
+    setError("");
+    try {
+      const result = await api.testBackupNotification(config.notificationMethod ?? "webhook", config.notificationTarget?.trim() ?? "");
+      setNotificationTestResult(result.message);
+    } catch (reason) {
+      setNotificationTestResult(reason instanceof Error ? reason.message : "测试通知发送失败");
+    } finally {
+      setTestingNotification(false);
     }
   }
 
@@ -118,15 +141,27 @@ export function BackupWizard({
           <div className="schedule-panel">
             <span>执行方式</span>
             <div className="segmented-control">
-              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once" })}>一次性</button>
+              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationTarget: "" })}>一次性</button>
               <button type="button" className={config.scheduleMode === "scheduled" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "scheduled" })}>定时</button>
             </div>
             {config.scheduleMode === "scheduled" && (
-              <div className="schedule-grid">
-                <SelectField label="频率" value={config.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setConfig({ ...config, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
-                <TimeSelect value={config.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setConfig({ ...config, scheduleTime })} />
-                {config.scheduleFrequency === "weekly" && <SelectField label="每周" value={config.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setConfig({ ...config, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
-                {config.scheduleFrequency === "monthly" && <SelectField label="每月" value={config.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setConfig({ ...config, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+              <div className="scheduled-options">
+                <div className="schedule-grid">
+                  <SelectField label="频率" value={config.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setConfig({ ...config, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
+                  <TimeSelect value={config.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setConfig({ ...config, scheduleTime })} />
+                  {config.scheduleFrequency === "weekly" && <SelectField label="每周" value={config.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setConfig({ ...config, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
+                  {config.scheduleFrequency === "monthly" && <SelectField label="每月" value={config.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setConfig({ ...config, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+                </div>
+                <div className="notification-panel">
+                  <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
+                  {config.notificationEnabled && (
+                    <div className="notification-grid">
+                      <SelectField label="通知方式" value={config.notificationMethod ?? "webhook"} onChange={(notificationMethod) => { setNotificationTestResult(""); setConfig({ ...config, notificationMethod: notificationMethod as BackupConfig["notificationMethod"], notificationTarget: "" }); }}><option value="webhook">Webhook</option><option value="email">Email</option></SelectField>
+                      <div className="notification-target-row"><label className="field"><span>{config.notificationMethod === "email" ? "收件邮箱" : "Webhook URL"}</span><input value={config.notificationTarget ?? ""} onChange={(event) => { setNotificationTestResult(""); setConfig({ ...config, notificationTarget: event.target.value }); }} placeholder={config.notificationMethod === "email" ? "ops@databridge.local" : "https://example.com/webhook"} /></label><Button type="button" variant="secondary" disabled={testingNotification || !config.notificationTarget?.trim()} onClick={testNotification}>{testingNotification ? "测试中..." : "测试"}</Button></div>
+                    </div>
+                  )}
+                  {notificationTestResult && <p className="notification-test-result">{notificationTestResult}</p>}
+                </div>
               </div>
             )}
           </div>
@@ -137,7 +172,7 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>导出方式</span><strong>{source?.type === "MySQL" ? "mysqldump SQL" : "pg_dump SQL"}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
+          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
         </Card>
       )}
 
@@ -156,6 +191,11 @@ function scheduleLabel(config: BackupConfig) {
   if (config.scheduleFrequency === "weekly") return `每周${weekdays[config.scheduleWeekday ?? 1]} ${config.scheduleTime}`;
   if (config.scheduleFrequency === "monthly") return `每月 ${config.scheduleMonthDay ?? 1} 日 ${config.scheduleTime}`;
   return `每天 ${config.scheduleTime}`;
+}
+
+function notificationLabel(config: BackupConfig) {
+  if (config.scheduleMode !== "scheduled" || !config.notificationEnabled) return "未开启";
+  return config.notificationMethod === "email" ? `Email · ${config.notificationTarget || "未填写"}` : `Webhook · ${config.notificationTarget || "未填写"}`;
 }
 
 export function TimeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {

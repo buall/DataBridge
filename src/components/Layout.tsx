@@ -12,6 +12,7 @@ import {
   PanelLeftOpen,
   ScrollText,
   Settings,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AppView } from "../types";
@@ -23,6 +24,7 @@ const mainNav = [
   { id: "migrations" as const, label: "迁移任务", icon: Activity },
   { id: "backups" as const, label: "备份任务", icon: Archive },
   { id: "logs" as const, label: "运行日志", icon: ScrollText },
+  { id: "settings" as const, label: "系统设置", icon: SlidersHorizontal },
 ];
 
 interface LayoutProps {

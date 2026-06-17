@@ -44,6 +44,8 @@ type AuditLog struct {
 	Detail         string
 }
 
+const smtpSettingsKey = "smtp"
+
 func New(databasePath, keyPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
@@ -75,6 +77,99 @@ func New(databasePath, keyPath string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) SMTPSettings() (model.SMTPSettings, error) {
+	var data []byte
+	if err := s.db.QueryRow(`SELECT data FROM app_settings WHERE key = ?`, smtpSettingsKey).Scan(&data); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.SMTPSettings{Port: 587}, nil
+		}
+		return model.SMTPSettings{}, fmt.Errorf("load smtp settings: %w", err)
+	}
+	var stored struct {
+		Enabled           bool   `json:"enabled"`
+		Host              string `json:"host"`
+		Port              int    `json:"port"`
+		Username          string `json:"username,omitempty"`
+		PasswordEncrypted []byte `json:"passwordEncrypted,omitempty"`
+		From              string `json:"from"`
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return model.SMTPSettings{}, fmt.Errorf("decode smtp settings: %w", err)
+	}
+	settings := model.SMTPSettings{
+		Enabled:  stored.Enabled,
+		Host:     stored.Host,
+		Port:     stored.Port,
+		Username: stored.Username,
+		From:     stored.From,
+	}
+	if settings.Port == 0 {
+		settings.Port = 587
+	}
+	settings.PasswordSet = len(stored.PasswordEncrypted) > 0
+	if len(stored.PasswordEncrypted) > 0 {
+		password, err := s.decrypt(stored.PasswordEncrypted)
+		if err != nil {
+			return model.SMTPSettings{}, fmt.Errorf("decrypt smtp password: %w", err)
+		}
+		settings.Password = password
+	}
+	return settings, nil
+}
+
+func (s *Store) UpdateSMTPSettings(input model.SMTPSettings) (model.SMTPSettings, error) {
+	current, err := s.SMTPSettings()
+	if err != nil {
+		return model.SMTPSettings{}, err
+	}
+	settings := model.SMTPSettings{
+		Enabled:  input.Enabled,
+		Host:     strings.TrimSpace(input.Host),
+		Port:     input.Port,
+		Username: strings.TrimSpace(input.Username),
+		From:     strings.TrimSpace(input.From),
+	}
+	if settings.Port == 0 {
+		settings.Port = 587
+	}
+	password := input.Password
+	if password == "" && current.PasswordSet {
+		password = current.Password
+	}
+	var passwordEncrypted []byte
+	if password != "" {
+		passwordEncrypted, err = s.encrypt(password)
+		if err != nil {
+			return model.SMTPSettings{}, fmt.Errorf("encrypt smtp password: %w", err)
+		}
+	}
+	stored := struct {
+		Enabled           bool   `json:"enabled"`
+		Host              string `json:"host"`
+		Port              int    `json:"port"`
+		Username          string `json:"username,omitempty"`
+		PasswordEncrypted []byte `json:"passwordEncrypted,omitempty"`
+		From              string `json:"from"`
+	}{
+		Enabled: settings.Enabled, Host: settings.Host, Port: settings.Port,
+		Username: settings.Username, PasswordEncrypted: passwordEncrypted, From: settings.From,
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		return model.SMTPSettings{}, fmt.Errorf("encode smtp settings: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`
+		INSERT INTO app_settings (key, data, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+		smtpSettingsKey, data, now); err != nil {
+		return model.SMTPSettings{}, fmt.Errorf("save smtp settings: %w", err)
+	}
+	settings.Password = password
+	settings.PasswordSet = password != ""
+	return settings, nil
 }
 
 func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration, version string) (model.Connection, error) {
@@ -601,6 +696,11 @@ func (s *Store) initialize() error {
 			status TEXT NOT NULL DEFAULT '',
 			message TEXT NOT NULL,
 			detail TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			data BLOB NOT NULL,
+			updated_at TEXT NOT NULL
 		);
 	`); err != nil {
 		return fmt.Errorf("initialize sqlite: %w", err)
