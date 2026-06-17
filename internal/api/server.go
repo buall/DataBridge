@@ -17,29 +17,35 @@ import (
 	"sync"
 	"time"
 
+	"databridge/internal/backup"
 	"databridge/internal/migrate"
 	"databridge/internal/model"
 	"databridge/internal/mysql"
 	"databridge/internal/postgres"
+	"databridge/internal/remotestorage"
 	"databridge/internal/store"
 )
 
 type errorContext string
 
 const (
-	errorContextConnectionTest      errorContext = "connection_test"
-	errorContextDatabaseDiscovery   errorContext = "database_discovery"
-	errorContextDatabaseCreate      errorContext = "database_create"
-	errorContextTableDiscovery      errorContext = "table_discovery"
-	errorContextDeleteConnection    errorContext = "delete_connection"
-	errorContextCreateMigration     errorContext = "create_migration"
-	errorContextMigrationRuntime    errorContext = "migration_runtime"
-	errorContextInvalidJSON         errorContext = "invalid_json"
+	errorContextConnectionTest    errorContext = "connection_test"
+	errorContextDatabaseDiscovery errorContext = "database_discovery"
+	errorContextDatabaseCreate    errorContext = "database_create"
+	errorContextTableDiscovery    errorContext = "table_discovery"
+	errorContextDeleteConnection  errorContext = "delete_connection"
+	errorContextRemoteStorage     errorContext = "remote_storage"
+	errorContextCreateMigration   errorContext = "create_migration"
+	errorContextMigrationRuntime  errorContext = "migration_runtime"
+	errorContextCreateBackup      errorContext = "create_backup"
+	errorContextBackupRuntime     errorContext = "backup_runtime"
+	errorContextInvalidJSON       errorContext = "invalid_json"
 )
 
 type Server struct {
 	store     *store.Store
 	engine    *migrate.Engine
+	backup    *backup.Engine
 	geoClient *http.Client
 	geoMu     sync.Mutex
 	geoCache  map[string]string
@@ -50,6 +56,7 @@ func New(appStore *store.Store) http.Handler {
 	server := &Server{
 		store:     appStore,
 		engine:    migrate.New(),
+		backup:    backup.New(),
 		geoClient: &http.Client{Timeout: 2 * time.Second},
 		geoCache:  make(map[string]string),
 		auth:      loadAuthConfig(),
@@ -70,10 +77,22 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/connections/{id}/databases", server.createDatabase)
 	protected.HandleFunc("POST /api/connections/{id}/seed", server.seedConnectionData)
 	protected.HandleFunc("GET /api/connections/{id}/databases/{database}/tables", server.listTables)
+	protected.HandleFunc("GET /api/storages", server.listStorages)
+	protected.HandleFunc("POST /api/storages", server.createStorage)
+	protected.HandleFunc("POST /api/storages/object/buckets", server.listObjectBuckets)
+	protected.HandleFunc("POST /api/storages/{id}/buckets", server.listStoredObjectBuckets)
+	protected.HandleFunc("POST /api/storages/{id}/buckets/create", server.createStoredObjectBucket)
+	protected.HandleFunc("PUT /api/storages/{id}", server.updateStorage)
+	protected.HandleFunc("DELETE /api/storages/{id}", server.deleteStorage)
+	protected.HandleFunc("POST /api/storages/{id}/test", server.testStorage)
 	protected.HandleFunc("POST /api/migrations", server.createMigration)
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
+	protected.HandleFunc("POST /api/backups", server.createBackup)
+	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
+	protected.HandleFunc("POST /api/backups/{id}/cancel", server.cancelBackup)
+	protected.HandleFunc("GET /api/backups", server.listBackups)
 	mux.Handle("/api/", server.auth.authMiddleware(protected))
 	mux.Handle("/", staticHandler())
 	return recoverMiddleware(corsMiddleware(mux))
@@ -578,6 +597,197 @@ func (s *Server) listTables(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) listStorages(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.store.Storages()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, redactStorageSecrets(items))
+}
+
+func (s *Server) createStorage(w http.ResponseWriter, r *http.Request) {
+	var input model.StorageInput
+	if !decodeJSON(w, r, &input) || !validateStorage(w, input) {
+		return
+	}
+	item, err := s.store.AddStorage(input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, redactStorageSecret(item))
+}
+
+func (s *Server) listObjectBuckets(w http.ResponseWriter, r *http.Request) {
+	var input model.StorageInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if normalizeStorageType(input.Type) != "object" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有对象存储支持获取 Bucket 列表")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	buckets, err := remotestorage.ListObjectBuckets(ctx, input)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "bucket_discovery_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": buckets})
+}
+
+func (s *Server) listStoredObjectBuckets(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	var input model.StorageInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if normalizeStorageType(nonEmpty(input.Type, current.Type)) != "object" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有对象存储支持获取 Bucket 列表")
+		return
+	}
+	input.Type = "object"
+	input.Endpoint = nonEmpty(input.Endpoint, current.Endpoint)
+	input.Region = nonEmpty(input.Region, current.Region)
+	input.AccessKey = nonEmpty(input.AccessKey, current.AccessKey)
+	input.SecretKey = nonEmpty(input.SecretKey, current.SecretKey)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	buckets, err := remotestorage.ListObjectBuckets(ctx, input)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "bucket_discovery_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": buckets})
+}
+
+func (s *Server) createStoredObjectBucket(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if current.Type != "object" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有对象存储支持创建 Bucket")
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	bucketName := strings.Trim(strings.TrimSpace(input.Name), "/")
+	if bucketName == "" {
+		writeError(w, http.StatusBadRequest, "invalid_bucket", "请输入 Bucket 名称")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	if err := remotestorage.CreateObjectBucket(ctx, current, bucketName); err != nil {
+		writeError(w, http.StatusBadGateway, "bucket_create_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	updated, err := s.store.UpdateStorage(current.ID, model.UpdateStorageInput{
+		Type:      current.Type,
+		Name:      current.Name,
+		Provider:  current.Provider,
+		Endpoint:  current.Endpoint,
+		Bucket:    bucketName,
+		Region:    current.Region,
+		AccessKey: current.AccessKey,
+		Path:      current.Path,
+		AuthMode:  current.AuthMode,
+		Note:      current.Note,
+		Verified:  true,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	buckets, err := remotestorage.ListObjectBuckets(ctx, model.StorageInput{
+		Type:      current.Type,
+		Endpoint:  current.Endpoint,
+		Region:    current.Region,
+		AccessKey: current.AccessKey,
+		SecretKey: current.SecretKey,
+	})
+	if err != nil {
+		buckets = []string{bucketName}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"storage": redactStorageSecret(updated), "buckets": buckets})
+}
+
+func (s *Server) updateStorage(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	var input model.UpdateStorageInput
+	if !decodeJSON(w, r, &input) || !validateStorageUpdate(w, input, current.Type) {
+		return
+	}
+	item, err := s.store.UpdateStorage(current.ID, input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, redactStorageSecret(item))
+}
+
+func (s *Server) deleteStorage(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteStorage(r.PathValue("id")); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "storage not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) testStorage(w http.ResponseWriter, r *http.Request) {
+	item, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	status := "connected"
+	message := "远端存储配置可用"
+	switch item.Type {
+	case "object":
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		if err := remotestorage.TestObjectStorage(ctx, item); err != nil {
+			status = "warning"
+			message = userFacingErrorMessage(errorContextRemoteStorage, err)
+			log.Printf("remote storage[%s] object test failed: %v", item.ID, err)
+		} else {
+			message = "对象存储测试通过"
+		}
+	case "google_drive", "one_drive":
+		status = "needs_auth"
+		message = "该存储需要完成 OAuth 授权后才能测试"
+	default:
+		status = "warning"
+		message = "当前存储类型暂不支持在线测试"
+	}
+	if err := s.store.UpdateStorageStatus(item.ID, status); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	item.Status = status
+	writeJSON(w, http.StatusOK, map[string]any{"storage": redactStorageSecret(item), "message": message})
+}
+
 func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 	var request model.MigrationRequest
 	if !decodeJSON(w, r, &request) {
@@ -758,6 +968,188 @@ func (s *Server) listMigrations(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
+	var request model.BackupRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	if request.SourceID == "" || request.SourceDatabase == "" || request.Destination == "" {
+		if request.SourceID != "" && len(request.SourceDatabases) > 0 && request.Destination != "" {
+			request.SourceDatabase = strings.Join(request.SourceDatabases, ", ")
+		}
+	}
+	if request.SourceID == "" || request.SourceDatabase == "" || request.Destination == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请完整选择源端数据库和备份目标")
+		return
+	}
+	source, err := s.store.Connection(request.SourceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_source", "未找到源端连接，请重新选择")
+		return
+	}
+	destinationLabel := request.Destination
+	if request.DestinationType == "" || request.DestinationType == "storage" {
+		storage, err := s.store.Storage(request.Destination)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_destination", "未找到备份目标存储，请重新选择")
+			return
+		}
+		if storage.Type == "object" {
+			request.DestinationType = "object"
+			request.Storage = &storage
+			destinationLabel = storage.Name + " / " + storage.Bucket
+		} else if storage.Type == "local" {
+			request.DestinationType = "local"
+			request.Destination = storage.Path
+			destinationLabel = storage.Name + " / " + storage.Path
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_destination", "该存储类型暂不支持备份写入")
+			return
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Now()
+	value := model.BackupJob{
+		ID: store.NewID(), Name: request.Name, Status: model.StatusPending, Stage: "pending",
+		StartedAt: now, SourceName: source.Name, SourceType: source.Type,
+		SourceDatabase: request.SourceDatabase, DestinationType: request.DestinationType,
+		Destination: destinationLabel, Request: request,
+		Events: []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
+	}
+	if value.Name == "" {
+		value.Name = request.SourceDatabase + " 备份"
+	}
+	if err := s.store.AddBackup(value, cancel); err != nil {
+		cancel()
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	go s.runBackup(ctx, value.ID, source, request)
+	writeJSON(w, http.StatusAccepted, value)
+}
+
+func (s *Server) runBackup(ctx context.Context, id string, source model.Connection, request model.BackupRequest) {
+	log.Printf("backup[%s] started: %s/%s -> %s", id, source.Name, request.SourceDatabase, request.DestinationType)
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.Status = model.StatusRunning
+		item.Stage = "export"
+		item.Progress = 5
+	})
+	reporter := func(progress backup.Progress) {
+		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+			item.Stage = progress.Stage
+			item.Progress = backupProgress(progress.Stage, progress.Progress)
+			if progress.ArtifactName != "" {
+				item.ArtifactName = progress.ArtifactName
+			}
+			if progress.ArtifactSize > 0 {
+				item.ArtifactSize = progress.ArtifactSize
+			}
+			if progress.EventMessage != "" {
+				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
+				if len(item.Events) > 100 {
+					item.Events = item.Events[len(item.Events)-100:]
+				}
+			}
+		})
+	}
+	databases := backupDatabases(request)
+	var err error
+	for index, database := range databases {
+		current := request
+		current.SourceDatabase = database
+		reporter(backup.Progress{Stage: "export", EventLevel: "INFO", EventMessage: fmt.Sprintf("开始备份数据库 %s（%d/%d）", database, index+1, len(databases)), Progress: index * 90 / len(databases)})
+		if runErr := s.backup.Run(ctx, source, current, func(progress backup.Progress) {
+			if len(databases) > 1 {
+				progress.Progress = index*90/len(databases) + backupProgress(progress.Stage, progress.Progress)/len(databases)
+			}
+			reporter(progress)
+		}); runErr != nil {
+			err = runErr
+			break
+		}
+	}
+	finished := time.Now()
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.FinishedAt = &finished
+		if err == nil {
+			item.Status = model.StatusCompleted
+			item.Stage = "completed"
+			item.Progress = 100
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			item.Status = model.StatusCancelled
+			item.Stage = "cancelled"
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
+		} else {
+			item.Status = model.StatusFailed
+			item.Stage = "failed"
+			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+		}
+	})
+}
+
+func backupDatabases(request model.BackupRequest) []string {
+	seen := map[string]bool{}
+	var databases []string
+	for _, database := range request.SourceDatabases {
+		database = strings.TrimSpace(database)
+		if database != "" && !seen[database] {
+			seen[database] = true
+			databases = append(databases, database)
+		}
+	}
+	if len(databases) == 0 && strings.TrimSpace(request.SourceDatabase) != "" {
+		databases = []string{strings.TrimSpace(request.SourceDatabase)}
+	}
+	return databases
+}
+
+func backupProgress(stage string, reported int) int {
+	if reported > 0 {
+		return reported
+	}
+	switch stage {
+	case "export":
+		return 35
+	case "upload":
+		return 85
+	case "completed":
+		return 100
+	default:
+		return 10
+	}
+}
+
+func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
+	item, err := s.store.Backup(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) cancelBackup(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.CancelBackup(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.store.Backups()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func calculateProgress(progress migrate.Progress, tableTotal int) int {
 	switch progress.Stage {
 	case "precheck":
@@ -804,6 +1196,76 @@ func upsertResult(item *model.Migration, result model.TableResult) {
 		}
 	}
 	item.Results = append(item.Results, result)
+}
+
+func validateStorage(w http.ResponseWriter, input model.StorageInput) bool {
+	storageType := normalizeStorageType(input.Type)
+	if storageType == "" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "请选择远端存储类型")
+		return false
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Provider) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "存储名称和服务商不能为空")
+		return false
+	}
+	if storageType == "object" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.Bucket) == "" || strings.TrimSpace(input.AccessKey) == "" || input.SecretKey == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "对象存储需要填写 Endpoint、Bucket、Access Key 和 Secret Key")
+		return false
+	}
+	return true
+}
+
+func validateStorageUpdate(w http.ResponseWriter, input model.UpdateStorageInput, currentType string) bool {
+	storageType := normalizeStorageType(nonEmpty(input.Type, currentType))
+	if storageType == "" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "请选择远端存储类型")
+		return false
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Provider) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "存储名称和服务商不能为空")
+		return false
+	}
+	if storageType == "object" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.Bucket) == "" || strings.TrimSpace(input.AccessKey) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "对象存储需要填写 Endpoint、Bucket 和 Access Key")
+		return false
+	}
+	return true
+}
+
+func normalizeStorageType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "object", "object_storage", "object-storage", "s3":
+		return "object"
+	case "google_drive", "google-drive", "gdrive":
+		return "google_drive"
+	case "one_drive", "one-drive", "onedrive":
+		return "one_drive"
+	case "local":
+		return "local"
+	default:
+		return ""
+	}
+}
+
+func redactStorageSecrets(items []model.RemoteStorage) []model.RemoteStorage {
+	for index := range items {
+		items[index] = redactStorageSecret(items[index])
+	}
+	return items
+}
+
+func redactStorageSecret(item model.RemoteStorage) model.RemoteStorage {
+	if item.SecretKey != "" {
+		item.SecretKey = ""
+	}
+	return item
+}
+
+func nonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool {
@@ -969,6 +1431,18 @@ func userFacingErrorMessage(context errorContext, err error) string {
 			return "目标端存在同名表，当前冲突策略不允许继续迁移，请调整为备份或覆盖后重试"
 		}
 		return "目标端存在同名表，当前冲突策略不允许覆盖，请调整冲突策略后重试"
+	case strings.Contains(lower, "signaturedoesnotmatch"), strings.Contains(lower, "invalidaccesskeyid"), strings.Contains(lower, "accessdenied"):
+		if context == errorContextRemoteStorage {
+			return "对象存储认证失败，请确认 Access Key、Secret Key、Region 和 Bucket 权限是否正确"
+		}
+	case strings.Contains(lower, "nosuchbucket"), strings.Contains(lower, "bucket"):
+		if context == errorContextRemoteStorage {
+			return "对象存储 Bucket 不存在或当前账号无权访问，请确认 Bucket 名称和授权策略"
+		}
+	case strings.Contains(lower, "endpoint must include"), strings.Contains(lower, "invalid endpoint"):
+		if context == errorContextRemoteStorage {
+			return "对象存储 Endpoint 格式不正确，请填写完整地址，例如 https://s3.example.com"
+		}
 	case strings.Contains(lower, "mysqldump not found"), strings.Contains(lower, "mysql not found"), strings.Contains(lower, "pg_dump not found"), strings.Contains(lower, "pg_restore not found"), strings.Contains(lower, "psql not found"):
 		if context == errorContextMigrationRuntime {
 			return "迁移依赖的数据库客户端工具未安装或不在 PATH 中，请先检查运行环境"
@@ -1004,6 +1478,10 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		return "创建迁移任务失败，请确认源端、目标端、数据库和表选择是否正确"
 	case errorContextMigrationRuntime:
 		return "迁移执行失败，请查看任务日志并确认数据库权限、对象冲突和客户端工具状态"
+	case errorContextCreateBackup:
+		return "创建备份任务失败，请确认源端数据库和备份目标是否正确"
+	case errorContextBackupRuntime:
+		return "备份执行失败，请查看任务日志并确认数据库权限、客户端工具和存储目标状态"
 	case errorContextInvalidJSON:
 		return "请求参数格式不正确，请刷新页面后重试"
 	default:

@@ -195,6 +195,117 @@ func (s *Store) DeleteConnection(id string) error {
 	return nil
 }
 
+func (s *Store) AddStorage(input model.StorageInput) (model.RemoteStorage, error) {
+	storage := model.RemoteStorage{
+		ID: newID(), Type: normalizeStorageType(input.Type), Name: strings.TrimSpace(input.Name),
+		Provider: strings.TrimSpace(input.Provider), Endpoint: strings.TrimSpace(input.Endpoint),
+		Bucket: strings.TrimSpace(input.Bucket), Region: strings.TrimSpace(input.Region),
+		AccessKey: strings.TrimSpace(input.AccessKey), SecretKey: input.SecretKey,
+		Path: strings.TrimSpace(input.Path), AuthMode: strings.TrimSpace(input.AuthMode),
+		Note: strings.TrimSpace(input.Note), Status: storageStatusForInput(input), CreatedAt: time.Now().UTC(),
+	}
+	encrypted, err := s.encrypt(storage.SecretKey)
+	if err != nil {
+		return model.RemoteStorage{}, err
+	}
+	if _, err := s.db.Exec(`
+		INSERT INTO remote_storages
+		(id, type, name, provider, endpoint, bucket, region, access_key, secret_key_encrypted, path, auth_mode, note, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		storage.ID, storage.Type, storage.Name, storage.Provider, storage.Endpoint, storage.Bucket,
+		storage.Region, storage.AccessKey, encrypted, storage.Path, storage.AuthMode, storage.Note,
+		storage.Status, storage.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("save remote storage: %w", err)
+	}
+	return storage, nil
+}
+
+func (s *Store) Storages() ([]model.RemoteStorage, error) {
+	rows, err := s.db.Query(`
+		SELECT id, type, name, provider, endpoint, bucket, region, access_key,
+		       secret_key_encrypted, path, auth_mode, note, status, created_at
+		FROM remote_storages ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list remote storages: %w", err)
+	}
+	defer rows.Close()
+	var items []model.RemoteStorage
+	for rows.Next() {
+		item, scanErr := s.scanStorage(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []model.RemoteStorage{}
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) Storage(id string) (model.RemoteStorage, error) {
+	row := s.db.QueryRow(`
+		SELECT id, type, name, provider, endpoint, bucket, region, access_key,
+		       secret_key_encrypted, path, auth_mode, note, status, created_at
+		FROM remote_storages WHERE id = ?`, id)
+	return s.scanStorage(row)
+}
+
+func (s *Store) UpdateStorage(id string, input model.UpdateStorageInput) (model.RemoteStorage, error) {
+	current, err := s.Storage(id)
+	if err != nil {
+		return model.RemoteStorage{}, err
+	}
+	secret := current.SecretKey
+	if input.SecretKey != "" {
+		secret = input.SecretKey
+	}
+	encrypted, err := s.encrypt(secret)
+	if err != nil {
+		return model.RemoteStorage{}, err
+	}
+	status := current.Status
+	if input.Type != "" && normalizeStorageType(input.Type) != current.Type {
+		status = storageStatusForInput(model.StorageInput{Type: input.Type, Verified: input.Verified})
+	} else if input.Verified {
+		status = "connected"
+	}
+	if _, err := s.db.Exec(`
+		UPDATE remote_storages
+		SET type = ?, name = ?, provider = ?, endpoint = ?, bucket = ?, region = ?, access_key = ?,
+		    secret_key_encrypted = ?, path = ?, auth_mode = ?, note = ?, status = ?
+		WHERE id = ?`,
+		normalizeStorageType(nonEmpty(input.Type, current.Type)), strings.TrimSpace(input.Name), strings.TrimSpace(input.Provider),
+		strings.TrimSpace(input.Endpoint), strings.TrimSpace(input.Bucket), strings.TrimSpace(input.Region),
+		strings.TrimSpace(input.AccessKey), encrypted, strings.TrimSpace(input.Path), strings.TrimSpace(input.AuthMode),
+		strings.TrimSpace(input.Note), status, id); err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("update remote storage: %w", err)
+	}
+	return s.Storage(id)
+}
+
+func (s *Store) DeleteStorage(id string) error {
+	result, err := s.db.Exec(`DELETE FROM remote_storages WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete remote storage: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete remote storage rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpdateStorageStatus(id, status string) error {
+	if _, err := s.db.Exec(`UPDATE remote_storages SET status = ? WHERE id = ?`, status, id); err != nil {
+		return fmt.Errorf("update remote storage status: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) AddAuditLog(entry AuditLog) error {
 	if entry.ID == "" {
 		entry.ID = newID()
@@ -341,6 +452,95 @@ func (s *Store) CancelMigration(id string) error {
 	return nil
 }
 
+func (s *Store) AddBackup(value model.BackupJob, cancel context.CancelFunc) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode backup: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`INSERT INTO backups (id, data, updated_at) VALUES (?, ?, ?)`,
+		value.ID, data, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("save backup: %w", err)
+	}
+	s.cancels[value.ID] = cancel
+	return nil
+}
+
+func (s *Store) Backup(id string) (model.BackupJob, error) {
+	var data []byte
+	if err := s.db.QueryRow(`SELECT data FROM backups WHERE id = ?`, id).Scan(&data); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.BackupJob{}, ErrNotFound
+		}
+		return model.BackupJob{}, fmt.Errorf("load backup: %w", err)
+	}
+	return decodeBackup(data)
+}
+
+func (s *Store) Backups() ([]model.BackupJob, error) {
+	rows, err := s.db.Query(`SELECT data FROM backups ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list backups: %w", err)
+	}
+	defer rows.Close()
+	var items []model.BackupJob
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		item, err := decodeBackup(data)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []model.BackupJob{}
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UpdateBackup(id string, update func(*model.BackupJob)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var data []byte
+	if err := s.db.QueryRow(`SELECT data FROM backups WHERE id = ?`, id).Scan(&data); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load backup for update: %w", err)
+	}
+	value, err := decodeBackup(data)
+	if err != nil {
+		return err
+	}
+	update(&value)
+	data, err = json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode backup update: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE backups SET data = ?, updated_at = ? WHERE id = ?`,
+		data, time.Now().UTC().Format(time.RFC3339Nano), id); err != nil {
+		return fmt.Errorf("update backup: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) CancelBackup(id string) error {
+	if _, err := s.Backup(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	cancel := s.cancels[id]
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
 func NewID() string { return newID() }
 
 func (s *Store) initialize() error {
@@ -363,6 +563,27 @@ func (s *Store) initialize() error {
 			created_at TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS migrations (
+			id TEXT PRIMARY KEY,
+			data BLOB NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS remote_storages (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			endpoint TEXT NOT NULL DEFAULT '',
+			bucket TEXT NOT NULL DEFAULT '',
+			region TEXT NOT NULL DEFAULT '',
+			access_key TEXT NOT NULL DEFAULT '',
+			secret_key_encrypted BLOB NOT NULL,
+			path TEXT NOT NULL DEFAULT '',
+			auth_mode TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS backups (
 			id TEXT PRIMARY KEY,
 			data BLOB NOT NULL,
 			updated_at TEXT NOT NULL
@@ -390,7 +611,10 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionNoteColumn(); err != nil {
 		return err
 	}
-	return s.recoverInterruptedMigrations()
+	if err := s.recoverInterruptedMigrations(); err != nil {
+		return err
+	}
+	return s.recoverInterruptedBackups()
 }
 
 func (s *Store) ensureConnectionVersionColumn() error {
@@ -438,6 +662,31 @@ func (s *Store) recoverInterruptedMigrations() error {
 	return nil
 }
 
+func (s *Store) recoverInterruptedBackups() error {
+	items, err := s.Backups()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.Status != model.StatusPending && item.Status != model.StatusRunning {
+			continue
+		}
+		finished := time.Now().UTC()
+		if err := s.UpdateBackup(item.ID, func(value *model.BackupJob) {
+			value.Status = model.StatusFailed
+			value.Stage = "failed"
+			value.Error = "API 服务重启，运行中的备份任务已中断"
+			value.FinishedAt = &finished
+			value.Events = append(value.Events, model.Event{
+				Time: finished, Level: "ERROR", Message: value.Error,
+			})
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -464,6 +713,66 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 		return model.Connection{}, fmt.Errorf("parse connection creation time: %w", err)
 	}
 	return item, nil
+}
+
+func (s *Store) scanStorage(row scanner) (model.RemoteStorage, error) {
+	var item model.RemoteStorage
+	var encrypted []byte
+	var createdAt string
+	if err := row.Scan(&item.ID, &item.Type, &item.Name, &item.Provider, &item.Endpoint, &item.Bucket,
+		&item.Region, &item.AccessKey, &encrypted, &item.Path, &item.AuthMode, &item.Note,
+		&item.Status, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.RemoteStorage{}, ErrNotFound
+		}
+		return model.RemoteStorage{}, fmt.Errorf("scan remote storage: %w", err)
+	}
+	secret, err := s.decrypt(encrypted)
+	if err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("decrypt remote storage %s: %w", item.ID, err)
+	}
+	item.SecretKey = secret
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("parse remote storage creation time: %w", err)
+	}
+	return item, nil
+}
+
+func normalizeStorageType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "object", "object_storage", "object-storage", "s3":
+		return "object"
+	case "google_drive", "google-drive", "gdrive":
+		return "google_drive"
+	case "onedrive", "one_drive", "one-drive":
+		return "one_drive"
+	case "local":
+		return "local"
+	default:
+		return strings.TrimSpace(value)
+	}
+}
+
+func storageStatusForInput(input model.StorageInput) string {
+	switch normalizeStorageType(input.Type) {
+	case "google_drive", "one_drive":
+		return "needs_auth"
+	case "object":
+		if input.Verified {
+			return "connected"
+		}
+		return "untested"
+	default:
+		return "untested"
+	}
+}
+
+func nonEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (s *Store) encrypt(value string) ([]byte, error) {
@@ -523,6 +832,17 @@ func decodeMigration(data []byte) (model.Migration, error) {
 	}
 	if value.Results == nil {
 		value.Results = []model.TableResult{}
+	}
+	if value.Events == nil {
+		value.Events = []model.Event{}
+	}
+	return value, nil
+}
+
+func decodeBackup(data []byte) (model.BackupJob, error) {
+	var value model.BackupJob
+	if err := json.Unmarshal(data, &value); err != nil {
+		return model.BackupJob{}, fmt.Errorf("decode backup: %w", err)
 	}
 	if value.Events == nil {
 		value.Events = []model.Event{}

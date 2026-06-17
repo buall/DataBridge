@@ -1,6 +1,6 @@
 export type DatabaseType = "PostgreSQL" | "MySQL" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
-export type AppView = "overview" | "connections" | "migrations" | "logs";
+export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs";
 export type MigrationStage = "list" | "wizard" | "running" | "report";
 
 export interface DatabaseConnection {
@@ -28,6 +28,40 @@ export interface ConnectionInput {
   username: string;
   password: string;
   sslMode: string;
+}
+
+export type RemoteStorageType = "object" | "google_drive" | "one_drive" | "local";
+export type RemoteStorageStatus = "connected" | "warning" | "needs_auth" | "untested";
+
+export interface RemoteStorage {
+  id: string;
+  type: RemoteStorageType;
+  name: string;
+  provider: string;
+  endpoint?: string;
+  bucket?: string;
+  region?: string;
+  accessKey?: string;
+  path?: string;
+  authMode?: string;
+  note?: string;
+  status: RemoteStorageStatus;
+  createdAt: string;
+}
+
+export interface RemoteStorageInput {
+  type: RemoteStorageType;
+  name: string;
+  provider: string;
+  endpoint?: string;
+  bucket?: string;
+  region?: string;
+  accessKey?: string;
+  secretKey?: string;
+  path?: string;
+  authMode?: string;
+  note?: string;
+  verified?: boolean;
 }
 
 export interface DatabaseInfo {
@@ -68,6 +102,15 @@ export interface MigrationConfig {
   targetDatabase: string;
   tables: string[];
   conflictStrategy: "backup" | "skip" | "overwrite";
+}
+
+export interface BackupConfig {
+  name: string;
+  sourceId: string;
+  sourceDatabase: string;
+  sourceDatabases: string[];
+  destinationType: "storage" | "local" | "object";
+  destination: string;
 }
 
 export interface MigrationEvent {
@@ -120,5 +163,24 @@ export interface MigrationJob {
   sourceDatabase: string;
   targetDatabase: string;
   results: TableResult[];
+  events: MigrationEvent[];
+}
+
+export interface BackupJob {
+  id: string;
+  name: string;
+  status: MigrationJob["status"];
+  stage: string;
+  progress: number;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  sourceName: string;
+  sourceType: string;
+  sourceDatabase: string;
+  destinationType: string;
+  destination: string;
+  artifactName?: string;
+  artifactSize?: number;
   events: MigrationEvent[];
 }

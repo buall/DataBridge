@@ -1,10 +1,14 @@
 import type {
   ConnectionInput,
   AuditLogEntry,
+  BackupConfig,
+  BackupJob,
   DatabaseConnection,
   DatabaseInfo,
   MigrationConfig,
   MigrationJob,
+  RemoteStorage,
+  RemoteStorageInput,
   SeedDataResult,
   TableInfo,
 } from "./types";
@@ -21,6 +25,13 @@ export type MigrationsResponse = {
   migrations: MigrationJob[];
   auditLogs?: AuditLogEntry[];
 };
+
+function normalizeBackup(job: BackupJob): BackupJob {
+  return {
+    ...job,
+    events: job.events ?? [],
+  };
+}
 
 function normalizeMigration(job: MigrationJob): MigrationJob {
   return {
@@ -86,6 +97,24 @@ export const api = {
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`, { method: "POST", body: JSON.stringify({ name }) }),
   seedData: (connectionId: string, database: string, rows: number, mode: "append" | "replace", template: "users" | "orders" | "products") =>
     request<SeedDataResult>(`/connections/${connectionId}/seed`, { method: "POST", body: JSON.stringify({ database, rows, mode, template }) }),
+  storages: () => request<RemoteStorage[]>("/storages"),
+  createStorage: (input: RemoteStorageInput) =>
+    request<RemoteStorage>("/storages", { method: "POST", body: JSON.stringify(input) }),
+  objectBuckets: (input: RemoteStorageInput) =>
+    request<{ buckets: string[] }>("/storages/object/buckets", { method: "POST", body: JSON.stringify(input) }),
+  storedObjectBuckets: (storageId: string, input: RemoteStorageInput) =>
+    request<{ buckets: string[] }>(`/storages/${storageId}/buckets`, { method: "POST", body: JSON.stringify(input) }),
+  createStoredObjectBucket: (storageId: string, name: string) =>
+    request<{ storage: RemoteStorage; buckets: string[] }>(`/storages/${storageId}/buckets/create`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  updateStorage: (storageId: string, input: RemoteStorageInput) =>
+    request<RemoteStorage>(`/storages/${storageId}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteStorage: (storageId: string) =>
+    request<{ ok: boolean }>(`/storages/${storageId}`, { method: "DELETE" }),
+  testStorage: (storageId: string) =>
+    request<{ storage: RemoteStorage; message: string }>(`/storages/${storageId}/test`, { method: "POST" }),
   tables: (connectionId: string, database: string) =>
     request<TableInfo[]>(`/connections/${connectionId}/databases/${encodeURIComponent(database)}/tables`),
   createMigration: async (config: MigrationConfig) =>
@@ -100,4 +129,10 @@ export const api = {
     return { migrations, auditLogs };
   },
   migrations: async () => (await api.migrationsWithAudit()).migrations,
+  backups: async () => (await request<BackupJob[]>("/backups")).map(normalizeBackup),
+  createBackup: async (config: BackupConfig) =>
+    normalizeBackup(await request<BackupJob>("/backups", { method: "POST", body: JSON.stringify(config) })),
+  backup: async (id: string) => normalizeBackup(await request<BackupJob>(`/backups/${id}`)),
+  cancelBackup: (id: string) =>
+    request<{ ok: boolean }>(`/backups/${id}/cancel`, { method: "POST" }),
 };

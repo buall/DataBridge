@@ -1,7 +1,9 @@
 import {
   Activity,
+  Archive,
   Bell,
   Cable,
+  Cloud,
   Database,
   LayoutDashboard,
   LogOut,
@@ -17,7 +19,9 @@ import type { AppView } from "../types";
 const mainNav = [
   { id: "overview" as const, label: "总览", icon: LayoutDashboard },
   { id: "connections" as const, label: "数据连接", icon: Cable },
+  { id: "storages" as const, label: "远端存储", icon: Cloud },
   { id: "migrations" as const, label: "迁移任务", icon: Activity },
+  { id: "backups" as const, label: "备份任务", icon: Archive },
   { id: "logs" as const, label: "运行日志", icon: ScrollText },
 ];
 

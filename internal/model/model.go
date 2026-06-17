@@ -44,6 +44,53 @@ type Connection struct {
 	Password  string    `json:"-"`
 }
 
+type StorageInput struct {
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Bucket    string `json:"bucket,omitempty"`
+	Region    string `json:"region,omitempty"`
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
+	Path      string `json:"path,omitempty"`
+	AuthMode  string `json:"authMode,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Verified  bool   `json:"verified,omitempty"`
+}
+
+type UpdateStorageInput struct {
+	Type      string `json:"type,omitempty"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Bucket    string `json:"bucket,omitempty"`
+	Region    string `json:"region,omitempty"`
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
+	Path      string `json:"path,omitempty"`
+	AuthMode  string `json:"authMode,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Verified  bool   `json:"verified,omitempty"`
+}
+
+type RemoteStorage struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	Name      string    `json:"name"`
+	Provider  string    `json:"provider"`
+	Endpoint  string    `json:"endpoint,omitempty"`
+	Bucket    string    `json:"bucket,omitempty"`
+	Region    string    `json:"region,omitempty"`
+	AccessKey string    `json:"accessKey,omitempty"`
+	Path      string    `json:"path,omitempty"`
+	AuthMode  string    `json:"authMode,omitempty"`
+	Note      string    `json:"note,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"createdAt"`
+	SecretKey string    `json:"-"`
+}
+
 type DatabaseInfo struct {
 	Name string `json:"name"`
 	Size int64  `json:"sizeBytes"`
@@ -85,6 +132,16 @@ type MigrationRequest struct {
 	TargetDatabase   string   `json:"targetDatabase"`
 	Tables           []string `json:"tables"`
 	ConflictStrategy string   `json:"conflictStrategy"`
+}
+
+type BackupRequest struct {
+	Name            string         `json:"name"`
+	SourceID        string         `json:"sourceId"`
+	SourceDatabase  string         `json:"sourceDatabase"`
+	SourceDatabases []string       `json:"sourceDatabases,omitempty"`
+	DestinationType string         `json:"destinationType"`
+	Destination     string         `json:"destination"`
+	Storage         *RemoteStorage `json:"-"`
 }
 
 type MigrationStatus string
@@ -175,4 +232,24 @@ type Migration struct {
 	Results        []TableResult    `json:"results"`
 	Events         []Event          `json:"events"`
 	Request        MigrationRequest `json:"-"`
+}
+
+type BackupJob struct {
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	Status          MigrationStatus `json:"status"`
+	Stage           string          `json:"stage"`
+	Progress        int             `json:"progress"`
+	StartedAt       time.Time       `json:"startedAt"`
+	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	SourceName      string          `json:"sourceName"`
+	SourceType      string          `json:"sourceType"`
+	SourceDatabase  string          `json:"sourceDatabase"`
+	DestinationType string          `json:"destinationType"`
+	Destination     string          `json:"destination"`
+	ArtifactName    string          `json:"artifactName,omitempty"`
+	ArtifactSize    int64           `json:"artifactSize,omitempty"`
+	Events          []Event         `json:"events"`
+	Request         BackupRequest   `json:"-"`
 }
