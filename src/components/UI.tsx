@@ -1,8 +1,11 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { Children, Fragment, isValidElement, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import mysqlIcon from "../assets/icons/devicon--mysql.svg";
 import postgresqlIcon from "../assets/icons/devicon--postgresql.svg";
 import redisIcon from "../assets/icons/devicon--redis.svg";
 import type { DatabaseType } from "../types";
+
+type SelectOptionItem = { value: string; label: string };
 
 export function Button({
   variant = "primary",
@@ -87,18 +90,75 @@ export function SelectField({
   value,
   onChange,
   children,
+  disabled = false,
 }: {
   label: string;
-  value: string;
+  value: string | number;
   onChange: (value: string) => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const options = useMemo(() => extractOptions(children), [children]);
+  const selected = options.find((item: SelectOptionItem) => item.value === String(value)) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
   return (
-    <label className="field">
+    <div className="field select-field" ref={rootRef}>
       <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {children}
-      </select>
-    </label>
+      <button type="button" className="select-trigger" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+        <span>{selected?.label ?? "请选择"}</span>
+        <ChevronDown size={16} />
+      </button>
+      {open && !disabled && (
+        <div className="select-menu" role="listbox" aria-label={label}>
+          {options.map((item) => (
+            <button
+              type="button"
+              key={item.value}
+              className={item.value === String(value) ? "active" : ""}
+              role="option"
+              aria-selected={item.value === String(value)}
+              onClick={() => {
+                onChange(item.value);
+                setOpen(false);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
+}
+
+function extractOptions(children: ReactNode): SelectOptionItem[] {
+  return Children.toArray(children).flatMap((child) => {
+    if (!isValidElement(child)) return [];
+    if (child.type === "option") return [optionFromElement(child as ReactElement<{ value?: string | number; children?: ReactNode }>)];
+    if (child.type === Fragment) return extractOptions((child as ReactElement<{ children?: ReactNode }>).props.children);
+    return [];
+  });
+}
+
+function optionFromElement(element: ReactElement<{ value?: string | number; children?: ReactNode }>): SelectOptionItem {
+  const label = Children.toArray(element.props.children).join("");
+  return { value: String(element.props.value ?? label), label };
 }

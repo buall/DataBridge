@@ -22,6 +22,7 @@ export function BackupList({
     );
   }, [backups, query]);
   const running = backups.filter((item) => item.status === "running" || item.status === "pending").length;
+  const scheduled = backups.filter((item) => item.status === "scheduled").length;
   const completed = backups.filter((item) => item.status === "completed").length;
   const totalBytes = backups.reduce((sum, item) => sum + (item.artifactSize ?? 0), 0);
 
@@ -34,6 +35,7 @@ export function BackupList({
       <div className="task-summary-grid">
         <TaskSummary title="全部任务" value={backups.length} detail="任务记录已保存" />
         <TaskSummary title="进行中" value={running} detail="可查看实时进度" tone="blue" />
+        <TaskSummary title="定时计划" value={scheduled} detail="到点自动执行" tone="orange" />
         <TaskSummary title="已完成" value={completed} detail={`累计 ${formatBytes(totalBytes)}`} tone="green" />
       </div>
       <Card className="task-table-card">
@@ -49,9 +51,9 @@ export function BackupList({
                 <strong className="task-name">{job.name}</strong>
                 <div className="task-route"><strong>{job.sourceName}</strong><small>{job.sourceType} · {job.sourceDatabase}</small></div>
                 <span className="task-name">{job.destination}</span>
-                <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
+                <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
                 <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
+                <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
               </button>
             ))}
           </div>
@@ -66,8 +68,13 @@ export function BackupList({
   );
 }
 
-function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; value: number; detail: string; tone?: "gray" | "blue" | "green" }) {
+function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; value: number; detail: string; tone?: "gray" | "blue" | "green" | "orange" }) {
   return <Card className={`task-summary-card ${tone}`}><span>{title}</span><strong>{value}</strong><small>{detail}</small></Card>;
+}
+
+function nextRunLabel(value?: string) {
+  if (!value) return "待调度";
+  return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function formatBytes(value: number) {

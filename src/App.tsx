@@ -200,7 +200,7 @@ export default function App() {
     const job = await api.createBackup(config);
     setBackups((current) => [job, ...current]);
     window.history.pushState(null, "", pathForBackup(job));
-    setRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
+    setRoute({ view: "backups", stage: job.status === "scheduled" ? "report" : "running", jobId: job.id, sourceId: null });
   }
   const completeMigration = useCallback((job: MigrationJob) => {
     setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);

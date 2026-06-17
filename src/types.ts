@@ -111,6 +111,11 @@ export interface BackupConfig {
   sourceDatabases: string[];
   destinationType: "storage" | "local" | "object";
   destination: string;
+  scheduleMode: "once" | "scheduled";
+  scheduleFrequency?: "daily" | "weekly" | "monthly";
+  scheduleTime?: string;
+  scheduleWeekday?: number;
+  scheduleMonthDay?: number;
 }
 
 export interface MigrationEvent {
@@ -169,7 +174,7 @@ export interface MigrationJob {
 export interface BackupJob {
   id: string;
   name: string;
-  status: MigrationJob["status"];
+  status: MigrationJob["status"] | "scheduled";
   stage: string;
   progress: number;
   startedAt: string;
@@ -180,6 +185,13 @@ export interface BackupJob {
   sourceDatabase: string;
   destinationType: string;
   destination: string;
+  scheduleMode?: "once" | "scheduled";
+  scheduleFrequency?: "daily" | "weekly" | "monthly";
+  scheduleTime?: string;
+  scheduleWeekday?: number;
+  scheduleMonthDay?: number;
+  nextRunAt?: string;
+  lastRunAt?: string;
   artifactName?: string;
   artifactSize?: number;
   events: MigrationEvent[];

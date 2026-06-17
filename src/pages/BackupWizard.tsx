@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Database } from "lucide-react";
+import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { BackupConfig, DatabaseConnection, DatabaseInfo, RemoteStorage } from "../types";
@@ -28,6 +28,11 @@ export function BackupWizard({
     sourceDatabases: [],
     destinationType: "storage",
     destination: writableStorages[0]?.id ?? "",
+    scheduleMode: "once",
+    scheduleFrequency: "daily",
+    scheduleTime: "02:00:00",
+    scheduleWeekday: 1,
+    scheduleMonthDay: 1,
   });
 
   useEffect(() => {
@@ -110,6 +115,21 @@ export function BackupWizard({
             <SelectField label="备份目标" value={config.destination} onChange={(destination) => setConfig({ ...config, destination })}>{writableStorages.map((item) => <option key={item.id} value={item.id}>{item.name} · {storageTypeLabel(item)}</option>)}</SelectField>
             <div className="endpoint-summary"><Archive size={22} /><div><span>目标位置</span><strong>{destination?.bucket || destination?.path || "未设置"}</strong><small>{destination?.endpoint || destination?.provider}</small></div></div>
           </div>
+          <div className="schedule-panel">
+            <span>执行方式</span>
+            <div className="segmented-control">
+              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once" })}>一次性</button>
+              <button type="button" className={config.scheduleMode === "scheduled" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "scheduled" })}>定时</button>
+            </div>
+            {config.scheduleMode === "scheduled" && (
+              <div className="schedule-grid">
+                <SelectField label="频率" value={config.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setConfig({ ...config, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
+                <TimeSelect value={config.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setConfig({ ...config, scheduleTime })} />
+                {config.scheduleFrequency === "weekly" && <SelectField label="每周" value={config.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setConfig({ ...config, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
+                {config.scheduleFrequency === "monthly" && <SelectField label="每月" value={config.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setConfig({ ...config, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+              </div>
+            )}
+          </div>
         </Card>
       )}
 
@@ -117,16 +137,120 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>导出方式</span><strong>{source?.type === "MySQL" ? "mysqldump SQL" : "pg_dump SQL"}</strong></div></div>
+          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>导出方式</span><strong>{source?.type === "MySQL" ? "mysqldump SQL" : "pg_dump SQL"}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
         </Card>
       )}
 
       <div className="wizard-actions">
         <span>备份文件会写入本地任务记录，密钥仍仅在后端加密保存</span>
-        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || !config.sourceDatabases.length || !config.destination} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
+        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || !config.sourceDatabases.length || !config.destination} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
     </div>
   );
+}
+
+const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+function scheduleLabel(config: BackupConfig) {
+  if (config.scheduleMode !== "scheduled") return "一次性立即执行";
+  if (config.scheduleFrequency === "weekly") return `每周${weekdays[config.scheduleWeekday ?? 1]} ${config.scheduleTime}`;
+  if (config.scheduleFrequency === "monthly") return `每月 ${config.scheduleMonthDay ?? 1} 日 ${config.scheduleTime}`;
+  return `每天 ${config.scheduleTime}`;
+}
+
+export function TimeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const normalized = normalizeScheduleTime(draft || value);
+  const [hour, minute, second] = normalized.split(":");
+
+  useEffect(() => setDraft(value), [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        const nextValue = normalizeScheduleTime(draft || value);
+        setDraft(nextValue);
+        onChange(nextValue);
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [draft, onChange, open, value]);
+
+  function commit(input: string) {
+    const nextValue = normalizeScheduleTime(input);
+    setDraft(nextValue);
+    onChange(nextValue);
+  }
+
+  function updatePart(index: number, part: string) {
+    const parts = normalized.split(":");
+    parts[index] = part;
+    commit(parts.join(":"));
+  }
+
+  return (
+    <div className="field time-select-field" ref={rootRef}>
+      <span>执行时间</span>
+      <div className={`time-select-control ${open ? "open" : ""}`}>
+        <Clock size={16} className="time-picker-icon" />
+        <input
+          inputMode="numeric"
+          value={draft}
+          placeholder="02:00:00"
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === "Tab") commit(event.currentTarget.value);
+            if (event.key === "Escape") setOpen(false);
+          }}
+          onChange={(event) => setDraft(event.target.value.replace(/[^\d:]/g, "").slice(0, 8))}
+          aria-label="执行时间"
+        />
+        <button type="button" className="time-picker-toggle" aria-label="选择执行时间" aria-expanded={open} onMouseDown={(event) => event.preventDefault()} onClick={() => setOpen((current) => !current)}>
+          <ChevronDown size={16} />
+        </button>
+        {open && (
+          <div className="time-picker-menu">
+            <TimeColumn label="时" value={hour} options={hourOptions} onPick={(part) => updatePart(0, part)} />
+            <TimeColumn label="分" value={minute} options={minuteSecondOptions} onPick={(part) => updatePart(1, part)} />
+            <TimeColumn label="秒" value={second} options={minuteSecondOptions} onPick={(part) => updatePart(2, part)} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TimeColumn({ label, value, options, onPick }: { label: string; value: string; options: string[]; onPick: (value: string) => void }) {
+  return (
+    <div className="time-picker-column">
+      <span>{label}</span>
+      <div>
+        {options.map((item) => <button type="button" key={item} className={item === value ? "active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => onPick(item)}>{item}</button>)}
+      </div>
+    </div>
+  );
+}
+
+const hourOptions = Array.from({ length: 24 }, (_, index) => String(index).padStart(2, "0"));
+const minuteSecondOptions = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, "0"));
+
+function normalizeScheduleTime(value: string) {
+  const parts = value.split(":");
+  const hour = normalizeTimePart(parts[0], 23);
+  const minute = normalizeTimePart(parts[1], 59);
+  const second = normalizeTimePart(parts[2], 59);
+  return `${hour}:${minute}:${second}`;
+}
+
+function normalizeTimePart(value = "", max: number) {
+  const numeric = Number(value.replace(/\D/g, ""));
+  if (!Number.isFinite(numeric)) return "00";
+  return String(Math.max(0, Math.min(max, numeric))).padStart(2, "0");
 }
 
 function SourceConnectionSelect({ connectionId, connections, onChange }: { connectionId: string; connections: DatabaseConnection[]; onChange: (value: string) => void }) {
