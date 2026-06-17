@@ -95,7 +95,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/backups", server.listBackups)
 	mux.Handle("/api/", server.auth.authMiddleware(protected))
 	mux.Handle("/", staticHandler())
-	return recoverMiddleware(corsMiddleware(mux))
+	return recoverMiddleware(server.loggingMiddleware(corsMiddleware(mux)))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -1526,6 +1526,215 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]string{"code": code, "message": message})
+}
+
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	status      int
+	bytes       int
+	body        []byte
+	wroteHeader bool
+}
+
+func (w *loggingResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *loggingResponseWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.bytes += len(data)
+	if len(w.body) < 4096 {
+		remaining := 4096 - len(w.body)
+		if remaining > len(data) {
+			remaining = len(data)
+		}
+		w.body = append(w.body, data[:remaining]...)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+type responseErrorPayload struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+const (
+	ansiReset  = "\033[0m"
+	ansiBold   = "\033[1m"
+	ansiBlue   = "\033[34m"
+	ansiCyan   = "\033[36m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiRed    = "\033[31m"
+	ansiGray   = "\033[90m"
+)
+
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &loggingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		startedAt := time.Now()
+		next.ServeHTTP(recorder, r)
+
+		if !strings.HasPrefix(r.URL.Path, "/api/") || s.shouldSkipRequestLog(r.URL.Path) {
+			return
+		}
+
+		duration := time.Since(startedAt)
+		clientIP := clientAddress(r)
+		var payload responseErrorPayload
+		if len(recorder.body) > 0 {
+			_ = json.Unmarshal(recorder.body, &payload)
+		}
+
+		s.logAPIRequest(r, recorder.status, duration, clientIP, payload, recorder.bytes)
+	})
+}
+
+func (s *Server) shouldSkipRequestLog(path string) bool {
+	return path == "/api/healthz"
+}
+
+func clientAddress(r *http.Request) string {
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+		return forwarded
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-Ip")); realIP != "" {
+		return realIP
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	if strings.TrimSpace(r.RemoteAddr) != "" {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return "unknown"
+}
+
+func (s *Server) logAPIRequest(r *http.Request, status int, duration time.Duration, clientIP string, payload responseErrorPayload, responseBytes int) {
+	message := fmt.Sprintf("%s %s -> %d", r.Method, r.URL.Path, status)
+	detailParts := []string{
+		"method=" + r.Method,
+		"path=" + r.URL.Path,
+		"status=" + strconv.Itoa(status),
+		"duration=" + duration.String(),
+		"client=" + clientIP,
+		"response_bytes=" + strconv.Itoa(responseBytes),
+	}
+	if query := strings.TrimSpace(r.URL.RawQuery); query != "" {
+		detailParts = append(detailParts, "query="+query)
+	}
+	if payload.Code != "" {
+		detailParts = append(detailParts, "error_code="+payload.Code)
+	}
+	if payload.Message != "" {
+		detailParts = append(detailParts, "error_message="+sanitizeLogValue(payload.Message))
+	}
+	detail := strings.Join(detailParts, " ")
+
+	level := "INFO"
+	action := "api_request"
+	result := "success"
+	if status >= http.StatusBadRequest {
+		level = "ERROR"
+		result = "failed"
+	}
+
+	log.Printf("%s", formatAPIConsoleLog(r, status, duration, clientIP, payload, responseBytes))
+	if err := s.store.AddAuditLog(store.AuditLog{
+		Level:        level,
+		Action:       action,
+		ResourceType: "http_request",
+		ResourceID:   r.URL.Path,
+		ResourceName: r.Method + " " + r.URL.Path,
+		Status:       result,
+		Message:      message,
+		Detail:       detail,
+	}); err != nil {
+		log.Printf("api request audit persistence failed: %v", err)
+	}
+}
+
+func sanitizeLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\t", " ")
+	return value
+}
+
+func formatAPIConsoleLog(r *http.Request, status int, duration time.Duration, clientIP string, payload responseErrorPayload, responseBytes int) string {
+	methodColor := ansiBlue
+	switch r.Method {
+	case http.MethodPost:
+		methodColor = ansiCyan
+	case http.MethodPut:
+		methodColor = ansiYellow
+	case http.MethodDelete:
+		methodColor = ansiRed
+	}
+
+	statusColor := ansiGreen
+	switch {
+	case status >= 500:
+		statusColor = ansiRed
+	case status >= 400:
+		statusColor = ansiYellow
+	case status >= 300:
+		statusColor = ansiBlue
+	}
+
+	durationColor := ansiGreen
+	if duration >= time.Second {
+		durationColor = ansiRed
+	} else if duration >= 200*time.Millisecond {
+		durationColor = ansiYellow
+	}
+
+	parts := []string{
+		ansiGray + "api" + ansiReset,
+		methodColor + ansiBold + padHTTPMethod(r.Method) + ansiReset,
+		ansiBold + r.URL.Path + ansiReset,
+		statusColor + ansiBold + strconv.Itoa(status) + ansiReset,
+		durationColor + duration.String() + ansiReset,
+		ansiGray + "client=" + clientIP + ansiReset,
+		ansiGray + "bytes=" + strconv.Itoa(responseBytes) + ansiReset,
+	}
+	if query := strings.TrimSpace(r.URL.RawQuery); query != "" {
+		parts = append(parts, ansiGray+"query="+query+ansiReset)
+	}
+	if payload.Code != "" {
+		parts = append(parts, statusColor+"code="+payload.Code+ansiReset)
+	}
+	if payload.Message != "" {
+		parts = append(parts, statusColor+"message="+sanitizeLogValue(payload.Message)+ansiReset)
+	}
+	return strings.Join(parts, " ")
+}
+
+func padHTTPMethod(method string) string {
+	switch len(method) {
+	case 3:
+		return method + "   "
+	case 4:
+		return method + "  "
+	case 5:
+		return method + " "
+	default:
+		return method
+	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

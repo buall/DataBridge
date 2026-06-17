@@ -11,6 +11,7 @@ interface LogEntry extends MigrationEvent {
   targetName: string;
   sourceDatabase: string;
   targetDatabase: string;
+  category?: "migration" | "audit" | "api";
 }
 
 export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[]; auditLogs?: AuditLogEntry[] }) {
@@ -35,13 +36,14 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         message: event.detail ? `${event.message} · ${event.detail}` : event.message,
         jobId: event.id,
         jobName: event.action,
-        jobStatus: "completed" as MigrationJob["status"],
-        sourceName: event.connectionName || event.resourceName || "系统操作",
+        jobStatus: event.level === "ERROR" ? ("failed" as MigrationJob["status"]) : ("completed" as MigrationJob["status"]),
+        sourceName: event.action === "api_request" ? "API 请求" : event.connectionName || event.resourceName || "系统操作",
         targetName: event.status || "完成",
         sourceDatabase: event.database || "—",
         targetDatabase: event.resourceType || "connection",
+        category: event.action === "api_request" ? "api" as const : "audit" as const,
       }));
-      return [...migrationEntries, ...auditEntries].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+      return [...migrationEntries.map((item) => ({ ...item, category: "migration" as const })), ...auditEntries].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
     },
     [migrations, auditLogs],
   );
@@ -84,22 +86,27 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         <div className="section-title compact">
           <div>
             <h3>事件列表</h3>
-            <p>{entries.length ? "来自后端迁移引擎的事件。" : "当前还没有迁移事件。"}</p>
+            <p>{entries.length ? "这里会汇总迁移事件、系统审计和 API 访问日志。" : "当前还没有运行日志。"}</p>
           </div>
         </div>
         {filtered.length ? (
           <div className="log-table">
             <div className="log-row log-head"><span>时间</span><span>级别</span><span>实例 / 数据库</span><span>事件内容</span><span>状态</span></div>
             {filtered.map((entry, index) => (
-              <div className="log-row" key={`${entry.jobId}-${entry.time}-${index}`}>
+              <div className={`log-row ${logRowTone(entry)}`} key={`${entry.jobId}-${entry.time}-${index}`}>
                 <time>{formatTime(entry.time)}</time>
                 <Badge tone={levelTone(entry.level)}>{entry.level}</Badge>
                 <div className="log-task">
                   <strong>{entry.sourceName} → {entry.targetName}</strong>
-                  <small>{entry.sourceDatabase} → {entry.targetDatabase}</small>
+                  <small>
+                    {entry.category === "api" ? <span className="log-chip api">API</span> : null}
+                    {entry.category === "audit" ? <span className="log-chip audit">AUDIT</span> : null}
+                    {entry.category === "migration" ? <span className="log-chip migration">TASK</span> : null}
+                    <span>{entry.sourceDatabase} → {entry.targetDatabase}</span>
+                  </small>
                 </div>
-                <span className="log-message">{entry.message}</span>
-                <span className="log-status">{statusIcon(entry.jobStatus)}{statusLabel(entry.jobStatus)}</span>
+                <span className={`log-message ${logMessageTone(entry)}`}>{entry.message}</span>
+                <span className={`log-status ${logStatusTone(entry.jobStatus)}`}>{statusIcon(entry.jobStatus)}{statusLabel(entry.jobStatus)}</span>
               </div>
             ))}
           </div>
@@ -108,7 +115,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
             <Clock3 size={22} />
             <div>
               <strong>{entries.length ? "未找到匹配日志" : "暂无运行日志"}</strong>
-              <span>{entries.length ? "换个关键词再试。" : "启动迁移后，这里会按时间展示事件。"}</span>
+              <span>{entries.length ? "换个关键词再试。" : "发生接口调用、迁移或备份后，这里会按时间展示事件。"}</span>
             </div>
           </div>
         )}
@@ -127,6 +134,27 @@ function formatTime(value: string) {
 
 function levelTone(level: string) {
   return level === "ERROR" ? "red" : level === "WARN" ? "orange" : "green";
+}
+
+function logRowTone(entry: LogEntry) {
+  if (entry.level === "ERROR") return "error";
+  if (entry.level === "WARN") return "warn";
+  if (entry.category === "api") return "api";
+  return "";
+}
+
+function logMessageTone(entry: LogEntry) {
+  if (entry.level === "ERROR") return "error";
+  if (entry.level === "WARN") return "warn";
+  if (entry.category === "api") return "api";
+  return "";
+}
+
+function logStatusTone(status: MigrationJob["status"]) {
+  if (status === "failed" || status === "cancelled") return "error";
+  if (status === "running") return "running";
+  if (status === "completed") return "success";
+  return "";
 }
 
 function statusLabel(status: MigrationJob["status"]) {
