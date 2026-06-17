@@ -258,7 +258,7 @@ export function Storages({
               <span className={`storage-icon ${storage.type}`}><StorageIcon type={storage.type} /></span>
               <div>
                 <strong>{storage.name}</strong>
-                <span>{typeLabel(storage.type)} · {storage.provider}</span>
+                <span className="storage-card-subtitle">{typeLabel(storage.type)} · {storage.provider}</span>
               </div>
               <div className="connection-actions" onClick={(event) => event.stopPropagation()}>
                 <button type="button" className="plain-icon action-trigger" aria-label={`${storage.name} 更多操作`} onClick={() => setOpenMenu(openMenu === storage.id ? null : storage.id)}><MoreHorizontal size={18} /></button>
@@ -274,11 +274,14 @@ export function Storages({
               </div>
             </div>
             <dl>
-              <div><dt>状态</dt><dd><Badge tone={statusTone(storage.status)}>{statusLabel(storage.status)}</Badge></dd></div>
               <div><dt>Endpoint</dt><dd>{storage.endpoint || "未设置"}</dd></div>
               <div><dt>Bucket / 路径</dt><dd>{storage.bucket || storage.path || "未设置"}</dd></div>
               <div><dt>备注</dt><dd>{storage.note || "未填写"}</dd></div>
             </dl>
+            <div className="storage-card-foot">
+              <Badge tone={statusTone(storage.status)}>{statusLabel(storage.status)}</Badge>
+              <span>{storage.type === "object" ? "对象存储配置" : "云盘授权配置"}</span>
+            </div>
           </Card>
         ))}
       </div>

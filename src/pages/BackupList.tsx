@@ -48,12 +48,41 @@ export function BackupList({
             <div className="table-row table-head"><span>任务名称</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
             {filtered.map((job) => (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
-                <strong className="task-name">{job.name}</strong>
-                <div className="task-route"><strong>{job.sourceName}</strong><small>{job.sourceType} · {job.sourceDatabase}</small></div>
-                <span className="task-name">{job.destination}</span>
-                <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
-                <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                <div className="task-table-desktop">
+                  <strong className="task-name">{job.name}</strong>
+                  <div className="task-route"><strong>{job.sourceName}</strong><small>{job.sourceType} · {job.sourceDatabase}</small></div>
+                  <span className="task-name task-meta task-destination">{job.destination}</span>
+                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
+                  <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                  <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                </div>
+                <div className="task-mobile-card">
+                  <div className="task-mobile-head">
+                    <span className="task-mobile-icon"><Archive size={18} /></span>
+                    <div className="task-mobile-copy">
+                      <strong>{job.name}</strong>
+                      <span>{job.sourceName}</span>
+                      <small>{job.sourceType} · {job.sourceDatabase}</small>
+                    </div>
+                  </div>
+                  <div className="task-mobile-details">
+                    <div className="task-mobile-row">
+                      <span>目标存储</span>
+                      <strong>{job.destination}</strong>
+                    </div>
+                    <div className="task-mobile-row">
+                      <span>{job.status === "scheduled" ? "下次执行" : "进度"}</span>
+                      <strong>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</strong>
+                    </div>
+                  </div>
+                  <div className="task-mobile-progress">
+                    <i style={{ width: `${job.progress}%` }} />
+                  </div>
+                  <div className="task-mobile-foot">
+                    <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                  </div>
+                </div>
               </button>
             ))}
           </div>
