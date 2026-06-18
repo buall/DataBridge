@@ -75,6 +75,7 @@ func New(appStore *store.Store) http.Handler {
 		geoCache:  make(map[string]string),
 		auth:      loadAuthConfig(),
 	}
+	server.reconcileScheduledBackupRuns()
 	server.startBackupScheduler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", server.health)
@@ -1212,6 +1213,7 @@ func (s *Server) startBackupScheduler() {
 }
 
 func (s *Server) runDueBackups() {
+	s.reconcileScheduledBackupRuns()
 	items, err := s.store.Backups()
 	if err != nil {
 		log.Printf("backup scheduler list failed: %v", err)
@@ -1226,6 +1228,79 @@ func (s *Server) runDueBackups() {
 			log.Printf("backup scheduler trigger failed: %s: %v", item.ID, err)
 		}
 	}
+}
+
+func (s *Server) reconcileScheduledBackupRuns() {
+	items, err := s.store.Backups()
+	if err != nil {
+		log.Printf("backup scheduler reconcile list failed: %v", err)
+		return
+	}
+	now := time.Now().In(appLocation)
+	for _, item := range items {
+		s.reconcileScheduledBackupRun(item, now)
+	}
+}
+
+func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time) {
+	request, ok := scheduleRequestForBackup(item)
+	if !ok {
+		return
+	}
+	if item.NextRunAt != nil && scheduleClockMatches(request, *item.NextRunAt) {
+		return
+	}
+	next, err := nextBackupRun(request, now)
+	if err != nil {
+		log.Printf("backup scheduler reconcile failed: %s: %v", item.ID, err)
+		return
+	}
+	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
+		if job.ScheduleMode != "scheduled" || job.Status != model.StatusScheduled {
+			return
+		}
+		job.Request = request
+		job.ScheduleMode = request.ScheduleMode
+		job.ScheduleFrequency = request.ScheduleFrequency
+		job.ScheduleTime = request.ScheduleTime
+		job.ScheduleWeekday = request.ScheduleWeekday
+		job.ScheduleMonthDay = request.ScheduleMonthDay
+		job.NextRunAt = &next
+		job.Events = append(job.Events, model.Event{Time: now, Level: "INFO", Message: "已按应用时区修正下一次执行时间"})
+	}); err != nil {
+		log.Printf("backup scheduler reconcile update failed: %s: %v", item.ID, err)
+	}
+}
+
+func scheduleRequestForBackup(item model.BackupJob) (model.BackupRequest, bool) {
+	if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled {
+		return model.BackupRequest{}, false
+	}
+	request := item.Request
+	request.ScheduleMode = "scheduled"
+	if request.ScheduleFrequency == "" {
+		request.ScheduleFrequency = item.ScheduleFrequency
+	}
+	if request.ScheduleTime == "" {
+		request.ScheduleTime = item.ScheduleTime
+	}
+	if request.ScheduleWeekday == 0 {
+		request.ScheduleWeekday = item.ScheduleWeekday
+	}
+	if request.ScheduleMonthDay == 0 {
+		request.ScheduleMonthDay = item.ScheduleMonthDay
+	}
+	normalizeBackupSchedule(&request)
+	return request, true
+}
+
+func scheduleClockMatches(request model.BackupRequest, value time.Time) bool {
+	hour, minute, second, err := parseScheduleTime(request.ScheduleTime)
+	if err != nil {
+		return true
+	}
+	local := value.In(appLocation)
+	return local.Hour() == hour && local.Minute() == minute && local.Second() == second
 }
 
 func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (model.BackupJob, error) {
@@ -1665,7 +1740,11 @@ func daysInMonth(year int, month time.Month) int {
 }
 
 func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
-	item, err := s.store.Backup(r.PathValue("id"))
+	id := r.PathValue("id")
+	if item, err := s.store.Backup(id); err == nil {
+		s.reconcileScheduledBackupRun(item, time.Now().In(appLocation))
+	}
+	item, err := s.store.Backup(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "backup not found")
 		return
@@ -1761,6 +1840,7 @@ func (s *Server) cancelBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {
+	s.reconcileScheduledBackupRuns()
 	items, err := s.store.Backups()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
