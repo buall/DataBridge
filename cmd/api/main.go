@@ -16,6 +16,7 @@ import (
 )
 
 func main() {
+	applyAppTimezone()
 	addr := env("DATABRIDGE_ADDR", ":8081")
 	databasePath := env("DATABRIDGE_DB_PATH", "data/databridge.db")
 	keyPath := env("DATABRIDGE_KEY_PATH", "data/databridge.key")
@@ -55,4 +56,13 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func applyAppTimezone() {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		log.Printf("load app timezone failed: %v", err)
+		return
+	}
+	time.Local = location
 }

@@ -36,6 +36,7 @@ ARG PG_MAJOR=18
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
+    TZ=Asia/Shanghai \
     DATABRIDGE_PG_JOBS=4
 
 RUN set -eux; \

@@ -55,6 +55,17 @@ type Server struct {
 	auth      authConfig
 }
 
+var appLocation = mustLoadLocation("Asia/Shanghai")
+
+func mustLoadLocation(name string) *time.Location {
+	location, err := time.LoadLocation(name)
+	if err != nil {
+		log.Printf("load timezone %s failed: %v", name, err)
+		return time.UTC
+	}
+	return location
+}
+
 func New(appStore *store.Store) http.Handler {
 	server := &Server{
 		store:     appStore,
@@ -1018,7 +1029,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	now := time.Now()
+	now := time.Now().In(appLocation)
 	status := model.StatusPending
 	stage := "pending"
 	progress := 0
@@ -1206,7 +1217,7 @@ func (s *Server) runDueBackups() {
 		log.Printf("backup scheduler list failed: %v", err)
 		return
 	}
-	now := time.Now()
+	now := time.Now().In(appLocation)
 	for _, item := range items {
 		if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled || item.NextRunAt == nil || item.NextRunAt.After(now) {
 			continue
@@ -1218,7 +1229,7 @@ func (s *Server) runDueBackups() {
 }
 
 func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (model.BackupJob, error) {
-	now := time.Now()
+	now := time.Now().In(appLocation)
 	if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled {
 		return item, fmt.Errorf("仅已计划的定时备份可以触发")
 	}
@@ -1589,11 +1600,12 @@ func (s *Server) testBackupNotification(w http.ResponseWriter, r *http.Request) 
 }
 
 func nextBackupRun(request model.BackupRequest, after time.Time) (time.Time, error) {
+	after = after.In(appLocation)
 	hour, minute, second, err := parseScheduleTime(request.ScheduleTime)
 	if err != nil {
 		return time.Time{}, err
 	}
-	location := after.Location()
+	location := appLocation
 	candidate := time.Date(after.Year(), after.Month(), after.Day(), hour, minute, second, 0, location)
 	switch request.ScheduleFrequency {
 	case "daily":
@@ -1649,7 +1661,7 @@ func parseScheduleTime(value string) (int, int, int, error) {
 }
 
 func daysInMonth(year int, month time.Month) int {
-	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.Local).Day()
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, appLocation).Day()
 }
 
 func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
@@ -1694,12 +1706,12 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.NotificationTarget = input.NotificationTarget
 	request.Notification = input.Notification
 	normalizeBackupSchedule(&request)
-	next, err := nextBackupRun(request, time.Now())
+	now := time.Now().In(appLocation)
+	next, err := nextBackupRun(request, now)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_schedule", err.Error())
 		return
 	}
-	now := time.Now()
 	if err := s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Name = request.Name
 		item.Request = request
