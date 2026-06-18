@@ -104,6 +104,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/migrations", server.createMigration)
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
+	protected.HandleFunc("DELETE /api/migrations/{id}", server.deleteMigration)
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
 	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
 	protected.HandleFunc("PUT /api/settings/smtp", server.updateSMTPSettings)
@@ -112,7 +113,10 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
 	protected.HandleFunc("PUT /api/backups/{id}", server.updateBackup)
 	protected.HandleFunc("POST /api/backups/{id}/trigger", server.triggerBackup)
+	protected.HandleFunc("POST /api/backups/{id}/restore/precheck", server.restoreBackupPrecheck)
+	protected.HandleFunc("POST /api/backups/{id}/restore", server.restoreBackup)
 	protected.HandleFunc("POST /api/backups/{id}/cancel", server.cancelBackup)
+	protected.HandleFunc("DELETE /api/backups/{id}", server.deleteBackup)
 	protected.HandleFunc("GET /api/backups", server.listBackups)
 	mux.Handle("/api/", server.auth.authMiddleware(protected))
 	mux.Handle("/", staticHandler())
@@ -972,6 +976,24 @@ func (s *Server) cancelMigration(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
+func (s *Server) deleteMigration(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	item, err := s.store.Migration(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "migration not found")
+		return
+	}
+	if item.Status == model.StatusRunning || item.Status == model.StatusPending {
+		writeError(w, http.StatusConflict, "task_running", "任务正在执行，请先停止后再删除")
+		return
+	}
+	if err := s.store.DeleteMigration(id); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextDeleteConnection, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) listMigrations(w http.ResponseWriter, _ *http.Request) {
 	items, err := s.store.Migrations()
 	if err != nil {
@@ -1097,6 +1119,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			if progress.ArtifactSize > 0 {
 				item.ArtifactSize = progress.ArtifactSize
 			}
+			if progress.ArtifactPath != "" {
+				item.ArtifactPath = progress.ArtifactPath
+			}
 			if progress.EventMessage != "" {
 				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
 				if len(item.Events) > 100 {
@@ -1114,6 +1139,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 		if runErr := s.backup.Run(ctx, source, current, func(progress backup.Progress) {
 			if len(databases) > 1 {
 				progress.Progress = index*90/len(databases) + backupProgress(progress.Stage, progress.Progress)/len(databases)
+			}
+			if progress.ArtifactName != "" {
+				s.recordBackupArtifact(id, database, progress)
 			}
 			reporter(progress)
 		}); runErr != nil {
@@ -1170,6 +1198,24 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 	}
 }
 
+func (s *Server) recordBackupArtifact(id, database string, progress backup.Progress) {
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		artifact := model.BackupArtifact{
+			Database: database,
+			Name:     progress.ArtifactName,
+			Size:     progress.ArtifactSize,
+			Path:     progress.ArtifactPath,
+		}
+		for index := range item.Artifacts {
+			if item.Artifacts[index].Database == database {
+				item.Artifacts[index] = artifact
+				return
+			}
+		}
+		item.Artifacts = append(item.Artifacts, artifact)
+	})
+}
+
 func backupDatabases(request model.BackupRequest) []string {
 	seen := map[string]bool{}
 	var databases []string
@@ -1186,13 +1232,147 @@ func backupDatabases(request model.BackupRequest) []string {
 	return databases
 }
 
+func splitDatabaseList(value string) []string {
+	seen := map[string]bool{}
+	var databases []string
+	for _, database := range strings.Split(value, ",") {
+		database = strings.TrimSpace(database)
+		if database != "" && !seen[database] {
+			seen[database] = true
+			databases = append(databases, database)
+		}
+	}
+	return databases
+}
+
+func restoreTargetDatabases(sourceDatabases []string, input model.RestoreBackupRequest) (map[string]string, error) {
+	if len(sourceDatabases) == 0 {
+		return nil, fmt.Errorf("未找到备份中的源数据库")
+	}
+	targets := map[string]string{}
+	for _, sourceDatabase := range sourceDatabases {
+		target := strings.TrimSpace(input.TargetDatabases[sourceDatabase])
+		if target == "" && len(sourceDatabases) == 1 {
+			target = strings.TrimSpace(input.TargetDatabase)
+		}
+		if target == "" {
+			target = sourceDatabase
+		}
+		targets[sourceDatabase] = target
+	}
+	return targets, nil
+}
+
+func selectedRestoreDatabases(available, selected []string) ([]string, error) {
+	if len(available) == 0 {
+		return nil, fmt.Errorf("未找到备份中的源数据库")
+	}
+	if len(selected) == 0 {
+		return available, nil
+	}
+	allowed := map[string]bool{}
+	for _, database := range available {
+		allowed[database] = true
+	}
+	seen := map[string]bool{}
+	var result []string
+	for _, database := range selected {
+		database = strings.TrimSpace(database)
+		if database == "" || seen[database] {
+			continue
+		}
+		if !allowed[database] {
+			return nil, fmt.Errorf("选择的数据库 %s 不在该备份任务中", database)
+		}
+		seen[database] = true
+		result = append(result, database)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("请至少选择一个要恢复的数据库")
+	}
+	return result, nil
+}
+
+func normalizeRestoreStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "recreate", "drop-create", "drop_create":
+		return "recreate"
+	default:
+		return "append"
+	}
+}
+
+func restoreStrategyLabel(strategy string) string {
+	if strategy == "recreate" {
+		return "重建目标库后恢复"
+	}
+	return "追加导入，冲突则失败"
+}
+
+func restoreTargetLabel(sourceDatabases []string, targetDatabases map[string]string) string {
+	var labels []string
+	for _, sourceDatabase := range sourceDatabases {
+		targetDatabase := strings.TrimSpace(targetDatabases[sourceDatabase])
+		if targetDatabase == "" {
+			targetDatabase = sourceDatabase
+		}
+		labels = append(labels, targetDatabase)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func artifactPathForRestoreDatabase(artifactPath, database string) string {
+	if strings.TrimSpace(database) == "" {
+		return artifactPath
+	}
+	base := filepath.Base(artifactPath)
+	dir := filepath.Dir(artifactPath)
+	if strings.Contains(base, sanitizeFilePart(database)) {
+		return artifactPath
+	}
+	candidates, err := filepath.Glob(filepath.Join(dir, "*", base))
+	if err != nil {
+		return artifactPath
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(filepath.ToSlash(candidate), "/"+sanitizeFilePart(database)+"/") {
+			return candidate
+		}
+	}
+	return artifactPath
+}
+
+func sanitizeFilePart(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "database"
+	}
+	var builder strings.Builder
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		} else {
+			builder.WriteRune('_')
+		}
+	}
+	return strings.Trim(builder.String(), "_")
+}
+
 func backupProgress(stage string, reported int) int {
 	if reported > 0 {
 		return reported
 	}
 	switch stage {
+	case "download":
+		return 20
 	case "export":
 		return 35
+	case "extract":
+		return 25
+	case "restore":
+		return 75
+	case "validation":
+		return 95
 	case "upload":
 		return 85
 	case "completed":
@@ -1200,6 +1380,20 @@ func backupProgress(stage string, reported int) int {
 	default:
 		return 10
 	}
+}
+
+func formatBytes(value int64) string {
+	if value < 1024 {
+		return fmt.Sprintf("%d B", value)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	size := float64(value)
+	index := -1
+	for size >= 1024 && index < len(units)-1 {
+		size /= 1024
+		index++
+	}
+	return fmt.Sprintf("%.1f %s", size, units[index])
 }
 
 func (s *Server) startBackupScheduler() {
@@ -1831,12 +2025,498 @@ func (s *Server) triggerBackup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, updated)
 }
 
+func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
+	sourceJob, err := s.store.Backup(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	var input model.RestoreBackupRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.TargetDatabase = strings.TrimSpace(input.TargetDatabase)
+	plan, err := s.buildRestorePlan(sourceJob, input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if plan.TargetID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请选择恢复目标连接")
+		return
+	}
+	if sourceJob.Status != model.StatusCompleted || sourceJob.ArtifactName == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "只有已完成且已生成备份文件的任务可以恢复")
+		return
+	}
+	restoreSource, err := s.restoreSource(sourceJob)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
+		return
+	}
+	target, err := s.store.Connection(plan.TargetID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_target", "未找到目标连接，请重新选择")
+		return
+	}
+	if target.Type != sourceJob.SourceType {
+		writeError(w, http.StatusBadRequest, "invalid_target", "恢复目标类型必须与备份源类型一致")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Now().In(appLocation)
+	value := model.BackupJob{
+		ID: store.NewID(), Name: fmt.Sprintf("恢复 %s 到 %s", strings.Join(plan.SourceDatabases, ", "), plan.TargetLabel),
+		Status: model.StatusPending, Stage: "pending", Progress: 0, StartedAt: now,
+		SourceName: sourceJob.SourceName, SourceType: sourceJob.SourceType, SourceDatabase: strings.Join(plan.SourceDatabases, ", "),
+		DestinationType: "restore", Destination: target.Name + " / " + plan.TargetLabel,
+		ArtifactName: sourceJob.ArtifactName, ArtifactSize: sourceJob.ArtifactSize, ArtifactPath: restoreSource.Path,
+		Events: []model.Event{{Time: now, Level: "INFO", Message: "恢复任务已创建，来源备份任务 " + sourceJob.ID}, {Time: now, Level: "INFO", Message: "恢复策略：" + restoreStrategyLabel(plan.Strategy)}},
+	}
+	if err := s.store.AddBackup(value, cancel); err != nil {
+		cancel()
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	go s.runRestore(ctx, value.ID, target, plan.SourceDatabases, plan.TargetDatabases, plan.Strategy, restoreSource)
+	writeJSON(w, http.StatusAccepted, value)
+}
+
+func (s *Server) restoreBackupPrecheck(w http.ResponseWriter, r *http.Request) {
+	sourceJob, err := s.store.Backup(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	var input model.RestoreBackupRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.TargetDatabase = strings.TrimSpace(input.TargetDatabase)
+	plan, err := s.buildRestorePlan(sourceJob, input)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	target, targetErr := s.store.Connection(plan.TargetID)
+	if targetErr != nil {
+		writeJSON(w, http.StatusOK, model.RestorePrecheckResult{OK: false, Checks: []model.RestorePrecheckItem{{
+			Key: "target", Label: "目标连接", Status: "failed", Message: "未找到目标连接，请重新选择",
+		}}})
+		return
+	}
+	if target.Type != sourceJob.SourceType {
+		writeJSON(w, http.StatusOK, model.RestorePrecheckResult{OK: false, Checks: []model.RestorePrecheckItem{{
+			Key: "target_type", Label: "目标类型", Status: "failed", Message: "恢复目标类型必须与备份源类型一致",
+		}}})
+		return
+	}
+	result := s.runRestorePrecheck(r.Context(), sourceJob, target, plan)
+	writeJSON(w, http.StatusOK, result)
+}
+
+type restorePlan struct {
+	TargetID        string
+	SourceDatabases []string
+	TargetDatabases map[string]string
+	Strategy        string
+	TargetLabel     string
+}
+
+func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.RestoreBackupRequest) (restorePlan, error) {
+	strategy := normalizeRestoreStrategy(input.Strategy)
+	sourceDatabases := backupDatabases(sourceJob.Request)
+	if len(sourceDatabases) == 0 {
+		sourceDatabases = splitDatabaseList(sourceJob.SourceDatabase)
+	}
+	selectedDatabases := input.SelectedDatabases
+	if len(selectedDatabases) == 0 {
+		selectedDatabases = input.SourceDatabases
+	}
+	selected, err := selectedRestoreDatabases(sourceDatabases, selectedDatabases)
+	if err != nil {
+		return restorePlan{}, err
+	}
+	targetDatabases, err := restoreTargetDatabases(selected, input)
+	if err != nil {
+		return restorePlan{}, err
+	}
+	return restorePlan{
+		TargetID:        strings.TrimSpace(input.TargetID),
+		SourceDatabases: selected,
+		TargetDatabases: targetDatabases,
+		Strategy:        strategy,
+		TargetLabel:     restoreTargetLabel(selected, targetDatabases),
+	}, nil
+}
+
+func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJob, target model.Connection, plan restorePlan) model.RestorePrecheckResult {
+	checks := []model.RestorePrecheckItem{}
+	add := func(key, label, status, message string) {
+		checks = append(checks, model.RestorePrecheckItem{Key: key, Label: label, Status: status, Message: message})
+	}
+	if sourceJob.Status != model.StatusCompleted || sourceJob.ArtifactName == "" {
+		add("artifact", "备份产物", "failed", "只有已完成且已生成备份文件的任务可以恢复")
+		return restorePrecheckResult(checks)
+	}
+	if _, err := s.restoreSource(sourceJob); err != nil {
+		add("artifact", "备份产物", "failed", err.Error())
+	} else {
+		add("artifact", "备份产物", "passed", "已找到可恢复的备份产物")
+	}
+	if err := restoreClientToolAvailable(target.Type); err != nil {
+		add("client_tool", "客户端工具", "failed", userFacingErrorMessage(errorContextBackupRuntime, err))
+	} else {
+		add("client_tool", "客户端工具", "passed", restoreClientToolLabel(target.Type)+" 可用")
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	if _, err := serverVersion(timeoutCtx, target); err != nil {
+		add("target_connection", "目标连接", "failed", userFacingErrorMessage(errorContextConnectionTest, err))
+		return restorePrecheckResult(checks)
+	}
+	add("target_connection", "目标连接", "passed", target.Name+" 连接可用")
+	for _, sourceDatabase := range plan.SourceDatabases {
+		targetDatabase := strings.TrimSpace(plan.TargetDatabases[sourceDatabase])
+		if !validRestoreDatabaseName(targetDatabase) {
+			add("database_name_"+sourceDatabase, "目标库名", "failed", fmt.Sprintf("目标数据库 %s 名称不合法", targetDatabase))
+			continue
+		}
+		if plan.Strategy == "append" {
+			if _, err := tables(timeoutCtx, target, targetDatabase); err != nil {
+				add("target_database_"+sourceDatabase, "目标数据库", "failed", fmt.Sprintf("%s：%s", targetDatabase, userFacingErrorMessage(errorContextTableDiscovery, err)))
+			} else {
+				add("target_database_"+sourceDatabase, "目标数据库", "passed", targetDatabase+" 可访问")
+			}
+			continue
+		}
+		if err := checkRestoreRecreatePrivilege(timeoutCtx, target, targetDatabase); err != nil {
+			add("recreate_"+sourceDatabase, "重建权限", "failed", fmt.Sprintf("%s：%s", targetDatabase, userFacingErrorMessage(errorContextBackupRuntime, err)))
+		} else {
+			add("recreate_"+sourceDatabase, "重建权限", "passed", targetDatabase+" 可执行重建前置检查")
+		}
+	}
+	return restorePrecheckResult(checks)
+}
+
+func restorePrecheckResult(checks []model.RestorePrecheckItem) model.RestorePrecheckResult {
+	result := model.RestorePrecheckResult{OK: true, Checks: checks}
+	for _, check := range checks {
+		if check.Status == "failed" {
+			result.OK = false
+			break
+		}
+		if check.Status == "warning" {
+			result.Warnings = append(result.Warnings, check.Message)
+		}
+	}
+	return result
+}
+
+func validRestoreDatabaseName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for _, value := range name {
+		if value < 32 || value == 127 || value == '/' || value == '\\' || value == '\x00' {
+			return false
+		}
+	}
+	return true
+}
+
+func restoreClientToolAvailable(databaseType string) error {
+	switch databaseType {
+	case "PostgreSQL":
+		_, err := backup.ToolPathForPrecheck("psql")
+		return err
+	case "MySQL":
+		_, err := backup.ToolPathForPrecheck("mysql")
+		return err
+	default:
+		return fmt.Errorf("unsupported restore target type %q", databaseType)
+	}
+}
+
+func restoreClientToolLabel(databaseType string) string {
+	if databaseType == "MySQL" {
+		return "mysql"
+	}
+	return "psql"
+}
+
+func checkRestoreRecreatePrivilege(ctx context.Context, target model.Connection, database string) error {
+	switch target.Type {
+	case "PostgreSQL":
+		maintenanceDatabase := "postgres"
+		if strings.EqualFold(strings.TrimSpace(database), maintenanceDatabase) {
+			maintenanceDatabase = "template1"
+		}
+		conn, err := postgres.Connect(ctx, target, maintenanceDatabase)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		var canCreate bool
+		if err := conn.QueryRow(ctx, `SELECT rolsuper OR rolcreatedb FROM pg_roles WHERE rolname = current_user`).Scan(&canCreate); err != nil {
+			return err
+		}
+		if !canCreate {
+			return fmt.Errorf("permission denied: current PostgreSQL user does not have CREATEDB privilege")
+		}
+		var canDrop bool
+		if err := conn.QueryRow(ctx, `SELECT NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1) OR EXISTS (
+			SELECT 1 FROM pg_database d JOIN pg_roles r ON r.oid = d.datdba
+			WHERE d.datname = $1 AND (r.rolname = current_user OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user))
+		)`, database).Scan(&canDrop); err != nil {
+			return err
+		}
+		if !canDrop {
+			return fmt.Errorf("permission denied: current PostgreSQL user is not owner of target database %s", database)
+		}
+		return nil
+	case "MySQL":
+		conn, err := mysql.Connect(ctx, target, "")
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		rows, err := conn.QueryContext(ctx, `SHOW GRANTS`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		grants := ""
+		for rows.Next() {
+			var grant string
+			if err := rows.Scan(&grant); err != nil {
+				return err
+			}
+			grants += strings.ToUpper(grant) + "\n"
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if strings.Contains(grants, "ALL PRIVILEGES") || (strings.Contains(grants, "CREATE") && strings.Contains(grants, "DROP")) {
+			return nil
+		}
+		return fmt.Errorf("permission denied: current MySQL user does not have CREATE and DROP privileges")
+	default:
+		return fmt.Errorf("unsupported restore target type %q", target.Type)
+	}
+}
+
+type restoreSource struct {
+	Type      string
+	Path      string
+	Object    string
+	Storage   *model.RemoteStorage
+	Artifacts map[string]model.BackupArtifact
+}
+
+func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
+	switch job.DestinationType {
+	case "local":
+		artifactPath := restoreArtifactPath(job)
+		if artifactPath == "" {
+			return restoreSource{}, fmt.Errorf("未找到本地备份文件路径")
+		}
+		if stat, err := os.Stat(artifactPath); err != nil || stat.IsDir() {
+			return restoreSource{}, fmt.Errorf("本地备份文件不存在，请检查备份目录")
+		}
+		return restoreSource{Type: "local", Path: artifactPath, Artifacts: backupArtifactMap(job)}, nil
+	case "object":
+		request, err := s.backfillBackupRequest(job)
+		if err != nil {
+			return restoreSource{}, err
+		}
+		if request.Destination == "" || job.ArtifactName == "" {
+			return restoreSource{}, fmt.Errorf("未找到对象存储备份位置")
+		}
+		storage, err := s.store.Storage(request.Destination)
+		if err != nil {
+			return restoreSource{}, fmt.Errorf("未找到备份目标对象存储")
+		}
+		return restoreSource{Type: "object", Object: job.ArtifactName, Storage: &storage, Artifacts: backupArtifactMap(job)}, nil
+	default:
+		return restoreSource{}, fmt.Errorf("该备份目标暂不支持恢复")
+	}
+}
+
+func restoreArtifactPath(job model.BackupJob) string {
+	if job.ArtifactPath != "" {
+		return job.ArtifactPath
+	}
+	if job.DestinationType == "local" && job.Request.Destination != "" && job.ArtifactName != "" {
+		return filepath.Join(job.Request.Destination, filepath.FromSlash(job.ArtifactName))
+	}
+	return ""
+}
+
+func backupArtifactMap(job model.BackupJob) map[string]model.BackupArtifact {
+	items := map[string]model.BackupArtifact{}
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Database) != "" && strings.TrimSpace(artifact.Name) != "" {
+			items[artifact.Database] = artifact
+		}
+	}
+	return items
+}
+
+func (s *Server) runRestore(ctx context.Context, id string, target model.Connection, sourceDatabases []string, targetDatabases map[string]string, strategy string, source restoreSource) {
+	log.Printf("restore[%s] started: %s -> %s/%s", id, restoreSourceLabel(source), target.Name, restoreTargetLabel(sourceDatabases, targetDatabases))
+	started := time.Now()
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.Status = model.StatusRunning
+		item.Stage = "restore"
+		item.Progress = 15
+		item.StartedAt = started
+		item.LastRunAt = &started
+		item.FinishedAt = nil
+		item.Error = ""
+	})
+	reporter := func(progress backup.Progress) {
+		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+			item.Stage = progress.Stage
+			item.Progress = backupProgress(progress.Stage, progress.Progress)
+			if progress.EventMessage != "" {
+				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
+				if len(item.Events) > 100 {
+					item.Events = item.Events[len(item.Events)-100:]
+				}
+			}
+		})
+	}
+	var err error
+	for index, sourceDatabase := range sourceDatabases {
+		if err == nil {
+			targetDatabase := targetDatabases[sourceDatabase]
+			reporter(backup.Progress{Stage: "restore", EventLevel: "INFO", EventMessage: fmt.Sprintf("开始恢复数据库 %s 到 %s（%d/%d）", sourceDatabase, targetDatabase, index+1, len(sourceDatabases)), Progress: 20 + index*70/len(sourceDatabases)})
+			artifactPath, cleanup, prepareErr := s.prepareRestoreArtifact(ctx, restoreArtifactForDatabase(source, sourceDatabase), reporter)
+			if prepareErr != nil {
+				err = prepareErr
+				if cleanup != nil {
+					cleanup()
+				}
+				break
+			}
+			if restoreErr := s.backup.Restore(ctx, target, targetDatabase, artifactPathForRestoreDatabase(artifactPath, sourceDatabase), backup.RestoreOptions{Strategy: strategy}, func(progress backup.Progress) {
+				if len(sourceDatabases) > 1 {
+					progress.Progress = 20 + index*70/len(sourceDatabases) + backupProgress(progress.Stage, progress.Progress)/len(sourceDatabases)
+				}
+				reporter(progress)
+			}); restoreErr != nil {
+				err = restoreErr
+			}
+			if cleanup != nil {
+				cleanup()
+			}
+		}
+	}
+	if err == nil {
+		reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: "正在校验恢复后的目标库"})
+		for _, sourceDatabase := range sourceDatabases {
+			targetDatabase := targetDatabases[sourceDatabase]
+			if tables, tableErr := tables(ctx, target, targetDatabase); tableErr != nil {
+				err = fmt.Errorf("restore validation: %w", tableErr)
+				break
+			} else {
+				reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 张普通表", targetDatabase, len(tables)), Progress: 95})
+			}
+		}
+	}
+	finished := time.Now()
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.FinishedAt = &finished
+		if err == nil {
+			item.Status = model.StatusCompleted
+			item.Stage = "completed"
+			item.Progress = 100
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "恢复任务完成"})
+			return
+		}
+		if errors.Is(err, context.Canceled) {
+			item.Status = model.StatusCancelled
+			item.Stage = "cancelled"
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "恢复任务已取消"})
+		} else {
+			item.Status = model.StatusFailed
+			item.Stage = "failed"
+			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
+			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+		}
+	})
+}
+
+func restoreSourceLabel(source restoreSource) string {
+	if source.Type == "object" {
+		return "object/" + source.Object
+	}
+	return "local/" + source.Path
+}
+
+func restoreArtifactForDatabase(source restoreSource, database string) restoreSource {
+	artifact, ok := source.Artifacts[database]
+	if !ok {
+		return source
+	}
+	next := source
+	if source.Type == "object" && artifact.Name != "" {
+		next.Object = artifact.Name
+	}
+	if source.Type == "local" && artifact.Path != "" {
+		next.Path = artifact.Path
+	}
+	return next
+}
+
+func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSource, reporter func(backup.Progress)) (string, func(), error) {
+	if source.Type == "local" {
+		return source.Path, nil, nil
+	}
+	if source.Type != "object" || source.Storage == nil {
+		return "", nil, fmt.Errorf("unsupported restore source %q", source.Type)
+	}
+	tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	targetPath := filepath.Join(tempDir, filepath.Base(source.Object))
+	reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "正在从对象存储下载备份文件"})
+	size, err := remotestorage.DownloadObject(ctx, *source.Storage, source.Object, targetPath)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: fmt.Sprintf("备份文件已下载到临时目录，大小 %s", formatBytes(size)), Progress: 20})
+	return targetPath, cleanup, nil
+}
+
 func (s *Server) cancelBackup(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.CancelBackup(r.PathValue("id")); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "backup not found")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+}
+
+func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	item, err := s.store.Backup(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	if item.Status == model.StatusRunning || item.Status == model.StatusPending {
+		writeError(w, http.StatusConflict, "task_running", "任务正在执行，请先停止后再删除")
+		return
+	}
+	if err := s.store.DeleteBackup(id); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {

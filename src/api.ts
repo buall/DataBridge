@@ -9,6 +9,8 @@ import type {
   MigrationJob,
   RemoteStorage,
   RemoteStorageInput,
+  RestoreBackupConfig,
+  RestorePrecheckResult,
   SeedDataResult,
   SMTPSettings,
   TableInfo,
@@ -123,6 +125,8 @@ export const api = {
   migration: async (id: string) => normalizeMigration(await request<MigrationJob>(`/migrations/${id}`)),
   cancelMigration: (id: string) =>
     request<{ ok: boolean }>(`/migrations/${id}/cancel`, { method: "POST" }),
+  deleteMigration: (id: string) =>
+    request<{ ok: boolean }>(`/migrations/${id}`, { method: "DELETE" }),
   migrationsWithAudit: async () => {
     const response = await request<MigrationJob[] | MigrationsResponse>("/migrations");
     const migrations = (Array.isArray(response) ? response : response.migrations).map(normalizeMigration);
@@ -140,8 +144,14 @@ export const api = {
   backup: async (id: string) => normalizeBackup(await request<BackupJob>(`/backups/${id}`)),
   triggerBackup: async (id: string) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}/trigger`, { method: "POST" })),
+  restoreBackup: async (id: string, config: RestoreBackupConfig) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}/restore`, { method: "POST", body: JSON.stringify(config) })),
+  restorePrecheck: (id: string, config: RestoreBackupConfig) =>
+    request<RestorePrecheckResult>(`/backups/${id}/restore/precheck`, { method: "POST", body: JSON.stringify(config) }),
   cancelBackup: (id: string) =>
     request<{ ok: boolean }>(`/backups/${id}/cancel`, { method: "POST" }),
+  deleteBackup: (id: string) =>
+    request<{ ok: boolean }>(`/backups/${id}`, { method: "DELETE" }),
   smtpSettings: () => request<SMTPSettings>("/settings/smtp"),
   updateSMTPSettings: (input: SMTPSettings) =>
     request<SMTPSettings>("/settings/smtp", { method: "PUT", body: JSON.stringify(input) }),

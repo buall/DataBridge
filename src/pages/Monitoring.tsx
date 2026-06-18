@@ -4,7 +4,7 @@ import { api } from "../api";
 import { migrationStageLabel } from "../labels";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { MigrationJob } from "../types";
-import { Badge, Button, Card } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
 
 const stages = [
   ["precheck", "连接检查"],
@@ -20,6 +20,8 @@ const stages = [
 export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (job: MigrationJob) => void }) {
   const [job, setJob] = useState<MigrationJob | null>(null);
   const [error, setError] = useState("");
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -48,7 +50,15 @@ export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (
   }, [jobId, onComplete]);
 
   async function cancel() {
-    await api.cancelMigration(jobId);
+    setCancelling(true);
+    try {
+      await api.cancelMigration(jobId);
+      setCancelConfirmOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "停止迁移任务失败");
+    } finally {
+      setCancelling(false);
+    }
   }
 
   if (!job) return <div className="empty-state"><div>DB</div><h2>任务准备中</h2><p>{error || "正在连接源端和目标端数据库..."}</p></div>;
@@ -64,7 +74,7 @@ export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (
     <div className="page-stack">
       {error && <div className="error-banner">{error}</div>}
       {failed && <div className="error-banner">{job.error || "迁移任务已取消"}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.sourceName} → {job.targetName}</h2></div><p>{job.sourceDatabase} → {job.targetDatabase} · 任务 ID {job.id}</p></div><div>{!failed && <Button variant="danger" onClick={cancel}><Square size={15} />停止任务</Button>}</div></div>
+      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.sourceName} → {job.targetName}</h2></div><p>{job.sourceDatabase} → {job.targetDatabase} · 任务 ID {job.id}</p></div><div>{!failed && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {migrationStageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>已迁移 {formatNumber(job.rowsCopied)} / {formatNumber(job.rowsTotal)} 行</span><span>{job.currentTable ? `当前：${job.currentTable}` : `${job.tablesDone} / ${job.tablesTotal} 张表`}</span></footer></Card>
       <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label="实时吞吐" value={`${formatNumber(rowsPerSecond)} 行/s`} detail={throughputDetail} /><RuntimeMetric icon={<Rows3 />} label="已迁移行数" value={formatNumber(job.rowsCopied)} detail={rowsDetail} /><RuntimeMetric icon={<Clock3 />} label="运行时长" value={formatDuration(elapsed * 1000)} detail="从开始到现在" /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : "持续监控"} warning={failed} /></div>
       <div className="monitor-grid">
@@ -72,6 +82,7 @@ export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (
         <Card className="phase-card"><h3>执行阶段</h3>{stages.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
       </div>
       <Card className="event-card"><div className="section-title compact"><div><h3>实时事件</h3><p>查看迁移过程中的关键日志。</p></div></div>{[...job.events].reverse().slice(0, 12).map((event,index)=><div className="event-row" key={`${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Database size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</Card>
+      {cancelConfirmOpen && <ConfirmDialog title="停止迁移任务" description="这是中危操作，任务会被取消，未完成的数据表不会继续迁移。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.sourceName} → ${job.targetName}`, `数据库：${job.sourceDatabase} → ${job.targetDatabase}`]} />}
     </div>
   );
 }

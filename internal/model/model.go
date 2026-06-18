@@ -153,6 +153,28 @@ type BackupRequest struct {
 	Storage             *RemoteStorage     `json:"-"`
 }
 
+type RestoreBackupRequest struct {
+	TargetID          string            `json:"targetId"`
+	TargetDatabase    string            `json:"targetDatabase"`
+	SourceDatabases   []string          `json:"sourceDatabases,omitempty"`
+	SelectedDatabases []string          `json:"selectedDatabases,omitempty"`
+	TargetDatabases   map[string]string `json:"targetDatabases,omitempty"`
+	Strategy          string            `json:"strategy,omitempty"`
+}
+
+type RestorePrecheckResult struct {
+	OK       bool                  `json:"ok"`
+	Checks   []RestorePrecheckItem `json:"checks"`
+	Warnings []string              `json:"warnings,omitempty"`
+}
+
+type RestorePrecheckItem struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 type BackupNotification struct {
 	Enabled bool   `json:"enabled,omitempty"`
 	Method  string `json:"method,omitempty"`
@@ -162,6 +184,13 @@ type BackupNotification struct {
 type BackupNotificationTestRequest struct {
 	Method string `json:"method"`
 	Target string `json:"target"`
+}
+
+type BackupArtifact struct {
+	Database string `json:"database"`
+	Name     string `json:"name"`
+	Size     int64  `json:"size,omitempty"`
+	Path     string `json:"path,omitempty"`
 }
 
 type SMTPSettings struct {
@@ -292,6 +321,8 @@ type BackupJob struct {
 	LastRunAt           *time.Time         `json:"lastRunAt,omitempty"`
 	ArtifactName        string             `json:"artifactName,omitempty"`
 	ArtifactSize        int64              `json:"artifactSize,omitempty"`
+	ArtifactPath        string             `json:"artifactPath,omitempty"`
+	Artifacts           []BackupArtifact   `json:"artifacts,omitempty"`
 	Events              []Event            `json:"events"`
 	Request             BackupRequest      `json:"request,omitempty"`
 }

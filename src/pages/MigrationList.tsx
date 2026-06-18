@@ -1,8 +1,8 @@
-import { Activity, ArrowRight, FileCheck2, Plus, Search } from "lucide-react";
+import { Activity, ArrowRight, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { MigrationJob } from "../types";
-import { Badge, Button, Card } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
 
 export function MigrationList({
   title = "迁移任务",
@@ -10,14 +10,19 @@ export function MigrationList({
   migrations,
   onCreate,
   onOpen,
+  onDelete,
 }: {
   title?: string;
   description?: string;
   migrations: MigrationJob[];
   onCreate: () => void;
   onOpen: (job: MigrationJob) => void;
+  onDelete: (job: MigrationJob) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<MigrationJob | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return migrations;
@@ -52,7 +57,9 @@ export function MigrationList({
         {filtered.length ? (
           <div className="task-table migration-list-table">
             <div className="table-row table-head"><span>任务名称</span><span>源端 / 目标端</span><span>开始时间</span><span>进度</span><span>状态</span><span>操作</span></div>
-            {filtered.map((job) => (
+            {filtered.map((job) => {
+              const deleteDisabled = job.status === "running" || job.status === "pending";
+              return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
                   <strong className="task-name">{displayTaskName(job)}</strong>
@@ -63,7 +70,10 @@ export function MigrationList({
                   <span className="task-meta task-started-at">{formatDate(job.startedAt)}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                  <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
+                  <span className="row-actions">
+                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
+                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                  </span>
                 </div>
                 <div className="task-mobile-card">
                   <div className="task-mobile-head">
@@ -89,11 +99,14 @@ export function MigrationList({
                   </div>
                   <div className="task-mobile-foot">
                     <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
+                    <span className="row-actions">
+                      <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
+                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                    </span>
                   </div>
                 </div>
               </button>
-            ))}
+            );})}
           </div>
         ) : (
           <div className="inline-empty">
@@ -102,6 +115,19 @@ export function MigrationList({
           </div>
         )}
       </Card>
+      {error && <div className="error-banner">{error}</div>}
+      {deleteTarget && <ConfirmDialog title="删除迁移任务" description="这是中危操作，会删除任务记录和校验结果记录。" tone="warning" confirmText="确认删除" submitting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={async () => {
+        setDeleting(true);
+        setError("");
+        try {
+          await onDelete(deleteTarget);
+          setDeleteTarget(null);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "删除迁移任务失败");
+        } finally {
+          setDeleting(false);
+        }
+      }} details={[`任务：${displayTaskName(deleteTarget)}`, `状态：${migrationStatusLabel(deleteTarget.status)}`]} />}
     </div>
   );
 }

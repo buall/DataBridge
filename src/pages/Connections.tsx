@@ -2,7 +2,7 @@ import { AlertTriangle, Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { ConnectionInput, DatabaseConnection, DatabaseInfo, DatabaseType, SeedDataResult } from "../types";
-import { Badge, Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 
 export function Connections({
   connections,
@@ -24,6 +24,7 @@ export function Connections({
   const [databaseModal, setDatabaseModal] = useState<{ connection: DatabaseConnection; databases: DatabaseInfo[]; loading: boolean; error: string } | null>(null);
   const [createDatabaseModal, setCreateDatabaseModal] = useState<{ connection: DatabaseConnection; name: string; submitting: boolean; error: string } | null>(null);
   const [seedDataModal, setSeedDataModal] = useState<{ connection: DatabaseConnection; database: string; rows: string; mode: "append" | "replace"; template: "users" | "orders" | "products"; databases: DatabaseInfo[]; loading: boolean; submitting: boolean; error: string; result: SeedDataResult | null } | null>(null);
+  const [seedDataConfirmOpen, setSeedDataConfirmOpen] = useState(false);
   const [deleteModal, setDeleteModal] = useState<{ connection: DatabaseConnection; submitting: boolean; error: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [manualCopyValue, setManualCopyValue] = useState("");
@@ -197,10 +198,20 @@ export function Connections({
   async function submitSeedData(event: React.FormEvent) {
     event.preventDefault();
     if (!seedDataModal) return;
+    if (seedDataModal.mode === "replace" && !seedDataConfirmOpen) {
+      setSeedDataConfirmOpen(true);
+      return;
+    }
+    await executeSeedData();
+  }
+
+  async function executeSeedData() {
+    if (!seedDataModal) return;
     setSeedDataModal({ ...seedDataModal, submitting: true, error: "", result: null });
     try {
       const result = await api.seedData(seedDataModal.connection.id, seedDataModal.database, Number(seedDataModal.rows), seedDataModal.mode, seedDataModal.template);
       setSeedDataModal({ ...seedDataModal, submitting: false, error: "", result });
+      setSeedDataConfirmOpen(false);
     } catch (error) {
       setSeedDataModal({ ...seedDataModal, submitting: false, error: error instanceof Error ? error.message : "写入假数据失败", result: null });
     }
@@ -379,6 +390,8 @@ export function Connections({
           </form>
         </div>
       )}
+
+      {seedDataConfirmOpen && seedDataModal && <ConfirmDialog title="覆盖写入假数据" description="这是中危操作，目标演示表中的现有数据会被覆盖。" tone="warning" confirmText="确认覆盖写入" submitting={seedDataModal.submitting} onCancel={() => setSeedDataConfirmOpen(false)} onConfirm={() => void executeSeedData()} details={[`目标：${seedDataModal.connection.name} / ${seedDataModal.database}`, `模板：${seedDataModal.template}`, `写入条数：${seedDataModal.rows}`]} />}
 
       {showForm && (
         <div className="modal-backdrop" onMouseDown={() => setShowForm(false)}>

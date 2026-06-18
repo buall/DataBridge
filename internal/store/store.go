@@ -547,6 +547,23 @@ func (s *Store) CancelMigration(id string) error {
 	return nil
 }
 
+func (s *Store) DeleteMigration(id string) error {
+	if _, err := s.Migration(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cancels, id)
+	result, err := s.db.Exec(`DELETE FROM migrations WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete migration: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) AddBackup(value model.BackupJob, cancel context.CancelFunc) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -632,6 +649,23 @@ func (s *Store) CancelBackup(id string) error {
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	return nil
+}
+
+func (s *Store) DeleteBackup(id string) error {
+	if _, err := s.Backup(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cancels, id)
+	result, err := s.db.Exec(`DELETE FROM backups WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete backup: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

@@ -113,32 +113,34 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
           </div>
         </div>
 
-        <nav className="primary-nav" aria-label="主导航">
-          {mainNav.map(({ id, label, icon: Icon }) => (
-            <a
-              className={activeView === id ? "nav-item active" : "nav-item"}
-              href={paths[id]}
-              key={id}
-              data-label={label}
-              data-path={paths[id]}
-              title={label}
-              aria-current={activeView === id ? "page" : undefined}
-              onClick={(event) => {
-                event.preventDefault();
-                onNavigate(id);
-              }}
-            >
-              <Icon size={18} />
-              <span>{label}</span>
-            </a>
-          ))}
-        </nav>
+        <div className="sidebar-scroll">
+          <nav className="primary-nav" aria-label="主导航">
+            {mainNav.map(({ id, label, icon: Icon }) => (
+              <a
+                className={activeView === id ? "nav-item active" : "nav-item"}
+                href={paths[id]}
+                key={id}
+                data-label={label}
+                data-path={paths[id]}
+                title={label}
+                aria-current={activeView === id ? "page" : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onNavigate(id);
+                }}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+              </a>
+            ))}
+          </nav>
 
-        <div className="resource-nav">
-          <span className="nav-caption">资源管理</span>
-          <button title="数据库类型" data-label="数据库类型"><Database size={16} /><span>数据库类型</span></button>
-          <button title="安全与凭证" data-label="安全与凭证"><Settings size={16} /><span>安全与凭证</span></button>
-          <button title="Agent 节点" data-label="Agent 节点"><ListTree size={16} /><span>Agent 节点</span></button>
+          <div className="resource-nav">
+            <span className="nav-caption">资源管理</span>
+            <button title="数据库类型" data-label="数据库类型"><Database size={16} /><span>数据库类型</span></button>
+            <button title="安全与凭证" data-label="安全与凭证"><Settings size={16} /><span>安全与凭证</span></button>
+            <button title="Agent 节点" data-label="Agent 节点"><ListTree size={16} /><span>Agent 节点</span></button>
+          </div>
         </div>
 
         <div className="sidebar-user">

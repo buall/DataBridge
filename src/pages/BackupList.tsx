@@ -1,19 +1,24 @@
-import { Archive, ArrowRight, FileCheck2, Plus, Search } from "lucide-react";
+import { Archive, ArrowRight, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupJob } from "../types";
-import { Badge, Button, Card } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
 
 export function BackupList({
   backups,
   onCreate,
   onOpen,
+  onDelete,
 }: {
   backups: BackupJob[];
   onCreate: () => void;
   onOpen: (job: BackupJob) => void;
+  onDelete: (job: BackupJob) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return backups;
@@ -45,16 +50,23 @@ export function BackupList({
         </div>
         {filtered.length ? (
           <div className="task-table backup-list-table">
-            <div className="table-row table-head"><span>任务名称</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
-            {filtered.map((job) => (
+            <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>创建时间</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
+            {filtered.map((job) => {
+              const deleteDisabled = job.status === "running" || job.status === "pending";
+              return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
                   <strong className="task-name">{job.name}</strong>
+                  <TaskTypeTag job={job} />
+                  <time className="task-time">{formatTaskTime(job.startedAt)}</time>
                   <div className="task-route"><strong>{job.sourceName}</strong><small>{job.sourceType} · {job.sourceDatabase}</small></div>
                   <span className="task-name task-meta task-destination">{job.destination}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                  <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                  <span className="row-actions">
+                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                  </span>
                 </div>
                 <div className="task-mobile-card">
                   <div className="task-mobile-head">
@@ -66,6 +78,14 @@ export function BackupList({
                     </div>
                   </div>
                   <div className="task-mobile-details">
+                    <div className="task-mobile-row">
+                      <span>任务类型</span>
+                      <TaskTypeTag job={job} />
+                    </div>
+                    <div className="task-mobile-row">
+                      <span>创建时间</span>
+                      <strong>{formatTaskTime(job.startedAt)}</strong>
+                    </div>
                     <div className="task-mobile-row">
                       <span>目标存储</span>
                       <strong>{job.destination}</strong>
@@ -80,11 +100,14 @@ export function BackupList({
                   </div>
                   <div className="task-mobile-foot">
                     <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                    <span className="row-actions">
+                      <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
+                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                    </span>
                   </div>
                 </div>
               </button>
-            ))}
+            );})}
           </div>
         ) : (
           <div className="inline-empty">
@@ -93,12 +116,41 @@ export function BackupList({
           </div>
         )}
       </Card>
+      {error && <div className="error-banner">{error}</div>}
+      {deleteTarget && <ConfirmDialog title="删除备份任务" description="这是中危操作，只会删除任务记录，不会自动删除已经生成的备份产物。" tone="warning" confirmText="确认删除" submitting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={async () => {
+        setDeleting(true);
+        setError("");
+        try {
+          await onDelete(deleteTarget);
+          setDeleteTarget(null);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "删除备份任务失败");
+        } finally {
+          setDeleting(false);
+        }
+      }} details={[`任务：${deleteTarget.name}`, `状态：${migrationStatusLabel(deleteTarget.status)}`]} />}
     </div>
   );
 }
 
 function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; value: number; detail: string; tone?: "gray" | "blue" | "green" | "orange" }) {
   return <Card className={`task-summary-card ${tone}`}><span>{title}</span><strong>{value}</strong><small>{detail}</small></Card>;
+}
+
+function TaskTypeTag({ job }: { job: BackupJob }) {
+  const type = backupTaskType(job);
+  return <span className={`task-type-tag ${type.tone}`}>{type.label}</span>;
+}
+
+function backupTaskType(job: BackupJob) {
+  if (job.destinationType === "restore") return { label: "恢复", tone: "restore" };
+  if (job.scheduleMode === "scheduled" || job.status === "scheduled") return { label: "定时备份", tone: "scheduled" };
+  return { label: "备份", tone: "backup" };
+}
+
+function formatTaskTime(value?: string) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function nextRunLabel(value?: string) {

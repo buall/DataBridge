@@ -1,24 +1,45 @@
-import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, FileArchive, Gauge, Pencil, Play, Square } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, DatabaseBackup, FileArchive, Gauge, Pencil, Play, Square } from "lucide-react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { BackupConfig, BackupJob } from "../types";
-import { Badge, Button, Card, SelectField } from "../components/UI";
+import type { BackupConfig, BackupJob, DatabaseConnection, RestoreBackupConfig, RestorePrecheckResult } from "../types";
+import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import { TimeSelect } from "./BackupWizard";
 
-const stages = [
+const backupStages = [
   ["pending", "任务排队"],
   ["export", "数据库导出"],
   ["upload", "写入存储"],
   ["completed", "备份完成"],
 ];
 
-export function BackupMonitoring({ jobId, onComplete }: { jobId: string; onComplete: (job: BackupJob) => void }) {
+const restoreStages = [
+  ["pending", "任务排队"],
+  ["download", "下载备份"],
+  ["extract", "备份解压"],
+  ["restore", "目标导入"],
+  ["validation", "恢复校验"],
+  ["completed", "恢复完成"],
+];
+
+export function BackupMonitoring({
+  jobId,
+  connections,
+  onComplete,
+  onRestoreCreated,
+}: {
+  jobId: string;
+  connections: DatabaseConnection[];
+  onComplete: (job: BackupJob) => void;
+  onRestoreCreated: (job: BackupJob) => void;
+}) {
   const [job, setJob] = useState<BackupJob | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
   const [triggering, setTriggering] = useState(false);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
     let stopped = false;
@@ -47,7 +68,15 @@ export function BackupMonitoring({ jobId, onComplete }: { jobId: string; onCompl
   }, [jobId, onComplete]);
 
   async function cancel() {
-    await api.cancelBackup(jobId);
+    setCancelling(true);
+    try {
+      await api.cancelBackup(jobId);
+      setCancelConfirmOpen(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "停止备份任务失败");
+    } finally {
+      setCancelling(false);
+    }
   }
 
   async function saveSchedule(config: BackupConfig) {
@@ -92,31 +121,250 @@ export function BackupMonitoring({ jobId, onComplete }: { jobId: string; onCompl
   const scheduled = job.status === "scheduled";
   const failed = job.status === "failed" || job.status === "cancelled";
   const elapsed = Math.max(1, (Date.now() - new Date(job.startedAt).getTime()) / 1000);
-  const currentStage = stageIndex(job.stage);
+  const stageItems = job.destinationType === "restore" ? restoreStages : backupStages;
+  const currentStage = stageIndex(job.stage, stageItems);
   const eventRuns = groupBackupEvents(job);
+  const lastError = latestErrorEvent(job);
 
   return (
     <div className="page-stack">
       {error && <div className="error-banner">{error}</div>}
-      {failed && <div className="error-banner">{job.error || "备份任务已取消"}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div>{scheduled && <Button variant="secondary" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={cancel}><Square size={15} />停止任务</Button>}</div></div>
+      {failed && <div className="error-banner detail-error"><strong>{job.error || "备份任务已取消"}</strong>{lastError && <span>{lastError}</span>}</div>}
+      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div>{scheduled && <Button variant="secondary" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
       <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label="备份文件" value={job.artifactName || "待生成"} detail={formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
       <div className="monitor-grid">
-        <Card className="phase-card"><h3>执行阶段</h3>{stages.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
-        <Card className="chart-card migration-detail"><div className="section-title compact"><div><h3>备份产物</h3><p>文件生成后会显示名称和大小。</p></div><Badge tone="gray">{job.destinationType}</Badge></div><div className="backup-artifact"><Archive size={34} /><strong>{job.artifactName ? formatArtifactName(job.artifactName) : "等待备份文件"}</strong><span>{formatBytes(job.artifactSize ?? 0)}</span><small>{job.destination}</small></div></Card>
+        <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
+        <Card className="chart-card migration-detail backup-artifact-card"><div className="section-title compact"><div><h3>备份产物</h3><p>文件生成后会显示名称和大小。</p></div><Badge tone="gray">{job.destinationType}</Badge></div><div className="backup-artifact"><span className="artifact-icon"><Archive size={22} /></span><div><strong>{job.artifactName ? formatArtifactName(job.artifactName) : "等待备份文件"}</strong><span>{formatBytes(job.artifactSize ?? 0)}</span><small>{job.destination}</small></div></div>{job.status === "completed" && <RestorePanel job={job} connections={connections} onRestoreCreated={onRestoreCreated} />}</Card>
       </div>
       <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div></div>{eventRuns.map((run) => {
         const collapsed = collapsedRuns[run.id] ?? false;
         return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }))}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{run.title}</strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && run.events.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
       })}</Card>
       {editing && <ScheduleEditor job={job} onClose={() => setEditing(false)} onSave={saveSchedule} />}
+      {cancelConfirmOpen && <ConfirmDialog title="停止备份任务" description="这是中危操作，任务会被取消，当前执行进度不会继续推进。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]} />}
     </div>
   );
 }
 
 function RuntimeMetric({ icon, label, value, detail, warning = false, long = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warning?: boolean; long?: boolean }) {
   return <Card className={`runtime-metric ${long ? "long-text" : ""}`}><span className={warning ? "warning" : ""}>{icon}</span><div><small>{label}</small><strong>{value}</strong><em className={warning ? "warning" : ""}>{detail}</em></div></Card>;
+}
+
+function RestorePanel({ job, connections, onRestoreCreated }: { job: BackupJob; connections: DatabaseConnection[]; onRestoreCreated: (job: BackupJob) => void }) {
+  const targets = connections.filter((connection) => connection.type === job.sourceType);
+  const sourceDatabases = restoreSourceDatabases(job);
+  const multipleDatabases = sourceDatabases.length > 1;
+  const [targetId, setTargetId] = useState(targets[0]?.id ?? "");
+  const [selectedDatabases, setSelectedDatabases] = useState<string[]>(sourceDatabases);
+  const [targetDatabases, setTargetDatabases] = useState<Record<string, string>>(() => Object.fromEntries(sourceDatabases.map((database) => [database, database])));
+  const [strategy, setStrategy] = useState<"append" | "recreate">("append");
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [prechecking, setPrechecking] = useState(false);
+  const [precheck, setPrecheck] = useState<RestorePrecheckResult | null>(null);
+  const [error, setError] = useState("");
+  const targetConnection = targets.find((connection) => connection.id === targetId);
+  const restorable = (job.destinationType === "local" || job.destinationType === "object") && Boolean(job.artifactName);
+  const selectedSet = new Set(selectedDatabases);
+  const allTargetsReady = selectedDatabases.length > 0 && selectedDatabases.every((database) => targetDatabases[database]?.trim());
+  const targetDatabase = selectedDatabases[0] ? targetDatabases[selectedDatabases[0]] ?? "" : "";
+
+  useEffect(() => {
+    if (!targetId && targets[0]) setTargetId(targets[0].id);
+  }, [targetId, targets]);
+
+  useEffect(() => {
+    setTargetDatabases((current) => {
+      const next = { ...current };
+      sourceDatabases.forEach((database) => {
+        if (!next[database]) next[database] = database;
+      });
+      Object.keys(next).forEach((database) => {
+        if (!sourceDatabases.includes(database)) delete next[database];
+      });
+      return next;
+    });
+    setSelectedDatabases((current) => {
+      const kept = current.filter((database) => sourceDatabases.includes(database));
+      return kept.length ? kept : sourceDatabases;
+    });
+  }, [sourceDatabases.join("\n")]);
+
+  function toggleRestoreDatabase(database: string) {
+    setSelectedDatabases((current) => current.includes(database) ? current.filter((item) => item !== database) : [...current, database]);
+  }
+
+  function restoreConfig(): RestoreBackupConfig {
+    const cleanedTargets = Object.fromEntries(selectedDatabases.map((database) => [database, targetDatabases[database]?.trim() ?? ""]));
+    return { targetId, targetDatabase: targetDatabase.trim(), selectedDatabases, targetDatabases: cleanedTargets, strategy };
+  }
+
+  async function requestRestore() {
+    setPrechecking(true);
+    setError("");
+    setPrecheck(null);
+    let result: RestorePrecheckResult;
+    try {
+      result = await api.restorePrecheck(job.id, restoreConfig());
+      setPrecheck(result);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "恢复前检查失败");
+      setPrechecking(false);
+      return;
+    }
+    setPrechecking(false);
+    if (!result.ok) return;
+    if (strategy === "recreate") {
+      setRestoreConfirmOpen(true);
+      return;
+    }
+    void restore();
+  }
+
+  async function restore() {
+    setRestoring(true);
+    setError("");
+    try {
+      const next = await api.restoreBackup(job.id, restoreConfig());
+      setRestoreConfirmOpen(false);
+      setPrecheck(null);
+      onRestoreCreated(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "创建恢复任务失败");
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  return (
+    <div className="restore-panel">
+      <div className="restore-panel-head"><DatabaseBackup size={16} /><div><strong>从该备份恢复</strong><small>{restorable ? multipleDatabases ? `已选择 ${selectedDatabases.length} / ${sourceDatabases.length} 个数据库，可逐个指定目标库名` : "选择同类型连接和目标数据库" : "该备份任务没有可恢复的备份文件"}</small></div></div>
+      {error && <div className="error-banner compact">{error}</div>}
+      {restorable ? (
+        <div className={multipleDatabases ? "restore-grid multi-database" : "restore-grid"}>
+          <RestoreConnectionSelect connectionId={targetId} connections={targets} onChange={setTargetId} />
+          <SelectField label="恢复策略" value={strategy} onChange={(value) => setStrategy(value as "append" | "recreate")}>
+            <option value="append">追加导入，冲突则失败</option>
+            <option value="recreate">重建目标库后恢复</option>
+          </SelectField>
+          {multipleDatabases ? (
+            <div className="restore-database-map">
+              <div className="restore-database-map-head"><span>恢复</span><span>源数据库</span><span>目标数据库</span></div>
+              {sourceDatabases.map((database) => (
+                <div className={`restore-database-row ${selectedSet.has(database) ? "selected" : "muted"}`} key={database} role="button" tabIndex={0} aria-pressed={selectedSet.has(database)} onClick={() => toggleRestoreDatabase(database)} onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleRestoreDatabase(database); } }}>
+                  <span className={`checkbox restore-database-check ${selectedSet.has(database) ? "checked" : ""}`} aria-label={`恢复 ${database}`}>{selectedSet.has(database) && <Check size={13} />}</span>
+                  <strong>{database}</strong>
+                  <input disabled={!selectedSet.has(database)} value={targetDatabases[database] ?? ""} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()} onChange={(event) => setTargetDatabases((current) => ({ ...current, [database]: event.target.value }))} placeholder={database} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <label className="field"><span>目标数据库</span><input value={targetDatabase} onChange={(event) => setTargetDatabases((current) => ({ ...current, [sourceDatabases[0] ?? ""]: event.target.value }))} placeholder="restore_database" /></label>
+          )}
+          {strategy === "recreate" && <div className="restore-strategy-warning">将先删除并重新创建上方目标数据库，再导入备份文件。目标库现有数据会被清空。</div>}
+          {precheck && <RestorePrecheckSummary result={precheck} />}
+          <Button disabled={restoring || prechecking || !targetId || !allTargetsReady} onClick={requestRestore}>{restoring ? "创建中..." : prechecking ? "检查中..." : "启动恢复"}</Button>
+        </div>
+      ) : (
+        <div className="restore-unavailable">备份完成并生成文件后才可以启动恢复。</div>
+      )}
+      {restoreConfirmOpen && <ConfirmDialog title="重建目标库后恢复" description="这是高危操作，确认后会先删除并重新创建目标数据库。" tone="danger" confirmText="确认重建并恢复" submitting={restoring} onCancel={() => setRestoreConfirmOpen(false)} onConfirm={restore} details={[`目标连接：${targetConnection?.name ?? "未选择"} · ${targetConnection?.host ?? ""}`, `目标数据库：${selectedDatabases.map((database) => targetDatabases[database]?.trim() || database).join(", ")}`, "只会处理已勾选的数据库；目标库现有数据会被清空，该操作不可撤销。"]} />}
+    </div>
+  );
+}
+
+function RestorePrecheckSummary({ result }: { result: RestorePrecheckResult }) {
+  return (
+    <div className={`restore-precheck ${result.ok ? "passed" : "failed"}`}>
+      <strong>{result.ok ? "恢复前检查通过" : "恢复前检查未通过"}</strong>
+      <div>
+        {result.checks.map((check) => (
+          <span className={check.status} key={check.key}>
+            {check.status === "passed" ? <Check size={12} /> : <AlertTriangle size={12} />}
+            <em>{check.label}</em>
+            {check.message}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function restoreSourceDatabases(job: BackupJob) {
+  const names = job.artifacts?.map((artifact) => artifact.database).filter(Boolean) ?? [];
+  if (!names.length) {
+    names.push(...job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean));
+  }
+  return Array.from(new Set(names));
+}
+
+function latestErrorEvent(job: BackupJob) {
+  const event = [...job.events].reverse().find((item) => item.level === "ERROR");
+  if (!event || event.message === job.error) return "";
+  return event.message;
+}
+
+function RestoreConnectionSelect({ connectionId, connections, onChange }: { connectionId: string; connections: DatabaseConnection[]; onChange: (value: string) => void }) {
+  const connection = connections.find((item) => item.id === connectionId) ?? connections[0];
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (connectionId) return;
+    if (connections[0]) onChange(connections[0].id);
+  }, [connectionId, connections, onChange]);
+
+  return (
+    <div className="field select-field restore-connection-field" ref={rootRef}>
+      <span>目标连接</span>
+      <button type="button" className="select-trigger restore-connection-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <span className="endpoint-instance-trigger-content">
+          {connection && <DatabaseTypeIcon type={connection.type} />}
+          {connection?.name ?? "请选择连接"}
+          {connection?.host ? ` · ${connection.host}` : ""}
+          {connection?.region && connection.region !== "内网" && <RegionFlag region={connection.region} />}
+        </span>
+        <ChevronDown size={16} />
+      </button>
+      {open && (
+        <div className="endpoint-instance-menu restore-connection-menu" role="listbox" aria-label="目标连接列表">
+          {connections.map((item) => (
+            <button
+              type="button"
+              key={item.id}
+              className={`endpoint-instance-option ${item.id === connectionId ? "active" : ""}`}
+              onClick={() => { onChange(item.id); setOpen(false); }}
+            >
+              <div>
+                <strong>
+                  <DatabaseTypeIcon type={item.type} />
+                  {item.name} · {item.host}
+                  {item.region && item.region !== "内网" && <RegionFlag region={item.region} />}
+                </strong>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function groupBackupEvents(job: BackupJob) {
@@ -172,7 +420,7 @@ function groupBackupEvents(job: BackupJob) {
   return runs.reverse();
 }
 
-function stageIndex(stage: string) {
+function stageIndex(stage: string, stages: string[][]) {
   const index = stages.findIndex(([id]) => id === stage);
   return index >= 0 ? index : 0;
 }
@@ -180,6 +428,10 @@ function stageIndex(stage: string) {
 function stageLabel(stage: string) {
   if (stage === "scheduled") return "等待调度";
   if (stage === "export") return "数据库导出";
+  if (stage === "download") return "下载备份";
+  if (stage === "extract") return "备份解压";
+  if (stage === "restore") return "目标导入";
+  if (stage === "validation") return "恢复校验";
   if (stage === "upload") return "写入存储";
   if (stage === "completed") return "备份完成";
   if (stage === "failed") return "执行失败";
@@ -284,7 +536,7 @@ function formatBytes(value: number) {
 }
 
 function formatArtifactName(value: string) {
-  return value.split("/").map((part, index) => index === 0 ? part : <span key={`${part}-${index}`}>/{part}</span>);
+  return value;
 }
 
 function formatDuration(value: number) { const seconds = Math.round(value / 1000); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }

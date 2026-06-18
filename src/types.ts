@@ -121,6 +121,25 @@ export interface BackupConfig {
   notificationTarget?: string;
 }
 
+export interface RestoreBackupConfig {
+  targetId: string;
+  targetDatabase: string;
+  selectedDatabases?: string[];
+  targetDatabases?: Record<string, string>;
+  strategy?: "append" | "recreate";
+}
+
+export interface RestorePrecheckResult {
+  ok: boolean;
+  checks: Array<{
+    key: string;
+    label: string;
+    status: "passed" | "failed" | "warning";
+    message: string;
+  }>;
+  warnings?: string[];
+}
+
 export interface SMTPSettings {
   enabled: boolean;
   host: string;
@@ -210,5 +229,7 @@ export interface BackupJob {
   lastRunAt?: string;
   artifactName?: string;
   artifactSize?: number;
+  artifactPath?: string;
+  artifacts?: Array<{ database: string; name: string; size?: number; path?: string }>;
   events: MigrationEvent[];
 }

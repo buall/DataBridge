@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +30,7 @@ type Progress struct {
 	Progress     int
 	ArtifactName string
 	ArtifactSize int64
+	ArtifactPath string
 }
 
 type Reporter func(Progress)
@@ -157,9 +159,9 @@ func (d localDestination) upload(ctx context.Context, filePath, objectKey string
 		return err
 	}
 	if info, err := output.Stat(); err == nil {
-		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey, ArtifactSize: info.Size()})
+		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey, ArtifactSize: info.Size(), ArtifactPath: dst})
 	} else {
-		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey})
+		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey, ArtifactPath: dst})
 	}
 	return nil
 }
@@ -206,6 +208,127 @@ func (d s3Destination) upload(ctx context.Context, filePath, objectKey string, r
 	return nil
 }
 
+type RestoreOptions struct {
+	Strategy string
+}
+
+func (e *Engine) Restore(ctx context.Context, target model.Connection, database, archivePath string, options RestoreOptions, report Reporter) error {
+	if strings.TrimSpace(archivePath) == "" {
+		return fmt.Errorf("backup artifact path is empty")
+	}
+	tempDir, err := os.MkdirTemp("", "databridge-restore-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+	report(Progress{Stage: "extract", EventLevel: "INFO", EventMessage: "正在解压备份文件"})
+	dumpFile, err := extractBackup(archivePath, tempDir)
+	if err != nil {
+		return err
+	}
+	switch target.Type {
+	case "PostgreSQL":
+		return e.restorePostgres(ctx, target, database, dumpFile, options, report)
+	case "MySQL":
+		return e.restoreMySQL(ctx, target, database, dumpFile, options, report)
+	default:
+		return fmt.Errorf("unsupported restore target type %q", target.Type)
+	}
+}
+
+func (e *Engine) restorePostgres(ctx context.Context, target model.Connection, database, dumpFile string, options RestoreOptions, report Reporter) error {
+	for _, name := range []string{"psql"} {
+		if _, err := toolPath(name); err != nil {
+			return err
+		}
+	}
+	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
+		if err := recreatePostgresDatabase(ctx, target, database, report); err != nil {
+			return err
+		}
+	}
+	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 PostgreSQL 数据库"})
+	args := []string{"--set", "ON_ERROR_STOP=on", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--username", target.Username, "--dbname", database, "--file", dumpFile}
+	if err := runCommand(ctx, "psql", args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
+		return fmt.Errorf("psql restore: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) restoreMySQL(ctx context.Context, target model.Connection, database, dumpFile string, options RestoreOptions, report Reporter) error {
+	for _, name := range []string{"mysql"} {
+		if _, err := toolPath(name); err != nil {
+			return err
+		}
+	}
+	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
+		if err := recreateMySQLDatabase(ctx, target, database, report); err != nil {
+			return err
+		}
+	}
+	file, err := os.Open(dumpFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 MySQL 数据库"})
+	args := []string{"--default-character-set=utf8mb4", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--user", target.Username, "--password=" + target.Password, database}
+	if err := runCommandToWriter(ctx, "mysql", args, "restore", io.Discard, report, file); err != nil {
+		return fmt.Errorf("mysql restore: %w", err)
+	}
+	return nil
+}
+
+func normalizeRestoreStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "recreate", "drop-create", "drop_create":
+		return "recreate"
+	default:
+		return "append"
+	}
+}
+
+func recreatePostgresDatabase(ctx context.Context, target model.Connection, database string, report Reporter) error {
+	maintenanceDatabase := "postgres"
+	if strings.EqualFold(strings.TrimSpace(database), maintenanceDatabase) {
+		maintenanceDatabase = "template1"
+	}
+	report(Progress{Stage: "restore", EventLevel: "WARN", EventMessage: "正在重建 PostgreSQL 目标数据库 " + database})
+	for _, statement := range []string{
+		fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid();", sqlStringLiteral(database)),
+		fmt.Sprintf("DROP DATABASE IF EXISTS %s;", postgresIdentifier(database)),
+		fmt.Sprintf("CREATE DATABASE %s;", postgresIdentifier(database)),
+	} {
+		args := []string{"--set", "ON_ERROR_STOP=on", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--username", target.Username, "--dbname", maintenanceDatabase, "--command", statement}
+		if err := runCommand(ctx, "psql", args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
+			return fmt.Errorf("recreate postgres database: %w", err)
+		}
+	}
+	return nil
+}
+
+func recreateMySQLDatabase(ctx context.Context, target model.Connection, database string, report Reporter) error {
+	report(Progress{Stage: "restore", EventLevel: "WARN", EventMessage: "正在重建 MySQL 目标数据库 " + database})
+	statement := fmt.Sprintf("DROP DATABASE IF EXISTS %s; CREATE DATABASE %s CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;", mysqlIdentifier(database), mysqlIdentifier(database))
+	args := []string{"--default-character-set=utf8mb4", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--user", target.Username, "--password=" + target.Password, "--execute", statement}
+	if err := runCommandToWriter(ctx, "mysql", args, "restore", io.Discard, report); err != nil {
+		return fmt.Errorf("recreate mysql database: %w", err)
+	}
+	return nil
+}
+
+func postgresIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func mysqlIdentifier(value string) string {
+	return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+}
+
+func sqlStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
 func fileSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -238,6 +361,10 @@ func toolPath(name string) (string, error) {
 	return "", fmt.Errorf("%s not found in PATH", name)
 }
 
+func ToolPathForPrecheck(name string) (string, error) {
+	return toolPath(name)
+}
+
 func postgresEnv(password, sslMode string) []string {
 	if sslMode == "" {
 		sslMode = "prefer"
@@ -252,9 +379,15 @@ func runCommand(ctx context.Context, name string, args []string, env []string, s
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = env
-	output, err := cmd.Output()
-	if len(output) > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(string(output))})
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if stdout.Len() > 0 {
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stdout.String())})
+	}
+	if stderr.Len() > 0 {
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
 	}
 	if err != nil {
 		return err
@@ -263,13 +396,16 @@ func runCommand(ctx context.Context, name string, args []string, env []string, s
 	return nil
 }
 
-func runCommandToWriter(ctx context.Context, name string, args []string, stage string, stdout io.Writer, report Reporter) error {
+func runCommandToWriter(ctx context.Context, name string, args []string, stage string, stdout io.Writer, report Reporter, stdin ...io.Reader) error {
 	path, err := toolPath(name)
 	if err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Stdout = stdout
+	if len(stdin) > 0 && stdin[0] != nil {
+		cmd.Stdin = stdin[0]
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
@@ -281,6 +417,56 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
+}
+
+func extractBackup(archivePath, tempDir string) (string, error) {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	gzipReader, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer gzipReader.Close()
+	tarReader := tar.NewReader(gzipReader)
+	var dumpFile string
+	for {
+		header, err := tarReader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		name := filepath.Base(header.Name)
+		if name == "." || name == string(filepath.Separator) {
+			continue
+		}
+		target := filepath.Join(tempDir, name)
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return "", err
+		}
+		if _, err := io.Copy(output, tarReader); err != nil {
+			output.Close()
+			return "", err
+		}
+		if err := output.Close(); err != nil {
+			return "", err
+		}
+		if strings.HasSuffix(strings.ToLower(name), ".sql") {
+			dumpFile = target
+		}
+	}
+	if dumpFile == "" {
+		return "", fmt.Errorf("backup archive does not contain a sql dump")
+	}
+	return dumpFile, nil
 }
 
 func compressBackup(tempDir, dumpFile string, source model.Connection, database string, report Reporter) (string, error) {

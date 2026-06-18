@@ -216,6 +216,25 @@ export default function App() {
     window.history.replaceState(null, "", pathForBackup(job));
     setRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
   }, []);
+  const openRestoredBackup = useCallback((job: BackupJob) => {
+    setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+    window.history.pushState(null, "", pathForBackup(job));
+    setRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
+  }, []);
+  async function deleteMigration(job: MigrationJob) {
+    await api.deleteMigration(job.id);
+    setMigrations((current) => current.filter((item) => item.id !== job.id));
+    if (route.view === "migrations" && route.jobId === job.id) {
+      pushRoute(routes.migrations);
+    }
+  }
+  async function deleteBackup(job: BackupJob) {
+    await api.deleteBackup(job.id);
+    setBackups((current) => current.filter((item) => item.id !== job.id));
+    if (route.view === "backups" && route.jobId === job.id) {
+      pushRoute(routes.backups);
+    }
+  }
   async function login(username: string, password: string) {
     const session = await api.login(username, password);
     setAuthenticated(session.authenticated);
@@ -242,8 +261,8 @@ export default function App() {
   if (view === "overview") content = <Overview connections={connections} migrations={migrations} onCreateMigration={() => createMigration()} onConnections={() => navigate("connections")} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
   else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onCreateMigration={createMigration} />;
   else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} />;
-  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} /> : <MigrationList migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} />;
-  else if (view === "backups") content = (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} onComplete={completeBackup} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} />;
+  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} /> : <MigrationList migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} />;
+  else if (view === "backups") content = (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} onComplete={completeBackup} onRestoreCreated={openRestoredBackup} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} />;
   else if (view === "settings") content = <Settings />;
   else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 

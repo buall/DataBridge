@@ -117,6 +117,24 @@ func UploadObject(ctx context.Context, storage model.RemoteStorage, objectKey, f
 	return int64(len(body)), nil
 }
 
+func DownloadObject(ctx context.Context, storage model.RemoteStorage, objectKey, filePath string) (int64, error) {
+	resp, err := signedObjectResponse(ctx, http.MethodGet, storage, objectKey, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	output, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer output.Close()
+	size, err := io.Copy(output, resp.Body)
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
 func signedServiceRequest(ctx context.Context, method string, storage model.RemoteStorage) ([]byte, error) {
 	endpoint, err := url.Parse(strings.TrimRight(storage.Endpoint, "/"))
 	if err != nil {
@@ -151,12 +169,21 @@ func signedServiceRequest(ctx context.Context, method string, storage model.Remo
 }
 
 func signedObjectRequest(ctx context.Context, method string, storage model.RemoteStorage, objectKey string, body []byte) error {
+	resp, err := signedObjectResponse(ctx, method, storage, objectKey, body)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+func signedObjectResponse(ctx context.Context, method string, storage model.RemoteStorage, objectKey string, body []byte) (*http.Response, error) {
 	endpoint, err := url.Parse(strings.TrimRight(storage.Endpoint, "/"))
 	if err != nil {
-		return fmt.Errorf("invalid endpoint: %w", err)
+		return nil, fmt.Errorf("invalid endpoint: %w", err)
 	}
 	if endpoint.Scheme == "" || endpoint.Host == "" {
-		return fmt.Errorf("endpoint must include scheme and host")
+		return nil, fmt.Errorf("endpoint must include scheme and host")
 	}
 	endpoint.Path = path.Join(endpoint.EscapedPath(), storage.Bucket, objectKey)
 	endpoint.RawQuery = ""
@@ -165,7 +192,7 @@ func signedObjectRequest(ctx context.Context, method string, storage model.Remot
 	now := time.Now().UTC()
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Host", endpoint.Host)
 	req.Header.Set("X-Amz-Date", now.Format("20060102T150405Z"))
@@ -178,14 +205,15 @@ func signedObjectRequest(ctx context.Context, method string, storage model.Remot
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s %s failed: %s %s", method, objectKey, resp.Status, strings.TrimSpace(string(snippet)))
+		defer resp.Body.Close()
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		snippet := string(responseBody)
+		return nil, fmt.Errorf("%s %s failed: %s %s", method, objectKey, resp.Status, strings.TrimSpace(snippet))
 	}
-	return nil
+	return resp, nil
 }
 
 func signS3Request(req *http.Request, storage model.RemoteStorage, now time.Time, payloadHash string) {

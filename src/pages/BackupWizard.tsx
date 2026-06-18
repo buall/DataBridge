@@ -18,6 +18,7 @@ export function BackupWizard({
   const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "local"), [storages]);
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [databaseConnectionId, setDatabaseConnectionId] = useState("");
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
@@ -49,12 +50,22 @@ export function BackupWizard({
   }, [connections, writableStorages]);
 
   useEffect(() => {
-    if (!config.sourceId) return;
+    const sourceId = config.sourceId;
+    setDatabases([]);
+    setDatabaseConnectionId("");
+    setConfig((current) => current.sourceId === sourceId ? { ...current, sourceDatabase: "", sourceDatabases: [] } : current);
+    if (!sourceId) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
     setLoading(true);
     setError("");
-    api.databases(config.sourceId)
+    api.databases(sourceId)
       .then((items) => {
+        if (cancelled) return;
         setDatabases(items);
+        setDatabaseConnectionId(sourceId);
         setConfig((current) => ({
           ...current,
           sourceDatabase: items.some((item) => item.name === current.sourceDatabase) ? current.sourceDatabase : (items[0]?.name ?? ""),
@@ -63,16 +74,28 @@ export function BackupWizard({
             : (items[0]?.name ? [items[0].name] : []),
         }));
       })
-      .catch((reason) => setError(reason.message))
-      .finally(() => setLoading(false));
+      .catch((reason) => {
+        if (!cancelled) setError(reason.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [config.sourceId]);
 
   const source = connections.find((item) => item.id === config.sourceId);
   const destination = writableStorages.find((item) => item.id === config.destination);
-  const selectedDatabases = databases.filter((item) => config.sourceDatabases.includes(item.name));
+  const activeDatabases = databaseConnectionId === config.sourceId ? databases : [];
+  const selectedDatabases = activeDatabases.filter((item) => config.sourceDatabases.includes(item.name));
   const databaseLabel = selectedDatabases.length === 1 ? selectedDatabases[0].name : `${selectedDatabases.length} 个数据库`;
 
   async function start() {
+    const validDatabaseNames = new Set(activeDatabases.map((item) => item.name));
+    const sourceDatabases = config.sourceDatabases.filter((name) => validDatabaseNames.has(name));
+    if (loading || databaseConnectionId !== config.sourceId || !sourceDatabases.length) {
+      setError("请等待当前源端数据库列表加载完成，并选择要备份的数据库");
+      return;
+    }
     setStarting(true);
     setError("");
     try {
@@ -82,7 +105,8 @@ export function BackupWizard({
         notificationEnabled: scheduled ? config.notificationEnabled : false,
         notificationMethod: scheduled ? config.notificationMethod : undefined,
         notificationTarget: scheduled ? config.notificationTarget?.trim() : "",
-        sourceDatabase: config.sourceDatabases.join(", "),
+        sourceDatabase: sourceDatabases.join(", "),
+        sourceDatabases,
         name: config.name || `${source?.name ?? databaseLabel} / ${databaseLabel} 备份`,
       });
     } catch (reason) {
@@ -125,7 +149,7 @@ export function BackupWizard({
           <div className="config-grid backup-source-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase || "数据库"} 备份`} /></label>
             <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [] })} />
-            <DatabaseMultiSelect databases={databases} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
+            <DatabaseMultiSelect databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
           </div>
           {loading && <p className="loading-copy">正在加载数据库...</p>}
         </Card>
@@ -178,7 +202,7 @@ export function BackupWizard({
 
       <div className="wizard-actions">
         <span>备份文件会写入本地任务记录，密钥仍仅在后端加密保存</span>
-        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || !config.sourceDatabases.length || !config.destination} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
+        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || databaseConnectionId !== config.sourceId || !config.sourceDatabases.length || !config.destination} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
     </div>
   );
@@ -323,11 +347,15 @@ function SourceConnectionSelect({ connectionId, connections, onChange }: { conne
   );
 }
 
-function DatabaseMultiSelect({ databases, selected, onChange }: { databases: DatabaseInfo[]; selected: string[]; onChange: (value: string[]) => void }) {
+function DatabaseMultiSelect({ databases, loading, selected, onChange }: { databases: DatabaseInfo[]; loading: boolean; selected: string[]; onChange: (value: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedSet = new Set(selected);
   const selectedItems = databases.filter((item) => selectedSet.has(item.name));
+
+  useEffect(() => {
+    if (loading) setOpen(false);
+  }, [loading]);
 
   useEffect(() => {
     if (!open) return;
@@ -345,8 +373,8 @@ function DatabaseMultiSelect({ databases, selected, onChange }: { databases: Dat
   return (
     <div className="field backup-database-picker" ref={rootRef}>
       <span>源数据库</span>
-      <button type="button" className="multi-select-trigger" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span>{selectedItems.length ? selectedItems.map((item) => item.name).join(", ") : "请选择数据库"}</span>
+      <button type="button" className="multi-select-trigger" aria-expanded={open} disabled={loading} onClick={() => setOpen((value) => !value)}>
+        <span>{loading ? "正在加载数据库..." : selectedItems.length ? selectedItems.map((item) => item.name).join(", ") : "请选择数据库"}</span>
         <ChevronDown size={16} />
       </button>
       {open && (
@@ -355,7 +383,7 @@ function DatabaseMultiSelect({ databases, selected, onChange }: { databases: Dat
             <button type="button" onClick={() => onChange(databases.map((item) => item.name))}>全选</button>
             <button type="button" onClick={() => onChange([])}>清空</button>
           </div>
-          {databases.map((item) => <button type="button" key={item.name} className={selected.includes(item.name) ? "active" : ""} onClick={() => toggle(item.name)}><span className={`checkbox ${selected.includes(item.name) ? "checked" : ""}`}>{selected.includes(item.name) && <Check size={13} />}</span><strong>{item.name}</strong><small>{formatBytes(item.sizeBytes)}</small></button>)}
+          {databases.length ? databases.map((item) => <button type="button" key={item.name} className={selected.includes(item.name) ? "active" : ""} onClick={() => toggle(item.name)}><span className={`checkbox ${selected.includes(item.name) ? "checked" : ""}`}>{selected.includes(item.name) && <Check size={13} />}</span><strong>{item.name}</strong><small>{formatBytes(item.sizeBytes)}</small></button>) : <div className="multi-select-empty">当前连接未发现可备份数据库</div>}
         </div>
       )}
     </div>

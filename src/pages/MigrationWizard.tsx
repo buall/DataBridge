@@ -2,7 +2,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Database, Search } from "luc
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { DatabaseConnection, DatabaseInfo, MigrationConfig, TableInfo } from "../types";
-import { Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 
 const steps = ["连接与数据库", "选择数据表", "迁移配置", "确认执行"];
 
@@ -25,6 +25,7 @@ export function MigrationWizard({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false);
   const [config, setConfig] = useState<MigrationConfig>({
     name: "",
     engine: "native",
@@ -137,6 +138,14 @@ export function MigrationWizard({
     }
   }
 
+  function requestStart() {
+    if (config.conflictStrategy !== "skip") {
+      setStartConfirmOpen(true);
+      return;
+    }
+    void start();
+  }
+
   if (!connections.length) {
     return <div className="empty-state"><div>DB</div><h2>暂无可用连接</h2><p>请先添加至少两个可访问的同类型数据库连接，再创建迁移任务。</p></div>;
   }
@@ -211,8 +220,9 @@ export function MigrationWizard({
 
       <div className="wizard-actions">
         <span>连接凭证已加密保存，迁移任务和校验结果会写入本地 SQLite</span>
-        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || (step === 0 && (!config.sourceDatabase || !config.targetDatabase || (config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase))) || (step === 1 && !config.tables.length)} onClick={() => step === 3 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 3 ? "启动迁移" : "下一步"}<ArrowRight size={16} /></Button></div>
+        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || (step === 0 && (!config.sourceDatabase || !config.targetDatabase || (config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase))) || (step === 1 && !config.tables.length)} onClick={() => step === 3 ? requestStart() : setStep(step + 1)}>{starting ? "正在创建..." : step === 3 ? "启动迁移" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
+      {startConfirmOpen && <ConfirmDialog title={config.conflictStrategy === "overwrite" ? "删除原表后迁移" : "备份原表后迁移"} description={config.conflictStrategy === "overwrite" ? "这是高危操作，迁移前会删除目标端同名对象。" : "这是中危操作，迁移前会改名保存目标端同名对象。"} tone={config.conflictStrategy === "overwrite" ? "danger" : "warning"} confirmText="确认启动迁移" submitting={starting} onCancel={() => setStartConfirmOpen(false)} onConfirm={start} details={[`目标：${target?.name ?? "目标端"} / ${config.targetDatabase}`, `迁移对象：${config.tables.length} 张表`, config.conflictStrategy === "overwrite" ? "目标端同名表和相关对象会被删除后重新写入。" : "目标端同名表会被改名备份，仍会改变目标库对象结构。"]} />}
     </div>
   );
 }

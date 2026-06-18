@@ -2,7 +2,7 @@ import { Check, Cloud, Edit3, FolderOpen, HardDrive, KeyRound, MoreHorizontal, P
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { RemoteStorage, RemoteStorageInput, RemoteStorageType } from "../types";
-import { Badge, Button, Card, SelectField } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog, SelectField } from "../components/UI";
 
 type StorageForm = RemoteStorageInput & { secretKey: string };
 
@@ -38,6 +38,8 @@ export function Storages({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RemoteStorage | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [bucketTarget, setBucketTarget] = useState<RemoteStorage | null>(null);
   const [bucketListTarget, setBucketListTarget] = useState<RemoteStorage | null>(null);
   const [bucketName, setBucketName] = useState("");
@@ -142,9 +144,22 @@ export function Storages({
 
   async function remove(storage: RemoteStorage) {
     setOpenMenu(null);
-    if (!window.confirm(`删除远端存储“${storage.name}”？`)) return;
-    await api.deleteStorage(storage.id);
-    onDelete(storage.id);
+    setDeleteTarget(storage);
+  }
+
+  async function confirmDeleteStorage() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setPageError("");
+    try {
+      await api.deleteStorage(deleteTarget.id);
+      onDelete(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (reason) {
+      setPageError(reason instanceof Error ? reason.message : "删除远端存储失败");
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function openBucketCreate(storage: RemoteStorage) {
@@ -386,6 +401,8 @@ export function Storages({
           </form>
         </div>
       )}
+
+      {deleteTarget && <ConfirmDialog title="删除远端存储" description="这是高危操作，删除后备份任务将不能再使用这条存储配置。" tone="danger" confirmText="删除存储" submitting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDeleteStorage} details={[`存储：${deleteTarget.name}`, "已经上传到远端的历史对象不会被自动删除，但 DataBridge 中的配置和凭证会被移除。"]} />}
     </div>
   );
 }
