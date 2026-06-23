@@ -2050,15 +2050,27 @@ func daysInMonth(year int, month time.Month) int {
 
 func (s *Server) getBackup(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if item, err := s.store.Backup(id); err == nil {
-		s.reconcileScheduledBackupRun(item, time.Now().In(appLocation))
-	}
 	item, err := s.store.Backup(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "backup not found")
 		return
 	}
+	s.reconcileScheduledBackupRun(item, time.Now().In(appLocation))
+	if compactBackupResponse(r) {
+		item = compactBackupJob(item)
+	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func compactBackupResponse(r *http.Request) bool {
+	value := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("compact")))
+	return value == "1" || value == "true"
+}
+
+func compactBackupJob(job model.BackupJob) model.BackupJob {
+	job.ArtifactVersions = nil
+	job.Request = model.BackupRequest{}
+	return job
 }
 
 func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {

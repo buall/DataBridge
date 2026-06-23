@@ -49,7 +49,7 @@ export function BackupMonitoring({
     let stopped = false;
     async function refresh() {
       try {
-        const next = await api.backup(jobId);
+        const next = await api.backup(jobId, true);
         if (stopped) return;
         setJob(next);
         setError("");
@@ -107,7 +107,7 @@ export function BackupMonitoring({
   function pollBackup() {
     window.setTimeout(async () => {
       try {
-        const refreshed = await api.backup(jobId);
+        const refreshed = await api.backup(jobId, true);
         setJob(refreshed);
         if (refreshed.status === "running" || refreshed.status === "pending") {
           pollBackup();

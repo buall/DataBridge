@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +115,46 @@ func TestBackupNotificationTextFallsBackToSingleArtifact(t *testing.T) {
 	text := backupNotificationText(job, true)
 	if !strings.Contains(text, "- system：system_20260623.sql（512 B）") {
 		t.Fatalf("notification text missing fallback artifact line\n%s", text)
+	}
+}
+
+func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
+	job := model.BackupJob{
+		ID: "backup-1",
+		ArtifactVersions: []model.BackupArtifactVersion{{
+			ID: "version-1",
+			Artifacts: []model.BackupArtifact{{Database: "db1", Name: "db1.sql", Size: 1024}},
+		}},
+		Request: model.BackupRequest{
+			SourceID:        "source-1",
+			SourceDatabase:  "db1",
+			SourceDatabases: []string{"db1"},
+		},
+	}
+
+	compact := compactBackupJob(job)
+	if compact.ArtifactVersions != nil {
+		t.Fatalf("compact response should omit artifact versions: %#v", compact.ArtifactVersions)
+	}
+	if compact.Request.SourceID != "" || compact.Request.SourceDatabase != "" || len(compact.Request.SourceDatabases) != 0 {
+		t.Fatalf("compact response should omit request: %#v", compact.Request)
+	}
+	if len(job.ArtifactVersions) != 1 || job.Request.SourceID != "source-1" {
+		t.Fatal("compact backup job should not mutate original value")
+	}
+}
+
+func TestCompactBackupResponseQuery(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/backups/backup-1?compact=1", nil)
+	if !compactBackupResponse(req) {
+		t.Fatal("compact=1 should enable compact response")
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/backups/backup-1?compact=true", nil)
+	if !compactBackupResponse(req) {
+		t.Fatal("compact=true should enable compact response")
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/backups/backup-1", nil)
+	if compactBackupResponse(req) {
+		t.Fatal("missing compact query should keep full response")
 	}
 }

@@ -1,5 +1,5 @@
-import { AlertTriangle, Archive, ArrowLeft, Check, DatabaseBackup, FileArchive, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowLeft, Check, ChevronDown, DatabaseBackup, ShieldCheck } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Badge, Button, Card, ConfirmDialog, SelectField } from "../components/UI";
 import type { BackupJob, DatabaseConnection, RestoreBackupConfig, RestorePrecheckResult } from "../types";
@@ -31,6 +31,8 @@ export function BackupRestore({
   const [restoring, setRestoring] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState("");
+  const [versionMenuOpen, setVersionMenuOpen] = useState(false);
+  const versionMenuRef = useRef<HTMLDivElement | null>(null);
   const targetConnection = targets.find((connection) => connection.id === targetId);
   const selectedSet = new Set(selectedDatabases);
   const ready = Boolean(selectedVersion) && selectedVersion.status === "completed" && Boolean(targetId) && selectedDatabases.length > 0 && selectedDatabases.every((database) => targetDatabases[database]?.trim());
@@ -52,6 +54,22 @@ export function BackupRestore({
       return next;
     });
   }, [sourceDatabases]);
+
+  useEffect(() => {
+    if (!versionMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!versionMenuRef.current?.contains(event.target as Node)) setVersionMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setVersionMenuOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [versionMenuOpen]);
 
   function toggleDatabase(database: string) {
     setPrecheck(null);
@@ -120,14 +138,11 @@ export function BackupRestore({
       <div className="restore-wizard-grid">
         <Card className="restore-version-card">
           <div className="section-title compact"><div><h3>备份版本</h3><p>{versions.length > 1 ? "选择要恢复的某一次备份。" : "当前任务只有一个可恢复版本。"}</p></div><Badge tone="gray">{storageTypeLabel(job.destinationType)}</Badge></div>
-          <div className="restore-version-list">
-            {versions.map((version) => (
-              <button type="button" className={version.id === selectedVersion?.id ? "active" : ""} key={version.id} onClick={() => { setVersionId(version.id); setPrecheck(null); }}>
-                <span><FileArchive size={17} /></span>
-                <div><strong>{version.label}</strong><small>{version.artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(version.artifacts))}{version.current ? " · 最新产物" : ""}</small></div>
-                <Badge tone={version.status === "completed" ? "green" : version.status === "failed" ? "red" : "orange"}>{version.status === "completed" ? "可恢复" : version.status === "failed" ? "失败" : "未完成"}</Badge>
-              </button>
-            ))}
+          {versions.length > 1 && <div className="artifact-version-picker field select-field restore-version-picker" ref={versionMenuRef}><span>备份版本</span><button type="button" className="select-trigger artifact-version-trigger" aria-haspopup="listbox" aria-expanded={versionMenuOpen} onClick={() => setVersionMenuOpen((current) => !current)}><span>{selectedVersion ? `${selectedVersion.label} · ${selectedVersion.artifacts.length} 个数据库 · ${formatBytes(totalArtifactSize(selectedVersion.artifacts))}` : "选择备份版本"}</span><ChevronDown size={16} /></button>{versionMenuOpen && <div className="select-menu artifact-version-menu" role="listbox" aria-label="备份版本">{versions.map((version) => <button type="button" key={version.id} className={version.id === selectedVersion?.id ? "active" : ""} role="option" aria-selected={version.id === selectedVersion?.id} onClick={() => { setVersionId(version.id); setVersionMenuOpen(false); setPrecheck(null); }}><strong>{version.label}</strong><small>{version.artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(version.artifacts))}{version.current ? " · 最新产物" : ""}</small></button>)}</div>}</div>}
+          <div className="artifact-manager-summary restore-version-summary-block">
+            <strong>{selectedVersion ? selectedVersion.label : "当前最新产物"}</strong>
+            <span>{artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(artifacts))}</span>
+            <small>{selectedVersion?.current ? "当前展示最新一次备份版本，可继续选择还原范围和目标位置。" : "当前展示所选备份版本，可继续选择还原范围和目标位置。"}</small>
           </div>
           <div className="restore-artifact-mini-list">
             {artifacts.map((artifact) => <div key={artifact.database}><strong>{artifact.database}</strong><span>{formatBytes(artifact.size ?? 0)}</span><small>{artifact.path || artifact.name}</small></div>)}

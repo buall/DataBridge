@@ -159,7 +159,8 @@ export const api = {
     normalizeBackup(await request<BackupJob>(`/backups/${id}`, { method: "PUT", body: JSON.stringify(config) })),
   testBackupNotification: (method: "webhook" | "email", target: string) =>
     request<{ message: string }>("/backups/notification-test", { method: "POST", body: JSON.stringify({ method, target }) }),
-  backup: async (id: string) => normalizeBackup(await request<BackupJob>(`/backups/${id}`)),
+  backup: async (id: string, compact = false) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}${compact ? "?compact=1" : ""}`)),
   triggerBackup: async (id: string) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}/trigger`, { method: "POST" })),
   restoreBackup: async (id: string, config: RestoreBackupConfig) =>
