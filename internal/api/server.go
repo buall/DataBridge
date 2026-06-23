@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -116,6 +117,8 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/backups/{id}/restore/precheck", server.restoreBackupPrecheck)
 	protected.HandleFunc("POST /api/backups/{id}/restore", server.restoreBackup)
 	protected.HandleFunc("POST /api/backups/{id}/cancel", server.cancelBackup)
+	protected.HandleFunc("GET /api/backups/{id}/artifacts/{database}/download", server.downloadBackupArtifact)
+	protected.HandleFunc("DELETE /api/backups/{id}/artifacts/{database}", server.deleteBackupArtifact)
 	protected.HandleFunc("DELETE /api/backups/{id}", server.deleteBackup)
 	protected.HandleFunc("GET /api/backups", server.listBackups)
 	mux.Handle("/api/", server.auth.authMiddleware(protected))
@@ -1100,6 +1103,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runBackup(ctx context.Context, id string, source model.Connection, request model.BackupRequest) {
 	log.Printf("backup[%s] started: %s/%s -> %s", id, source.Name, request.SourceDatabase, request.DestinationType)
 	started := time.Now()
+	versionID := store.NewID()
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Status = model.StatusRunning
 		item.Stage = "export"
@@ -1108,6 +1112,16 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 		item.LastRunAt = &started
 		item.FinishedAt = nil
 		item.Error = ""
+		item.Artifacts = nil
+		item.ArtifactVersions = append([]model.BackupArtifactVersion{{
+			ID:        versionID,
+			StartedAt: started,
+			Status:    model.StatusRunning,
+			Stage:     "export",
+		}}, item.ArtifactVersions...)
+		if len(item.ArtifactVersions) > 20 {
+			item.ArtifactVersions = item.ArtifactVersions[:20]
+		}
 	})
 	reporter := func(progress backup.Progress) {
 		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
@@ -1141,7 +1155,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 				progress.Progress = index*90/len(databases) + backupProgress(progress.Stage, progress.Progress)/len(databases)
 			}
 			if progress.ArtifactName != "" {
-				s.recordBackupArtifact(id, database, progress)
+				s.recordBackupArtifact(id, versionID, database, progress)
 			}
 			reporter(progress)
 		}); runErr != nil {
@@ -1167,6 +1181,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 				item.Stage = "completed"
 			}
 			item.Progress = 100
+			finishBackupArtifactVersion(item, versionID, model.StatusCompleted, "completed", finished, "")
 			item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
 			if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
 				item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
@@ -1176,11 +1191,13 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 		if errors.Is(err, context.Canceled) {
 			item.Status = model.StatusCancelled
 			item.Stage = "cancelled"
+			finishBackupArtifactVersion(item, versionID, model.StatusCancelled, "cancelled", finished, "任务已取消")
 			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
 		} else {
 			item.Status = model.StatusFailed
 			item.Stage = "failed"
 			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
+			finishBackupArtifactVersion(item, versionID, model.StatusFailed, "failed", finished, err.Error())
 			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
@@ -1198,7 +1215,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 	}
 }
 
-func (s *Server) recordBackupArtifact(id, database string, progress backup.Progress) {
+func (s *Server) recordBackupArtifact(id, versionID, database string, progress backup.Progress) {
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		artifact := model.BackupArtifact{
 			Database: database,
@@ -1206,6 +1223,7 @@ func (s *Server) recordBackupArtifact(id, database string, progress backup.Progr
 			Size:     progress.ArtifactSize,
 			Path:     progress.ArtifactPath,
 		}
+		recordArtifactInVersion(item, versionID, artifact)
 		for index := range item.Artifacts {
 			if item.Artifacts[index].Database == database {
 				item.Artifacts[index] = artifact
@@ -1214,6 +1232,35 @@ func (s *Server) recordBackupArtifact(id, database string, progress backup.Progr
 		}
 		item.Artifacts = append(item.Artifacts, artifact)
 	})
+}
+
+func recordArtifactInVersion(item *model.BackupJob, versionID string, artifact model.BackupArtifact) {
+	for versionIndex := range item.ArtifactVersions {
+		if item.ArtifactVersions[versionIndex].ID != versionID {
+			continue
+		}
+		for artifactIndex := range item.ArtifactVersions[versionIndex].Artifacts {
+			if item.ArtifactVersions[versionIndex].Artifacts[artifactIndex].Database == artifact.Database {
+				item.ArtifactVersions[versionIndex].Artifacts[artifactIndex] = artifact
+				return
+			}
+		}
+		item.ArtifactVersions[versionIndex].Artifacts = append(item.ArtifactVersions[versionIndex].Artifacts, artifact)
+		return
+	}
+}
+
+func finishBackupArtifactVersion(item *model.BackupJob, versionID string, status model.MigrationStatus, stage string, finished time.Time, message string) {
+	for index := range item.ArtifactVersions {
+		if item.ArtifactVersions[index].ID != versionID {
+			continue
+		}
+		item.ArtifactVersions[index].Status = status
+		item.ArtifactVersions[index].Stage = stage
+		item.ArtifactVersions[index].FinishedAt = &finished
+		item.ArtifactVersions[index].Error = message
+		return
+	}
 }
 
 func backupDatabases(request model.BackupRequest) []string {
@@ -2045,11 +2092,16 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "请选择恢复目标连接")
 		return
 	}
-	if sourceJob.Status != model.StatusCompleted || sourceJob.ArtifactName == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "只有已完成且已生成备份文件的任务可以恢复")
+	restoreJob, err := backupJobForArtifactVersion(sourceJob, plan.ArtifactVersionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
 		return
 	}
-	restoreSource, err := s.restoreSource(sourceJob)
+	if !backupArtifactRestorable(restoreJob) {
+		writeError(w, http.StatusBadRequest, "invalid_request", backupArtifactUnavailableMessage(restoreJob))
+		return
+	}
+	restoreSource, err := s.restoreSource(restoreJob)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
 		return
@@ -2065,13 +2117,14 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now().In(appLocation)
+	summaryArtifact := restoreArtifactSummary(restoreJob)
 	value := model.BackupJob{
 		ID: store.NewID(), Name: fmt.Sprintf("恢复 %s 到 %s", strings.Join(plan.SourceDatabases, ", "), plan.TargetLabel),
 		Status: model.StatusPending, Stage: "pending", Progress: 0, StartedAt: now,
 		SourceName: sourceJob.SourceName, SourceType: sourceJob.SourceType, SourceDatabase: strings.Join(plan.SourceDatabases, ", "),
 		DestinationType: "restore", Destination: target.Name + " / " + plan.TargetLabel,
-		ArtifactName: sourceJob.ArtifactName, ArtifactSize: sourceJob.ArtifactSize, ArtifactPath: restoreSource.Path,
-		Events: []model.Event{{Time: now, Level: "INFO", Message: "恢复任务已创建，来源备份任务 " + sourceJob.ID}, {Time: now, Level: "INFO", Message: "恢复策略：" + restoreStrategyLabel(plan.Strategy)}},
+		ArtifactName: summaryArtifact.Name, ArtifactSize: summaryArtifact.Size, ArtifactPath: restoreSource.Path,
+		Events: []model.Event{{Time: now, Level: "INFO", Message: "恢复任务已创建，来源备份任务 " + sourceJob.ID}, {Time: now, Level: "INFO", Message: "恢复备份版本：" + restoreVersionLabel(restoreJob, plan.ArtifactVersionID)}, {Time: now, Level: "INFO", Message: "恢复策略：" + restoreStrategyLabel(plan.Strategy)}},
 	}
 	if err := s.store.AddBackup(value, cancel); err != nil {
 		cancel()
@@ -2116,18 +2169,23 @@ func (s *Server) restoreBackupPrecheck(w http.ResponseWriter, r *http.Request) {
 }
 
 type restorePlan struct {
-	TargetID        string
-	SourceDatabases []string
-	TargetDatabases map[string]string
-	Strategy        string
-	TargetLabel     string
+	TargetID          string
+	ArtifactVersionID string
+	SourceDatabases   []string
+	TargetDatabases   map[string]string
+	Strategy          string
+	TargetLabel       string
 }
 
 func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.RestoreBackupRequest) (restorePlan, error) {
 	strategy := normalizeRestoreStrategy(input.Strategy)
-	sourceDatabases := backupDatabases(sourceJob.Request)
+	restoreJob, err := backupJobForArtifactVersion(sourceJob, strings.TrimSpace(input.ArtifactVersionID))
+	if err != nil {
+		return restorePlan{}, err
+	}
+	sourceDatabases := restoreSourceDatabasesForJob(restoreJob)
 	if len(sourceDatabases) == 0 {
-		sourceDatabases = splitDatabaseList(sourceJob.SourceDatabase)
+		sourceDatabases = splitDatabaseList(restoreJob.SourceDatabase)
 	}
 	selectedDatabases := input.SelectedDatabases
 	if len(selectedDatabases) == 0 {
@@ -2142,11 +2200,12 @@ func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.Restore
 		return restorePlan{}, err
 	}
 	return restorePlan{
-		TargetID:        strings.TrimSpace(input.TargetID),
-		SourceDatabases: selected,
-		TargetDatabases: targetDatabases,
-		Strategy:        strategy,
-		TargetLabel:     restoreTargetLabel(selected, targetDatabases),
+		TargetID:          strings.TrimSpace(input.TargetID),
+		ArtifactVersionID: strings.TrimSpace(input.ArtifactVersionID),
+		SourceDatabases:   selected,
+		TargetDatabases:   targetDatabases,
+		Strategy:          strategy,
+		TargetLabel:       restoreTargetLabel(selected, targetDatabases),
 	}, nil
 }
 
@@ -2155,14 +2214,19 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 	add := func(key, label, status, message string) {
 		checks = append(checks, model.RestorePrecheckItem{Key: key, Label: label, Status: status, Message: message})
 	}
-	if sourceJob.Status != model.StatusCompleted || sourceJob.ArtifactName == "" {
-		add("artifact", "备份产物", "failed", "只有已完成且已生成备份文件的任务可以恢复")
+	restoreJob, versionErr := backupJobForArtifactVersion(sourceJob, plan.ArtifactVersionID)
+	if versionErr != nil {
+		add("artifact", "备份产物", "failed", versionErr.Error())
 		return restorePrecheckResult(checks)
 	}
-	if _, err := s.restoreSource(sourceJob); err != nil {
+	if !backupArtifactRestorable(restoreJob) {
+		add("artifact", "备份产物", "failed", backupArtifactUnavailableMessage(restoreJob))
+		return restorePrecheckResult(checks)
+	}
+	if _, err := s.restoreSource(restoreJob); err != nil {
 		add("artifact", "备份产物", "failed", err.Error())
 	} else {
-		add("artifact", "备份产物", "passed", "已找到可恢复的备份产物")
+		add("artifact", "备份产物", "passed", "已找到可恢复的备份产物："+restoreVersionLabel(restoreJob, plan.ArtifactVersionID))
 	}
 	if err := restoreClientToolAvailable(target.Type); err != nil {
 		add("client_tool", "客户端工具", "failed", userFacingErrorMessage(errorContextBackupRuntime, err))
@@ -2211,6 +2275,93 @@ func restorePrecheckResult(checks []model.RestorePrecheckItem) model.RestorePrec
 		}
 	}
 	return result
+}
+
+func backupArtifactRestorable(job model.BackupJob) bool {
+	if job.Status == model.StatusRunning || job.Status == model.StatusPending {
+		return false
+	}
+	if strings.TrimSpace(job.ArtifactName) != "" {
+		return true
+	}
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func backupArtifactUnavailableMessage(job model.BackupJob) string {
+	if job.Status == model.StatusRunning || job.Status == model.StatusPending {
+		return "任务正在执行，当前备份产物暂不可恢复"
+	}
+	return "只有已生成备份文件的任务可以恢复"
+}
+
+func backupJobForArtifactVersion(job model.BackupJob, versionID string) (model.BackupJob, error) {
+	versionID = strings.TrimSpace(versionID)
+	if versionID == "" || versionID == "current" {
+		return job, nil
+	}
+	for _, version := range job.ArtifactVersions {
+		if version.ID != versionID {
+			continue
+		}
+		if version.Status != model.StatusCompleted {
+			return model.BackupJob{}, fmt.Errorf("选择的备份版本未成功完成，不能用于恢复")
+		}
+		if len(version.Artifacts) == 0 {
+			return model.BackupJob{}, fmt.Errorf("选择的备份版本没有可恢复产物")
+		}
+		next := job
+		next.Artifacts = version.Artifacts
+		next.ArtifactName = ""
+		next.ArtifactSize = 0
+		next.ArtifactPath = ""
+		next.StartedAt = version.StartedAt
+		next.FinishedAt = version.FinishedAt
+		if len(version.Artifacts) > 0 {
+			next.ArtifactName = version.Artifacts[0].Name
+			next.ArtifactSize = version.Artifacts[0].Size
+			next.ArtifactPath = version.Artifacts[0].Path
+		}
+		return next, nil
+	}
+	return model.BackupJob{}, fmt.Errorf("未找到选择的备份版本")
+}
+
+func restoreSourceDatabasesForJob(job model.BackupJob) []string {
+	seen := map[string]bool{}
+	var databases []string
+	for _, artifact := range job.Artifacts {
+		database := strings.TrimSpace(artifact.Database)
+		if database != "" && !seen[database] {
+			seen[database] = true
+			databases = append(databases, database)
+		}
+	}
+	if len(databases) > 0 {
+		return databases
+	}
+	databases = backupDatabases(job.Request)
+	if len(databases) > 0 {
+		return databases
+	}
+	return splitDatabaseList(job.SourceDatabase)
+}
+
+func restoreVersionLabel(job model.BackupJob, versionID string) string {
+	if strings.TrimSpace(versionID) == "" || versionID == "current" {
+		if job.FinishedAt != nil {
+			return job.FinishedAt.In(appLocation).Format("2006-01-02 15:04:05")
+		}
+		return "当前最新产物"
+	}
+	if job.FinishedAt != nil {
+		return job.FinishedAt.In(appLocation).Format("2006-01-02 15:04:05")
+	}
+	return versionID
 }
 
 func validRestoreDatabaseName(name string) bool {
@@ -2330,27 +2481,62 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 		if err != nil {
 			return restoreSource{}, err
 		}
-		if request.Destination == "" || job.ArtifactName == "" {
+		objectName := restoreArtifactObject(job)
+		if request.Destination == "" || objectName == "" {
 			return restoreSource{}, fmt.Errorf("未找到对象存储备份位置")
 		}
 		storage, err := s.store.Storage(request.Destination)
 		if err != nil {
 			return restoreSource{}, fmt.Errorf("未找到备份目标对象存储")
 		}
-		return restoreSource{Type: "object", Object: job.ArtifactName, Storage: &storage, Artifacts: backupArtifactMap(job)}, nil
+		return restoreSource{Type: "object", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job)}, nil
 	default:
 		return restoreSource{}, fmt.Errorf("该备份目标暂不支持恢复")
 	}
+}
+
+func restoreArtifactObject(job model.BackupJob) string {
+	if job.ArtifactName != "" {
+		return job.ArtifactName
+	}
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Name) != "" {
+			return artifact.Name
+		}
+	}
+	return ""
 }
 
 func restoreArtifactPath(job model.BackupJob) string {
 	if job.ArtifactPath != "" {
 		return job.ArtifactPath
 	}
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Path) != "" {
+			return artifact.Path
+		}
+	}
 	if job.DestinationType == "local" && job.Request.Destination != "" && job.ArtifactName != "" {
 		return filepath.Join(job.Request.Destination, filepath.FromSlash(job.ArtifactName))
 	}
+	for _, artifact := range job.Artifacts {
+		if job.DestinationType == "local" && job.Request.Destination != "" && strings.TrimSpace(artifact.Name) != "" {
+			return filepath.Join(job.Request.Destination, filepath.FromSlash(artifact.Name))
+		}
+	}
 	return ""
+}
+
+func restoreArtifactSummary(job model.BackupJob) model.BackupArtifact {
+	if job.ArtifactName != "" {
+		return model.BackupArtifact{Name: job.ArtifactName, Size: job.ArtifactSize, Path: job.ArtifactPath}
+	}
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Name) != "" {
+			return artifact
+		}
+	}
+	return model.BackupArtifact{}
 }
 
 func backupArtifactMap(job model.BackupJob) map[string]model.BackupArtifact {
@@ -2491,6 +2677,200 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	}
 	reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: fmt.Sprintf("备份文件已下载到临时目录，大小 %s", formatBytes(size)), Progress: 20})
 	return targetPath, cleanup, nil
+}
+
+func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) {
+	item, artifact, err := s.backupArtifactForRequest(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	fileName := filepath.Base(artifact.Name)
+	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
+		fileName = "databridge-backup.tar.gz"
+	}
+	switch item.DestinationType {
+	case "local":
+		path := artifact.Path
+		if path == "" {
+			path = restoreArtifactPath(item)
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", "本地备份文件不存在，请检查备份目录")
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeDownloadFileName(fileName)))
+		if stat, err := file.Stat(); err == nil && !stat.IsDir() {
+			w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+		}
+		if _, err := io.Copy(w, file); err != nil {
+			log.Printf("backup artifact download failed: %v", err)
+		}
+	case "object":
+		storage, err := s.backupArtifactStorage(item)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
+			return
+		}
+		tempDir, err := os.MkdirTemp("", "databridge-artifact-download-*")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "download_failed", "准备下载备份文件失败")
+			return
+		}
+		defer os.RemoveAll(tempDir)
+		tempPath := filepath.Join(tempDir, filepath.Base(artifact.Name))
+		size, err := remotestorage.DownloadObject(r.Context(), storage, artifact.Name, tempPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "download_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
+			return
+		}
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeDownloadFileName(fileName)))
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		http.ServeFile(w, r, tempPath)
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_artifact", "该备份目标暂不支持下载")
+	}
+}
+
+func (s *Server) deleteBackupArtifact(w http.ResponseWriter, r *http.Request) {
+	item, artifact, err := s.backupArtifactForRequest(r)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	if item.Status == model.StatusRunning || item.Status == model.StatusPending {
+		writeError(w, http.StatusConflict, "task_running", "任务正在执行，请先停止后再删除备份文件")
+		return
+	}
+	switch item.DestinationType {
+	case "local":
+		path := artifact.Path
+		if path == "" {
+			path = restoreArtifactPath(item)
+		}
+		if path == "" {
+			writeError(w, http.StatusBadRequest, "invalid_artifact", "未找到本地备份文件路径")
+			return
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusBadRequest, "delete_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
+			return
+		}
+	case "object":
+		storage, err := s.backupArtifactStorage(item)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
+			return
+		}
+		if err := remotestorage.DeleteObject(r.Context(), storage, artifact.Name); err != nil {
+			writeError(w, http.StatusBadRequest, "delete_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_artifact", "该备份目标暂不支持删除备份文件")
+		return
+	}
+	now := time.Now().In(appLocation)
+	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
+		removeBackupArtifact(job, artifact.Database)
+		job.Events = append(job.Events, model.Event{Time: now, Level: "WARN", Message: "备份文件已删除：" + artifact.Name})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	updated, err := s.store.Backup(item.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) backupArtifactForRequest(r *http.Request) (model.BackupJob, model.BackupArtifact, error) {
+	item, err := s.store.Backup(r.PathValue("id"))
+	if err != nil {
+		return model.BackupJob{}, model.BackupArtifact{}, fmt.Errorf("backup not found")
+	}
+	versionID := strings.TrimSpace(r.URL.Query().Get("artifactVersionId"))
+	if versionID != "" {
+		item, err = backupJobForArtifactVersion(item, versionID)
+		if err != nil {
+			return model.BackupJob{}, model.BackupArtifact{}, err
+		}
+	}
+	database := strings.TrimSpace(r.PathValue("database"))
+	for _, artifact := range backupArtifactsForDisplay(item) {
+		if artifact.Database == database {
+			return item, artifact, nil
+		}
+	}
+	return model.BackupJob{}, model.BackupArtifact{}, fmt.Errorf("backup artifact not found")
+}
+
+func (s *Server) backupArtifactStorage(item model.BackupJob) (model.RemoteStorage, error) {
+	request, err := s.backfillBackupRequest(item)
+	if err != nil {
+		return model.RemoteStorage{}, err
+	}
+	if request.Destination == "" {
+		return model.RemoteStorage{}, fmt.Errorf("未找到对象存储备份位置")
+	}
+	storage, err := s.store.Storage(request.Destination)
+	if err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("未找到备份目标对象存储")
+	}
+	return storage, nil
+}
+
+func backupArtifactsForDisplay(job model.BackupJob) []model.BackupArtifact {
+	if len(job.Artifacts) > 0 {
+		return job.Artifacts
+	}
+	if job.ArtifactName == "" {
+		return nil
+	}
+	database := strings.TrimSpace(job.SourceDatabase)
+	if database == "" {
+		database = "default"
+	}
+	return []model.BackupArtifact{{Database: database, Name: job.ArtifactName, Size: job.ArtifactSize, Path: restoreArtifactPath(job)}}
+}
+
+func removeBackupArtifact(job *model.BackupJob, database string) {
+	if len(job.Artifacts) > 0 {
+		next := job.Artifacts[:0]
+		for _, artifact := range job.Artifacts {
+			if artifact.Database != database {
+				next = append(next, artifact)
+			}
+		}
+		job.Artifacts = next
+	}
+	if len(job.Artifacts) > 0 {
+		job.ArtifactName = job.Artifacts[0].Name
+		job.ArtifactSize = job.Artifacts[0].Size
+		job.ArtifactPath = job.Artifacts[0].Path
+		return
+	}
+	if job.Artifacts == nil || job.SourceDatabase == database || job.ArtifactName != "" {
+		job.ArtifactName = ""
+		job.ArtifactSize = 0
+		job.ArtifactPath = ""
+	}
+}
+
+func sanitizeDownloadFileName(value string) string {
+	value = strings.ReplaceAll(value, `"`, "")
+	value = strings.ReplaceAll(value, "\\", "_")
+	value = strings.ReplaceAll(value, "/", "_")
+	if strings.TrimSpace(value) == "" {
+		return "databridge-backup.tar.gz"
+	}
+	return value
 }
 
 func (s *Server) cancelBackup(w http.ResponseWriter, r *http.Request) {

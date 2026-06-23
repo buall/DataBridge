@@ -135,6 +135,10 @@ func DownloadObject(ctx context.Context, storage model.RemoteStorage, objectKey,
 	return size, nil
 }
 
+func DeleteObject(ctx context.Context, storage model.RemoteStorage, objectKey string) error {
+	return signedObjectRequest(ctx, http.MethodDelete, storage, objectKey, nil)
+}
+
 func signedServiceRequest(ctx context.Context, method string, storage model.RemoteStorage) ([]byte, error) {
 	endpoint, err := url.Parse(strings.TrimRight(storage.Endpoint, "/"))
 	if err != nil {

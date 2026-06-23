@@ -1,7 +1,7 @@
 export type DatabaseType = "PostgreSQL" | "MySQL" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
-export type MigrationStage = "list" | "wizard" | "running" | "report";
+export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";
 
 export interface DatabaseConnection {
   id: string;
@@ -124,6 +124,7 @@ export interface BackupConfig {
 export interface RestoreBackupConfig {
   targetId: string;
   targetDatabase: string;
+  artifactVersionId?: string;
   selectedDatabases?: string[];
   targetDatabases?: Record<string, string>;
   strategy?: "append" | "recreate";
@@ -231,5 +232,6 @@ export interface BackupJob {
   artifactSize?: number;
   artifactPath?: string;
   artifacts?: Array<{ database: string; name: string; size?: number; path?: string }>;
+  artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: Array<{ database: string; name: string; size?: number; path?: string }>; error?: string }>;
   events: MigrationEvent[];
 }

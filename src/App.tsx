@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { BackupList } from "./pages/BackupList";
+import { BackupArtifacts } from "./pages/BackupArtifacts";
 import { BackupMonitoring } from "./pages/BackupMonitoring";
+import { BackupRestore } from "./pages/BackupRestore";
 import { BackupWizard } from "./pages/BackupWizard";
 import { Layout } from "./components/Layout";
 import { Connections } from "./pages/Connections";
@@ -54,7 +56,16 @@ function routeFromPath(input: string): AppRoute {
   if (path === "/settings") return { view: "settings", stage: "list", jobId: null, sourceId: null };
   if (path === "/backups/new") return { view: "backups", stage: "wizard", jobId: null, sourceId };
   if (path.startsWith("/backups/")) {
-    const jobId = decodeURIComponent(path.slice("/backups/".length));
+    const rest = path.slice("/backups/".length);
+    if (rest.endsWith("/restore")) {
+      const jobId = decodeURIComponent(rest.slice(0, -"/restore".length));
+      return { view: "backups", stage: "restore", jobId: jobId || null, sourceId: null };
+    }
+    if (rest.endsWith("/artifacts")) {
+      const jobId = decodeURIComponent(rest.slice(0, -"/artifacts".length));
+      return { view: "backups", stage: "list", jobId: jobId || null, sourceId: "artifacts" };
+    }
+    const jobId = decodeURIComponent(rest);
     return { view: "backups", stage: "list", jobId: jobId || null, sourceId: null };
   }
   if (path === "/backups") return { view: "backups", stage: "list", jobId: null, sourceId: null };
@@ -73,6 +84,14 @@ function pathForJob(job: MigrationJob) {
 
 function pathForBackup(job: BackupJob) {
   return `/backups/${encodeURIComponent(job.id)}`;
+}
+
+function pathForBackupRestore(job: BackupJob) {
+  return `/backups/${encodeURIComponent(job.id)}/restore`;
+}
+
+function pathForBackupArtifacts(job: BackupJob) {
+  return `/backups/${encodeURIComponent(job.id)}/artifacts`;
 }
 
 export default function App() {
@@ -221,6 +240,20 @@ export default function App() {
     window.history.pushState(null, "", pathForBackup(job));
     setRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
   }, []);
+  function openBackupRestore(job: BackupJob) {
+    const path = pathForBackupRestore(job);
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+    setRoute({ view: "backups", stage: "restore", jobId: job.id, sourceId: null });
+  }
+  function openBackupArtifacts(job: BackupJob) {
+    const path = pathForBackupArtifacts(job);
+    if (window.location.pathname !== path) {
+      window.history.pushState(null, "", path);
+    }
+    setRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: "artifacts" });
+  }
   async function deleteMigration(job: MigrationJob) {
     await api.deleteMigration(job.id);
     setMigrations((current) => current.filter((item) => item.id !== job.id));
@@ -262,7 +295,7 @@ export default function App() {
   else if (view === "connections") content = <Connections connections={connections} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onCreateMigration={createMigration} />;
   else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} />;
   else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} /> : <MigrationList migrations={migrations} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} />;
-  else if (view === "backups") content = (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} onComplete={completeBackup} onRestoreCreated={openRestoredBackup} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} />;
+  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} onUpdated={completeBackup} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} />;
   else if (view === "settings") content = <Settings />;
   else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 
@@ -276,6 +309,10 @@ export default function App() {
       ? [activeBackup.name, `任务 ID ${activeBackup.id}`]
     : view === "backups" && migrationStage === "wizard"
       ? ["创建备份任务", "配置源数据库与备份目标"]
+    : view === "backups" && migrationStage === "restore" && activeBackup
+      ? ["数据还原", `${activeBackup.name} · 最新备份产物`]
+    : view === "backups" && migrationStage === "report" && activeBackup && route.sourceId === "artifacts"
+      ? ["备份产物", `${activeBackup.name} · 指定版本管理`]
     : view === "backups" && migrationStage === "report" && activeBackup
       ? ["备份任务结果", `${activeBackup.name} · ${new Date(activeBackup.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];

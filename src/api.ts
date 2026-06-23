@@ -78,6 +78,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
+async function requestBlob(path: string): Promise<{ blob: Blob; fileName: string }> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, { credentials: "include" });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      throw new Error(body?.message ?? `请求失败（${response.status}）`);
+    }
+    return { blob: await response.blob(), fileName: downloadFileName(response.headers.get("Content-Disposition")) };
+  } catch (error) {
+    throw formatClientError(error);
+  }
+}
+
+function downloadFileName(disposition: string | null) {
+  const matched = disposition?.match(/filename="([^"]+)"/i);
+  return matched?.[1] ? decodeURIComponent(matched[1]) : "databridge-backup.tar.gz";
+}
+
 export const api = {
   session: () => request<AuthSession>("/auth/session"),
   login: (username: string, password: string) =>
@@ -150,6 +168,10 @@ export const api = {
     request<RestorePrecheckResult>(`/backups/${id}/restore/precheck`, { method: "POST", body: JSON.stringify(config) }),
   cancelBackup: (id: string) =>
     request<{ ok: boolean }>(`/backups/${id}/cancel`, { method: "POST" }),
+  downloadBackupArtifact: (id: string, database: string, artifactVersionId?: string) =>
+    requestBlob(`/backups/${id}/artifacts/${encodeURIComponent(database)}/download${artifactVersionId ? `?artifactVersionId=${encodeURIComponent(artifactVersionId)}` : ""}`),
+  deleteBackupArtifact: async (id: string, database: string, artifactVersionId?: string) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}/artifacts/${encodeURIComponent(database)}${artifactVersionId ? `?artifactVersionId=${encodeURIComponent(artifactVersionId)}` : ""}`, { method: "DELETE" })),
   deleteBackup: (id: string) =>
     request<{ ok: boolean }>(`/backups/${id}`, { method: "DELETE" }),
   smtpSettings: () => request<SMTPSettings>("/settings/smtp"),
