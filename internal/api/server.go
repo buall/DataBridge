@@ -1859,23 +1859,91 @@ func backupNotificationStatus(success bool) string {
 }
 
 func backupNotificationText(job model.BackupJob, success bool) string {
-	return strings.Join([]string{
-		fmt.Sprintf("DataBridge 备份%s", backupNotificationStatus(success)),
-		fmt.Sprintf("任务名称：%s", job.Name),
-		fmt.Sprintf("源数据库：%s", job.SourceDatabase),
-		fmt.Sprintf("目标位置：%s", job.Destination),
-		fmt.Sprintf("任务 ID：%s", job.ID),
-	}, "\n")
+	return strings.Join(backupNotificationLines(job, success), "\n")
 }
 
 func backupNotificationMarkdown(job model.BackupJob, success bool) string {
-	return strings.Join([]string{
-		fmt.Sprintf("**DataBridge 备份%s**", backupNotificationStatus(success)),
+	lines := backupNotificationLines(job, success)
+	if len(lines) > 0 {
+		lines[0] = fmt.Sprintf("**%s**", lines[0])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func backupNotificationLines(job model.BackupJob, success bool) []string {
+	lines := []string{
+		fmt.Sprintf("DataBridge 备份%s", backupNotificationStatus(success)),
 		fmt.Sprintf("任务名称：%s", job.Name),
+	}
+	if finishedAt := backupNotificationFinishedAt(job); finishedAt != "" {
+		lines = append(lines, fmt.Sprintf("备份时间：%s", finishedAt))
+	}
+	lines = append(lines,
 		fmt.Sprintf("源数据库：%s", job.SourceDatabase),
 		fmt.Sprintf("目标位置：%s", job.Destination),
-		fmt.Sprintf("任务 ID：%s", job.ID),
-	}, "\n")
+	)
+	lines = append(lines, backupNotificationArtifactLines(job)...)
+	return lines
+}
+
+func backupNotificationFinishedAt(job model.BackupJob) string {
+	if job.FinishedAt == nil || job.FinishedAt.IsZero() {
+		return ""
+	}
+	return job.FinishedAt.In(appLocation).Format("2006-01-02 15:04:05")
+}
+
+func backupNotificationArtifactLines(job model.BackupJob) []string {
+	artifacts := make([]model.BackupArtifact, 0, len(job.Artifacts)+1)
+	for _, artifact := range job.Artifacts {
+		if strings.TrimSpace(artifact.Name) == "" {
+			continue
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if len(artifacts) == 0 && strings.TrimSpace(job.ArtifactName) != "" {
+		artifacts = append(artifacts, model.BackupArtifact{
+			Database: job.SourceDatabase,
+			Name:     job.ArtifactName,
+			Size:     job.ArtifactSize,
+			Path:     job.ArtifactPath,
+		})
+	}
+	if len(artifacts) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(artifacts)+1)
+	lines = append(lines, "备份文件：")
+	for _, artifact := range artifacts {
+		name := strings.TrimSpace(artifact.Name)
+		if name == "" {
+			continue
+		}
+		label := strings.TrimSpace(artifact.Database)
+		if label == "" {
+			label = job.SourceDatabase
+		}
+		size := formatNotificationBytes(artifact.Size)
+		lines = append(lines, fmt.Sprintf("- %s：%s（%s）", label, name, size))
+	}
+	return lines
+}
+
+func formatNotificationBytes(value int64) string {
+	if value <= 0 {
+		return "未知大小"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	size := float64(value)
+	unit := 0
+	for size >= 1024 && unit < len(units)-1 {
+		size /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%d %s", value, units[unit])
+	}
+	return fmt.Sprintf("%.2f %s", size, units[unit])
 }
 
 func (s *Server) testBackupNotification(w http.ResponseWriter, r *http.Request) {
