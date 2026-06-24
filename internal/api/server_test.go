@@ -119,10 +119,16 @@ func TestBackupNotificationTextFallsBackToSingleArtifact(t *testing.T) {
 }
 
 func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
+	events := make([]model.Event, maxCompactEvents+1)
+	for index := range events {
+		events[index] = model.Event{Level: "INFO", Message: "event"}
+	}
+	events[len(events)-1].Message = strings.Repeat("中", maxStoredEventMessage+10)
 	job := model.BackupJob{
-		ID: "backup-1",
+		ID:     "backup-1",
+		Events: events,
 		ArtifactVersions: []model.BackupArtifactVersion{{
-			ID: "version-1",
+			ID:        "version-1",
 			Artifacts: []model.BackupArtifact{{Database: "db1", Name: "db1.sql", Size: 1024}},
 		}},
 		Request: model.BackupRequest{
@@ -136,10 +142,16 @@ func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
 	if compact.ArtifactVersions != nil {
 		t.Fatalf("compact response should omit artifact versions: %#v", compact.ArtifactVersions)
 	}
+	if len(compact.Events) != maxCompactEvents {
+		t.Fatalf("compact response should keep recent events only: %d", len(compact.Events))
+	}
+	if len([]rune(compact.Events[len(compact.Events)-1].Message)) > maxStoredEventMessage {
+		t.Fatalf("compact response should truncate event messages: %d", len([]rune(compact.Events[len(compact.Events)-1].Message)))
+	}
 	if compact.Request.SourceID != "" || compact.Request.SourceDatabase != "" || len(compact.Request.SourceDatabases) != 0 {
 		t.Fatalf("compact response should omit request: %#v", compact.Request)
 	}
-	if len(job.ArtifactVersions) != 1 || job.Request.SourceID != "source-1" {
+	if len(job.ArtifactVersions) != 1 || job.Request.SourceID != "source-1" || len(job.Events) != maxCompactEvents+1 {
 		t.Fatal("compact backup job should not mutate original value")
 	}
 }

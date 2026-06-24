@@ -46,6 +46,12 @@ const (
 	errorContextInvalidJSON       errorContext = "invalid_json"
 )
 
+const (
+	maxStoredEvents       = 100
+	maxCompactEvents      = 30
+	maxStoredEventMessage = 4096
+)
+
 type Server struct {
 	store     *store.Store
 	engine    *migrate.Engine
@@ -910,12 +916,7 @@ func (s *Server) runMigration(ctx context.Context, id string, source, target mod
 			if progress.Result != nil {
 				upsertResult(item, *progress.Result)
 			}
-			if progress.EventMessage != "" {
-				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
-				if len(item.Events) > 100 {
-					item.Events = item.Events[len(item.Events)-100:]
-				}
-			}
+			appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
 		})
 	}
 	var err error
@@ -944,12 +945,12 @@ func (s *Server) runMigration(ctx context.Context, id string, source, target mod
 		if errors.Is(err, context.Canceled) {
 			item.Status = model.StatusCancelled
 			item.Stage = "cancelled"
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
 		} else {
 			item.Status = model.StatusFailed
 			item.Stage = "failed"
 			item.Error = userFacingErrorMessage(errorContextMigrationRuntime, err)
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
 }
@@ -1084,7 +1085,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Events:    []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
 	}
 	if request.ScheduleMode == "scheduled" {
-		value.Events = append(value.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已保存，等待下一次执行"})
+		appendJobEvent(&value.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已保存，等待下一次执行"})
 	}
 	if value.Name == "" {
 		value.Name = request.SourceDatabase + " 备份"
@@ -1136,12 +1137,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			if progress.ArtifactPath != "" {
 				item.ArtifactPath = progress.ArtifactPath
 			}
-			if progress.EventMessage != "" {
-				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
-				if len(item.Events) > 100 {
-					item.Events = item.Events[len(item.Events)-100:]
-				}
-			}
+			appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
 		})
 	}
 	databases := backupDatabases(request)
@@ -1182,9 +1178,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			}
 			item.Progress = 100
 			finishBackupArtifactVersion(item, versionID, model.StatusCompleted, "completed", finished, "")
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
 			if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
-				item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
+				appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
 			}
 			return
 		}
@@ -1192,24 +1188,24 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			item.Status = model.StatusCancelled
 			item.Stage = "cancelled"
 			finishBackupArtifactVersion(item, versionID, model.StatusCancelled, "cancelled", finished, "任务已取消")
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
 		} else {
 			item.Status = model.StatusFailed
 			item.Stage = "failed"
 			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
 			finishBackupArtifactVersion(item, versionID, model.StatusFailed, "failed", finished, err.Error())
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
 	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && updatedJob.Notification.Enabled {
 		if notifyErr := s.sendBackupNotification(updatedJob, err == nil); notifyErr != nil {
 			log.Printf("backup[%s] notification failed: %v", id, notifyErr)
 			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
-				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: "WARN", Message: "备份通知发送失败：" + notifyErr.Error()})
+				appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: "WARN", Message: "备份通知发送失败：" + notifyErr.Error()})
 			})
 		} else {
 			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
-				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: "INFO", Message: "备份通知已发送"})
+				appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: "INFO", Message: "备份通知已发送"})
 			})
 		}
 	}
@@ -1507,7 +1503,7 @@ func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time
 		job.ScheduleWeekday = request.ScheduleWeekday
 		job.ScheduleMonthDay = request.ScheduleMonthDay
 		job.NextRunAt = &next
-		job.Events = append(job.Events, model.Event{Time: now, Level: "INFO", Message: "已按应用时区修正下一次执行时间"})
+		appendJobEvent(&job.Events, model.Event{Time: now, Level: "INFO", Message: "已按应用时区修正下一次执行时间"})
 	}); err != nil {
 		log.Printf("backup scheduler reconcile update failed: %s: %v", item.ID, err)
 	}
@@ -1555,7 +1551,7 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 			job.Status = model.StatusFailed
 			job.Stage = "failed"
 			job.Error = err.Error()
-			job.Events = append(job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
 		})
 		return item, err
 	}
@@ -1566,7 +1562,7 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 			job.Status = model.StatusFailed
 			job.Stage = "failed"
 			job.Error = err.Error()
-			job.Events = append(job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
 		})
 		return item, err
 	}
@@ -1576,7 +1572,7 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 			job.Status = model.StatusFailed
 			job.Stage = "failed"
 			job.Error = userFacingErrorMessage(errorContextCreateBackup, err)
-			job.Events = append(job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
 		})
 		return item, err
 	}
@@ -1587,7 +1583,7 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 		job.Stage = "pending"
 		job.Progress = 0
 		job.Error = ""
-		job.Events = append(job.Events, model.Event{Time: now, Level: "INFO", Message: message})
+		appendJobEvent(&job.Events, model.Event{Time: now, Level: "INFO", Message: message})
 	}); err != nil {
 		cancel()
 		return item, err
@@ -2070,7 +2066,52 @@ func compactBackupResponse(r *http.Request) bool {
 func compactBackupJob(job model.BackupJob) model.BackupJob {
 	job.ArtifactVersions = nil
 	job.Request = model.BackupRequest{}
+	job.Events = compactEvents(job.Events)
 	return job
+}
+
+func appendJobEvent(events *[]model.Event, event model.Event) {
+	if strings.TrimSpace(event.Message) == "" {
+		return
+	}
+	event.Message = truncateEventMessage(event.Message)
+	*events = append(*events, event)
+	if len(*events) > maxStoredEvents {
+		*events = (*events)[len(*events)-maxStoredEvents:]
+	}
+}
+
+func compactEvents(events []model.Event) []model.Event {
+	if len(events) <= maxCompactEvents {
+		return compactEventMessages(events)
+	}
+	return compactEventMessages(events[len(events)-maxCompactEvents:])
+}
+
+func compactEventMessages(events []model.Event) []model.Event {
+	if len(events) == 0 {
+		return events
+	}
+	items := make([]model.Event, len(events))
+	for index, event := range events {
+		event.Message = truncateEventMessage(event.Message)
+		items[index] = event
+	}
+	return items
+}
+
+func truncateEventMessage(message string) string {
+	message = strings.TrimSpace(message)
+	runes := []rune(message)
+	if len(runes) <= maxStoredEventMessage {
+		return message
+	}
+	const suffix = "\n...输出已截断"
+	limit := maxStoredEventMessage - len([]rune(suffix))
+	if limit < 0 {
+		limit = maxStoredEventMessage
+	}
+	return strings.TrimSpace(string(runes[:limit])) + suffix
 }
 
 func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
@@ -2125,7 +2166,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.NotificationMethod = request.Notification.Method
 		item.NotificationTarget = request.Notification.Target
 		item.NextRunAt = &next
-		item.Events = append(item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
+		appendJobEvent(&item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
 		return
@@ -2645,12 +2686,7 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 			item.Stage = progress.Stage
 			item.Progress = backupProgress(progress.Stage, progress.Progress)
-			if progress.EventMessage != "" {
-				item.Events = append(item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
-				if len(item.Events) > 100 {
-					item.Events = item.Events[len(item.Events)-100:]
-				}
-			}
+			appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
 		})
 	}
 	var err error
@@ -2698,18 +2734,18 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 			item.Status = model.StatusCompleted
 			item.Stage = "completed"
 			item.Progress = 100
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "INFO", Message: "恢复任务完成"})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "恢复任务完成"})
 			return
 		}
 		if errors.Is(err, context.Canceled) {
 			item.Status = model.StatusCancelled
 			item.Stage = "cancelled"
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "WARN", Message: "恢复任务已取消"})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "WARN", Message: "恢复任务已取消"})
 		} else {
 			item.Status = model.StatusFailed
 			item.Stage = "failed"
 			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
-			item.Events = append(item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
 }
@@ -2857,7 +2893,7 @@ func (s *Server) deleteBackupArtifact(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().In(appLocation)
 	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
 		removeBackupArtifact(job, artifact.Database)
-		job.Events = append(job.Events, model.Event{Time: now, Level: "WARN", Message: "备份文件已删除：" + artifact.Name})
+		appendJobEvent(&job.Events, model.Event{Time: now, Level: "WARN", Message: "备份文件已删除：" + artifact.Name})
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
 		return
@@ -2985,6 +3021,9 @@ func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
 		return
+	}
+	for index := range items {
+		items[index] = compactBackupJob(items[index])
 	}
 	writeJSON(w, http.StatusOK, items)
 }
