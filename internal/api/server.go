@@ -1228,6 +1228,13 @@ type expiredBackupArtifactCleanup struct {
 	RetentionDays int
 	Deleted       int
 	Failed        int
+	Files         []expiredBackupArtifactFile
+}
+
+type expiredBackupArtifactFile struct {
+	Name       string
+	AgeDays    int
+	FinishedAt time.Time
 }
 
 func (s *Server) cleanupExpiredBackupArtifacts(ctx context.Context, job model.BackupJob, currentVersionID string, eventTime time.Time) {
@@ -1280,6 +1287,11 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 				continue
 			}
 			result.Deleted++
+			result.Files = append(result.Files, expiredBackupArtifactFile{
+				Name:       cleanupArtifactName(artifact),
+				AgeDays:    backupArtifactAgeDays(now, *version.FinishedAt),
+				FinishedAt: *version.FinishedAt,
+			})
 		}
 		version.Artifacts = kept
 		if len(version.Artifacts) == 0 {
@@ -1333,13 +1345,49 @@ func cleanupEventMessage(result expiredBackupArtifactCleanup) string {
 		return "过期备份文件清理完成：未发现超过 " + retention + " 的备份文件"
 	}
 	if result.Failed == 0 {
-		return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个超过 %s 的备份文件", result.Deleted, retention)
+		return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个超过 %s 的备份文件：%s", result.Deleted, retention, cleanupFileSummary(result.Files))
 	}
-	return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个，%d 个删除失败，请检查存储权限", result.Deleted, result.Failed)
+	return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个，%d 个删除失败，请检查存储权限；已删除：%s", result.Deleted, result.Failed, cleanupFileSummary(result.Files))
 }
 
 func retentionDaysLabel(days int) string {
 	return fmt.Sprintf("%d 天", days)
+}
+
+func cleanupArtifactName(artifact model.BackupArtifact) string {
+	if strings.TrimSpace(artifact.Name) != "" {
+		return artifact.Name
+	}
+	if strings.TrimSpace(artifact.Path) != "" {
+		return filepath.Base(artifact.Path)
+	}
+	return "未知文件"
+}
+
+func backupArtifactAgeDays(now, finished time.Time) int {
+	days := int(now.Sub(finished).Hours() / 24)
+	if days < 1 {
+		return 1
+	}
+	return days
+}
+
+func cleanupFileSummary(files []expiredBackupArtifactFile) string {
+	if len(files) == 0 {
+		return "无"
+	}
+	const maxItems = 5
+	items := make([]string, 0, min(len(files), maxItems))
+	for index, file := range files {
+		if index >= maxItems {
+			break
+		}
+		items = append(items, fmt.Sprintf("%d 天前 %s", file.AgeDays, file.Name))
+	}
+	if len(files) > maxItems {
+		items = append(items, fmt.Sprintf("等 %d 个文件", len(files)))
+	}
+	return strings.Join(items, "、")
 }
 
 func backupRetentionDays(days, months int) int {

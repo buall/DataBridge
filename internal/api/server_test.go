@@ -368,7 +368,9 @@ func TestCleanupExpiredBackupArtifactsDeletesOldLocalVersions(t *testing.T) {
 	}
 	foundCleanupEvent := false
 	for _, event := range updated.Events {
-		if strings.Contains(event.Message, "过期备份文件清理完成") && strings.Contains(event.Message, "已删除 1 个") {
+		if strings.Contains(event.Message, "过期备份文件清理完成") &&
+			strings.Contains(event.Message, "已删除 1 个") &&
+			strings.Contains(event.Message, "2 天前 old.tar.gz") {
 			foundCleanupEvent = true
 		}
 	}
