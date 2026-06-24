@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { BackupList } from "./pages/BackupList";
 import { BackupArtifacts } from "./pages/BackupArtifacts";
@@ -96,6 +96,7 @@ function pathForBackupArtifacts(job: BackupJob) {
 
 export default function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPath(window.location.pathname));
+  const [navigationView, setNavigationView] = useState<AppView>(() => routeFromPath(window.location.pathname).view);
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);
   const [storages, setStorages] = useState<RemoteStorage[]>([]);
   const [migrations, setMigrations] = useState<MigrationJob[]>([]);
@@ -139,7 +140,11 @@ export default function App() {
   }, [authenticated]);
 
   useEffect(() => {
-    const handlePopState = () => setRoute(routeFromPath(window.location.pathname));
+    const handlePopState = () => {
+      const next = routeFromPath(window.location.pathname);
+      setNavigationView(next.view);
+      startTransition(() => setRoute(next));
+    };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
@@ -152,34 +157,46 @@ export default function App() {
     if (route.view !== "migrations" || route.stage !== "list" || !route.jobId || !migrations.length) return;
     const job = migrations.find((item) => item.id === route.jobId);
     if (!job) return;
-    setRoute((current) => current.jobId === job.id ? {
-      view: "migrations",
-      stage: job.status === "running" || job.status === "pending" ? "running" : "report",
-      jobId: job.id,
-      sourceId: null,
-    } : current);
+    setNavigationView("migrations");
+    startTransition(() => {
+      setRoute((current) => current.jobId === job.id ? {
+        view: "migrations",
+        stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+        jobId: job.id,
+        sourceId: null,
+      } : current);
+    });
   }, [migrations, route]);
 
   useEffect(() => {
     if (route.view !== "backups" || route.stage !== "list" || !route.jobId || !backups.length) return;
     const job = backups.find((item) => item.id === route.jobId);
     if (!job) return;
-    setRoute((current) => current.jobId === job.id ? {
-      view: "backups",
-      stage: job.status === "running" || job.status === "pending" ? "running" : "report",
-      jobId: job.id,
-      sourceId: null,
-    } : current);
+    setNavigationView("backups");
+    startTransition(() => {
+      setRoute((current) => current.jobId === job.id ? {
+        view: "backups",
+        stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+        jobId: job.id,
+        sourceId: null,
+      } : current);
+    });
   }, [backups, route]);
+
+  const applyRoute = useCallback((next: AppRoute) => {
+    setNavigationView(next.view);
+    startTransition(() => setRoute(next));
+  }, []);
 
   function pushRoute(path: string) {
     if (window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    setRoute(routeFromPath(path));
+    applyRoute(routeFromPath(path));
   }
 
   function navigate(next: AppView) {
+    if (route.view === next && route.stage === "list" && !route.jobId) return;
     pushRoute(routes[next]);
   }
   function createMigration(sourceId?: string) {
@@ -194,7 +211,7 @@ export default function App() {
     if (window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    setRoute({
+    applyRoute({
       view: "migrations",
       stage: job.status === "running" || job.status === "pending" ? "running" : "report",
       jobId: job.id,
@@ -205,14 +222,14 @@ export default function App() {
     const job = await api.createMigration(config);
     setMigrations((current) => [job, ...current]);
     window.history.pushState(null, "", pathForJob(job));
-    setRoute({ view: "migrations", stage: "running", jobId: job.id, sourceId: null });
+    applyRoute({ view: "migrations", stage: "running", jobId: job.id, sourceId: null });
   }
   function openBackup(job: BackupJob) {
     const path = pathForBackup(job);
     if (window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    setRoute({
+    applyRoute({
       view: "backups",
       stage: job.status === "running" || job.status === "pending" ? "running" : "report",
       jobId: job.id,
@@ -223,36 +240,36 @@ export default function App() {
     const job = await api.createBackup(config);
     setBackups((current) => [job, ...current]);
     window.history.pushState(null, "", pathForBackup(job));
-    setRoute({ view: "backups", stage: job.status === "scheduled" ? "report" : "running", jobId: job.id, sourceId: null });
+    applyRoute({ view: "backups", stage: job.status === "scheduled" ? "report" : "running", jobId: job.id, sourceId: null });
   }
   const completeMigration = useCallback((job: MigrationJob) => {
     setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     window.history.replaceState(null, "", pathForJob(job));
-    setRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
-  }, []);
+    applyRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
+  }, [applyRoute]);
   const completeBackup = useCallback((job: BackupJob) => {
     setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     window.history.replaceState(null, "", pathForBackup(job));
-    setRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
-  }, []);
+    applyRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
+  }, [applyRoute]);
   const openRestoredBackup = useCallback((job: BackupJob) => {
     setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     window.history.pushState(null, "", pathForBackup(job));
-    setRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
-  }, []);
+    applyRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
+  }, [applyRoute]);
   function openBackupRestore(job: BackupJob) {
     const path = pathForBackupRestore(job);
     if (window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    setRoute({ view: "backups", stage: "restore", jobId: job.id, sourceId: null });
+    applyRoute({ view: "backups", stage: "restore", jobId: job.id, sourceId: null });
   }
   function openBackupArtifacts(job: BackupJob) {
     const path = pathForBackupArtifacts(job);
     if (window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    setRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: "artifacts" });
+    applyRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: "artifacts" });
   }
   async function deleteMigration(job: MigrationJob) {
     await api.deleteMigration(job.id);
@@ -316,6 +333,7 @@ export default function App() {
     : view === "backups" && migrationStage === "report" && activeBackup
       ? ["备份任务结果", `${activeBackup.name} · ${new Date(activeBackup.startedAt).toLocaleDateString("zh-CN")}`]
     : viewMeta[view];
+  const title = navigationView === view ? meta[0] : viewMeta[navigationView][0];
 
-  return <Layout activeView={view} title={meta[0]} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
+  return <Layout activeView={navigationView} title={title} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
 }

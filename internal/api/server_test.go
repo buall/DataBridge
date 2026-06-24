@@ -156,6 +156,27 @@ func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
 	}
 }
 
+func TestCompactBackupListJobKeepsArtifactVersions(t *testing.T) {
+	job := model.BackupJob{
+		ID: "backup-1",
+		ArtifactVersions: []model.BackupArtifactVersion{{
+			ID:        "version-1",
+			Artifacts: []model.BackupArtifact{{Database: "db1", Name: "db1.sql", Size: 1024}},
+		}},
+		Request: model.BackupRequest{
+			SourceID: "source-1",
+		},
+	}
+
+	compact := compactBackupListJob(job)
+	if len(compact.ArtifactVersions) != 1 {
+		t.Fatalf("backup list response should keep artifact versions: %#v", compact.ArtifactVersions)
+	}
+	if compact.Request.SourceID != "" {
+		t.Fatalf("backup list response should omit request: %#v", compact.Request)
+	}
+}
+
 func TestCompactBackupResponseQuery(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/backups/backup-1?compact=1", nil)
 	if !compactBackupResponse(req) {

@@ -134,7 +134,7 @@ export function BackupMonitoring({
     <div className="page-stack">
       {error && <div className="error-banner">{error}</div>}
       {failed && <div className="error-banner detail-error"><strong>{job.error || "备份任务已取消"}</strong>{lastError && <span>{lastError}</span>}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div><Button variant="secondary" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
+      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
       <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label="备份文件" value={job.artifactName || "待生成"} detail={formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
       <div className="monitor-grid single">
@@ -142,7 +142,9 @@ export function BackupMonitoring({
       </div>
       <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div></div>{eventRuns.map((run) => {
         const collapsed = collapsedRuns[run.id] ?? scheduled;
-        return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }))}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{run.title}</strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && run.events.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
+        const runKindLabel = run.kind === "manual" ? "手动执行" : run.kind === "auto" ? "自动执行" : "";
+        const runTitle = runKindLabel ? run.title.replace(`${runKindLabel} · `, "") : run.title;
+        return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }))}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{runKindLabel && <span className={`run-kind-tag ${run.kind}`}>{runKindLabel}</span>}<span>{runTitle}</span></strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && run.events.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
       })}</Card>
       {editing && <ScheduleEditor job={job} onClose={() => setEditing(false)} onSave={saveSchedule} />}
       {cancelConfirmOpen && <ConfirmDialog title="停止备份任务" description="这是中危操作，任务会被取消，当前执行进度不会继续推进。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]} />}
@@ -307,9 +309,19 @@ export function RestoreConnectionSelect({ connectionId, connections, onChange }:
   );
 }
 
-function groupBackupEvents(job: BackupJob) {
+type BackupEventRun = {
+  id: string;
+  kind?: "manual" | "auto" | "plan";
+  title: string;
+  subtitle: string;
+  events: BackupJob["events"];
+  failed: boolean;
+  completed: boolean;
+};
+
+function groupBackupEvents(job: BackupJob): BackupEventRun[] {
   const events = [...job.events].sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
-  const runs: Array<{ id: string; title: string; subtitle: string; events: BackupJob["events"]; failed: boolean; completed: boolean }> = [];
+  const runs: BackupEventRun[] = [];
   const scheduled = job.scheduleMode === "scheduled";
   let current: (typeof runs)[number] | null = null;
   const planEvents: BackupJob["events"] = [];
@@ -331,6 +343,7 @@ function groupBackupEvents(job: BackupJob) {
     if (isScheduledRunStart || isManualRunStart) {
       current = {
         id: `${event.time}-${runs.length}`,
+        kind: isManualRunStart ? "manual" : "auto",
         title: `${isManualRunStart ? "手动执行" : "自动执行"} · 第 ${runs.length + 1} 次`,
         subtitle: new Date(event.time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
         events: [],
@@ -350,6 +363,7 @@ function groupBackupEvents(job: BackupJob) {
   if (!runs.length && planEvents.length) {
     runs.push({
       id: "plan-events",
+      kind: "plan",
       title: "计划事件",
       subtitle: "尚未触发执行",
       events: planEvents,

@@ -2070,6 +2070,12 @@ func compactBackupJob(job model.BackupJob) model.BackupJob {
 	return job
 }
 
+func compactBackupListJob(job model.BackupJob) model.BackupJob {
+	job.Request = model.BackupRequest{}
+	job.Events = compactEvents(job.Events)
+	return job
+}
+
 func appendJobEvent(events *[]model.Event, event model.Event) {
 	if strings.TrimSpace(event.Message) == "" {
 		return
@@ -3023,7 +3029,7 @@ func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	for index := range items {
-		items[index] = compactBackupJob(items[index])
+		items[index] = compactBackupListJob(items[index])
 	}
 	writeJSON(w, http.StatusOK, items)
 }

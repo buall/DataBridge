@@ -14,6 +14,8 @@ interface LogEntry extends MigrationEvent {
   category?: "migration" | "audit" | "api";
 }
 
+const visibleLogLimit = 200;
+
 export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[]; auditLogs?: AuditLogEntry[] }) {
   const [query, setQuery] = useState("");
   const entries = useMemo(
@@ -58,6 +60,8 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
     );
   }, [entries, query]);
 
+  const visibleEntries = filtered.slice(0, visibleLogLimit);
+  const hiddenEntries = Math.max(0, filtered.length - visibleEntries.length);
   const errors = entries.filter((entry) => entry.level === "ERROR").length;
   const warnings = entries.filter((entry) => entry.level === "WARN").length;
   const latest = entries[0];
@@ -92,7 +96,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         {filtered.length ? (
           <div className="log-table">
             <div className="log-row log-head"><span>时间</span><span>级别</span><span>实例 / 数据库</span><span>事件内容</span><span>状态</span></div>
-            {filtered.map((entry, index) => (
+            {visibleEntries.map((entry, index) => (
               <div className={`log-row ${logRowTone(entry)}`} key={`${entry.jobId}-${entry.time}-${index}`}>
                 <time>{formatTime(entry.time)}</time>
                 <Badge tone={levelTone(entry.level)}>{entry.level}</Badge>
@@ -109,6 +113,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
                 <span className={`log-status ${logStatusTone(entry.jobStatus)}`}>{statusIcon(entry.jobStatus)}{statusLabel(entry.jobStatus)}</span>
               </div>
             ))}
+            {hiddenEntries > 0 && <div className="log-row log-more"><span>仅显示最近 {visibleLogLimit} 条</span><span>还有 {hiddenEntries} 条日志</span><span>可使用搜索筛选</span><span>更多记录已收起</span><span>日志归档</span></div>}
           </div>
         ) : (
           <div className="inline-empty">
