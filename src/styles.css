@@ -589,6 +589,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .run-kind-tag.auto { color: #15803d; background: #eaf8ef; border: 1px solid #bfe9cc; }
 .backup-run-head small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .backup-run .event-row { padding-left: 52px; background: #fff; }
+.backup-run .event-loading { color: var(--muted); background: #fbfcfe; }
 .migration-detail { min-height: 270px; }
 .migration-table-list { min-width: 520px; border-top: 1px solid var(--border); }
 .migration-table-row { min-height: 48px; padding: 0 22px; display: grid; grid-template-columns: 20px 1fr 120px 80px; gap: 12px; align-items: center; border-bottom: 1px solid #edf0f4; font-size: 11px; }

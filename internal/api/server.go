@@ -2064,9 +2064,8 @@ func compactBackupResponse(r *http.Request) bool {
 }
 
 func compactBackupJob(job model.BackupJob) model.BackupJob {
-	job.ArtifactVersions = nil
 	job.Request = model.BackupRequest{}
-	job.Events = compactEvents(job.Events)
+	job.Events = compactBackupSummaryEvents(job.Events)
 	return job
 }
 
@@ -2092,6 +2091,28 @@ func compactEvents(events []model.Event) []model.Event {
 		return compactEventMessages(events)
 	}
 	return compactEventMessages(events[len(events)-maxCompactEvents:])
+}
+
+func compactBackupSummaryEvents(events []model.Event) []model.Event {
+	var items []model.Event
+	for _, event := range events {
+		if isBackupRunSummaryEvent(event) {
+			items = append(items, event)
+		}
+	}
+	if len(items) == 0 {
+		return compactEvents(events)
+	}
+	return compactEventMessages(items)
+}
+
+func isBackupRunSummaryEvent(event model.Event) bool {
+	return strings.Contains(event.Message, "定时备份已触发") ||
+		strings.Contains(event.Message, "手动触发定时备份") ||
+		strings.Contains(event.Message, "备份任务完成") ||
+		strings.Contains(event.Message, "下一次备份将在") ||
+		strings.Contains(event.Message, "任务已取消") ||
+		event.Level == "ERROR"
 }
 
 func compactEventMessages(events []model.Event) []model.Event {

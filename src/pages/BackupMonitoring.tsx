@@ -37,9 +37,11 @@ export function BackupMonitoring({
   onOpenArtifacts: (job: BackupJob) => void;
 }) {
   const [job, setJob] = useState<BackupJob | null>(null);
+  const [detailedJob, setDetailedJob] = useState<BackupJob | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
+  const [loadingRunId, setLoadingRunId] = useState("");
   const [triggering, setTriggering] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -130,6 +132,20 @@ export function BackupMonitoring({
   const eventRuns = groupBackupEvents(job);
   const lastError = latestErrorEvent(job);
 
+  async function toggleRun(run: BackupEventRun, collapsed: boolean) {
+    setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }));
+    if (!collapsed || detailedJob || !run.startedAt) return;
+    setLoadingRunId(run.id);
+    try {
+      const next = await api.backup(jobId);
+      setDetailedJob(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "无法加载本次备份日志");
+    } finally {
+      setLoadingRunId("");
+    }
+  }
+
   return (
     <div className="page-stack">
       {error && <div className="error-banner">{error}</div>}
@@ -142,9 +158,11 @@ export function BackupMonitoring({
       </div>
       <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div></div>{eventRuns.map((run) => {
         const collapsed = collapsedRuns[run.id] ?? scheduled;
+        const detailEvents = !collapsed ? detailedEventsForRun(detailedJob, run) : run.events;
+        const loadingThisRun = loadingRunId === run.id;
         const runKindLabel = run.kind === "manual" ? "手动执行" : run.kind === "auto" ? "自动执行" : "";
         const runTitle = runKindLabel ? run.title.replace(`${runKindLabel} · `, "") : run.title;
-        return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }))}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{runKindLabel && <span className={`run-kind-tag ${run.kind}`}>{runKindLabel}</span>}<span>{runTitle}</span></strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && run.events.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
+        return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => toggleRun(run, collapsed)}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{runKindLabel && <span className={`run-kind-tag ${run.kind}`}>{runKindLabel}</span>}<span>{runTitle}</span></strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && loadingThisRun && <div className="event-row event-loading"><time>--:--:--</time><Archive size={15}/><span>正在加载本次备份日志...</span><Badge tone="blue">加载中</Badge></div>}{!collapsed && !loadingThisRun && detailEvents.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
       })}</Card>
       {editing && <ScheduleEditor job={job} onClose={() => setEditing(false)} onSave={saveSchedule} />}
       {cancelConfirmOpen && <ConfirmDialog title="停止备份任务" description="这是中危操作，任务会被取消，当前执行进度不会继续推进。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]} />}
@@ -314,6 +332,8 @@ type BackupEventRun = {
   kind?: "manual" | "auto" | "plan";
   title: string;
   subtitle: string;
+  startedAt?: string;
+  endedAt?: string;
   events: BackupJob["events"];
   failed: boolean;
   completed: boolean;
@@ -346,6 +366,7 @@ function groupBackupEvents(job: BackupJob): BackupEventRun[] {
         kind: isManualRunStart ? "manual" : "auto",
         title: `${isManualRunStart ? "手动执行" : "自动执行"} · 第 ${runs.length + 1} 次`,
         subtitle: new Date(event.time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
+        startedAt: event.time,
         events: [],
         failed: false,
         completed: false,
@@ -360,18 +381,54 @@ function groupBackupEvents(job: BackupJob): BackupEventRun[] {
     if (event.level === "ERROR") current.failed = true;
     if (event.message.includes("备份任务完成")) current.completed = true;
   });
+  runs.forEach((run, index) => {
+    run.endedAt = runs[index + 1]?.startedAt;
+  });
   if (!runs.length && planEvents.length) {
     runs.push({
       id: "plan-events",
       kind: "plan",
       title: "计划事件",
       subtitle: "尚未触发执行",
+      startedAt: planEvents[0]?.time,
       events: planEvents,
       failed: planEvents.some((event) => event.level === "ERROR"),
       completed: false,
     });
   }
+  const versions = job.artifactVersions ?? [];
+  const artifactRuns = versions.map((version, index): BackupEventRun => {
+    const startTime = version.startedAt || version.finishedAt || job.startedAt;
+    const matchedRun = runs.find((run) => run.startedAt && Math.abs(new Date(run.startedAt).getTime() - new Date(startTime).getTime()) < 60_000);
+    const kind = matchedRun?.kind ?? "auto";
+    return {
+      id: `artifact-${version.id}`,
+      kind,
+      title: `${kind === "manual" ? "手动执行" : "自动执行"} · 第 ${versions.length - index} 次`,
+      subtitle: new Date(startTime).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }),
+      startedAt: startTime,
+      endedAt: version.finishedAt,
+      events: matchedRun?.events ?? [],
+      failed: version.status === "failed" || Boolean(version.error),
+      completed: version.status === "completed",
+    };
+  });
+  if (artifactRuns.length > runs.length) return artifactRuns;
   return runs.reverse();
+}
+
+function detailedEventsForRun(job: BackupJob | null, run: BackupEventRun) {
+  if (!job || !run.startedAt) return run.events;
+  const events = [...job.events].sort((left, right) => new Date(left.time).getTime() - new Date(right.time).getTime());
+  const start = new Date(run.startedAt).getTime();
+  const version = (job.artifactVersions ?? []).find((item) => `artifact-${item.id}` === run.id);
+  const endSource = version?.finishedAt ?? run.endedAt;
+  const end = endSource ? new Date(endSource).getTime() + 60_000 : Number.POSITIVE_INFINITY;
+  const items = events.filter((event) => {
+    const time = new Date(event.time).getTime();
+    return time >= start - 1000 && time <= end;
+  });
+  return items.length ? items.reverse() : run.events;
 }
 
 function stageIndex(stage: string, stages: string[][]) {

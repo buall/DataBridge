@@ -118,12 +118,17 @@ func TestBackupNotificationTextFallsBackToSingleArtifact(t *testing.T) {
 	}
 }
 
-func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
+func TestCompactBackupJobKeepsArtifactVersions(t *testing.T) {
 	events := make([]model.Event, maxCompactEvents+1)
 	for index := range events {
 		events[index] = model.Event{Level: "INFO", Message: "event"}
 	}
-	events[len(events)-1].Message = strings.Repeat("中", maxStoredEventMessage+10)
+	events[0].Message = "定时备份已触发"
+	events[1].Message = "手动触发定时备份"
+	events[2].Message = "备份任务完成"
+	events[3].Message = "下一次备份将在 2026-06-25 03:00 执行"
+	events[4].Level = "ERROR"
+	events[4].Message = strings.Repeat("中", maxStoredEventMessage+10)
 	job := model.BackupJob{
 		ID:     "backup-1",
 		Events: events,
@@ -139,14 +144,14 @@ func TestCompactBackupJobDropsHeavyFields(t *testing.T) {
 	}
 
 	compact := compactBackupJob(job)
-	if compact.ArtifactVersions != nil {
-		t.Fatalf("compact response should omit artifact versions: %#v", compact.ArtifactVersions)
+	if len(compact.ArtifactVersions) != 1 {
+		t.Fatalf("compact response should keep artifact versions: %#v", compact.ArtifactVersions)
 	}
-	if len(compact.Events) != maxCompactEvents {
-		t.Fatalf("compact response should keep recent events only: %d", len(compact.Events))
+	if len(compact.Events) != 5 {
+		t.Fatalf("compact response should keep summary events only: %#v", compact.Events)
 	}
-	if len([]rune(compact.Events[len(compact.Events)-1].Message)) > maxStoredEventMessage {
-		t.Fatalf("compact response should truncate event messages: %d", len([]rune(compact.Events[len(compact.Events)-1].Message)))
+	if len([]rune(compact.Events[4].Message)) > maxStoredEventMessage {
+		t.Fatalf("compact response should truncate summary event messages: %d", len([]rune(compact.Events[4].Message)))
 	}
 	if compact.Request.SourceID != "" || compact.Request.SourceDatabase != "" || len(compact.Request.SourceDatabases) != 0 {
 		t.Fatalf("compact response should omit request: %#v", compact.Request)
