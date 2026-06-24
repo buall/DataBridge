@@ -886,6 +886,7 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runMigration(ctx context.Context, id string, source, target model.Connection, request model.MigrationRequest) {
+	defer s.store.ClearMigrationCancel(id)
 	if request.Engine == "" {
 		if source.Type == "PostgreSQL" {
 			request.Engine = "copy"
@@ -1079,7 +1080,9 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Destination: destinationLabel, Request: request, ScheduleMode: request.ScheduleMode,
 		ScheduleFrequency: request.ScheduleFrequency, ScheduleTime: request.ScheduleTime,
 		ScheduleWeekday: request.ScheduleWeekday, ScheduleMonthDay: request.ScheduleMonthDay,
-		Notification: request.Notification, NotificationEnabled: request.Notification.Enabled,
+		RetentionDays:   request.RetentionDays,
+		RetentionMonths: request.RetentionMonths,
+		Notification:    request.Notification, NotificationEnabled: request.Notification.Enabled,
 		NotificationMethod: request.Notification.Method, NotificationTarget: request.Notification.Target,
 		NextRunAt: nextRunAt,
 		Events:    []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
@@ -1102,6 +1105,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runBackup(ctx context.Context, id string, source model.Connection, request model.BackupRequest) {
+	defer s.store.ClearBackupCancel(id)
 	log.Printf("backup[%s] started: %s/%s -> %s", id, source.Name, request.SourceDatabase, request.DestinationType)
 	started := time.Now()
 	versionID := store.NewID()
@@ -1178,9 +1182,10 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			}
 			item.Progress = 100
 			finishBackupArtifactVersion(item, versionID, model.StatusCompleted, "completed", finished, "")
-			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
 			if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
 				appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
+			} else {
+				appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
 			}
 			return
 		}
@@ -1197,6 +1202,14 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
 	})
+	if err == nil {
+		if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" {
+			s.cleanupExpiredBackupArtifacts(context.Background(), updatedJob, versionID, finished.Add(time.Millisecond))
+			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+				appendJobEvent(&item.Events, model.Event{Time: finished.Add(2 * time.Millisecond), Level: "INFO", Message: "备份任务完成"})
+			})
+		}
+	}
 	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && updatedJob.Notification.Enabled {
 		if notifyErr := s.sendBackupNotification(updatedJob, err == nil); notifyErr != nil {
 			log.Printf("backup[%s] notification failed: %v", id, notifyErr)
@@ -1209,6 +1222,158 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			})
 		}
 	}
+}
+
+type expiredBackupArtifactCleanup struct {
+	RetentionDays int
+	Deleted       int
+	Failed        int
+}
+
+func (s *Server) cleanupExpiredBackupArtifacts(ctx context.Context, job model.BackupJob, currentVersionID string, eventTime time.Time) {
+	result := s.deleteExpiredBackupArtifacts(ctx, &job, currentVersionID, eventTime)
+	if result.RetentionDays <= 0 {
+		return
+	}
+	if err := s.store.UpdateBackup(job.ID, func(item *model.BackupJob) {
+		item.ArtifactVersions = job.ArtifactVersions
+		appendJobEvent(&item.Events, model.Event{Time: eventTime, Level: cleanupEventLevel(result), Message: cleanupEventMessage(result)})
+	}); err != nil {
+		log.Printf("backup[%s] retention cleanup record failed: %v", job.ID, err)
+	}
+}
+
+func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.BackupJob, currentVersionID string, now time.Time) expiredBackupArtifactCleanup {
+	retentionDays := backupRetentionDays(job.RetentionDays, job.RetentionMonths)
+	if retentionDays <= 0 {
+		retentionDays = backupRetentionDays(job.Request.RetentionDays, job.Request.RetentionMonths)
+	}
+	result := expiredBackupArtifactCleanup{RetentionDays: retentionDays}
+	if retentionDays <= 0 || job.ScheduleMode != "scheduled" || len(job.ArtifactVersions) == 0 {
+		return result
+	}
+	cutoff := now.AddDate(0, 0, -retentionDays)
+	var objectStorage *model.RemoteStorage
+	if job.DestinationType == "object" {
+		storage, err := s.backupArtifactStorage(*job)
+		if err != nil {
+			log.Printf("backup[%s] retention cleanup storage lookup failed: %v", job.ID, err)
+			result.Failed++
+			return result
+		}
+		objectStorage = &storage
+	}
+	for versionIndex := range job.ArtifactVersions {
+		version := &job.ArtifactVersions[versionIndex]
+		if version.ID == currentVersionID || version.Status != model.StatusCompleted || version.FinishedAt == nil || !version.FinishedAt.Before(cutoff) {
+			continue
+		}
+		kept := version.Artifacts[:0]
+		for _, artifact := range version.Artifacts {
+			if strings.TrimSpace(artifact.Name) == "" && strings.TrimSpace(artifact.Path) == "" {
+				continue
+			}
+			if err := s.deleteExpiredBackupArtifact(ctx, *job, artifact, objectStorage); err != nil {
+				result.Failed++
+				kept = append(kept, artifact)
+				log.Printf("backup[%s] retention cleanup failed for %s: %v", job.ID, artifact.Name, err)
+				continue
+			}
+			result.Deleted++
+		}
+		version.Artifacts = kept
+		if len(version.Artifacts) == 0 {
+			version.Error = "备份文件已按保留期限清理"
+		}
+	}
+	return result
+}
+
+func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.BackupJob, artifact model.BackupArtifact, objectStorage *model.RemoteStorage) error {
+	switch job.DestinationType {
+	case "local":
+		path := backupArtifactLocalPath(job, artifact)
+		if path == "" {
+			return fmt.Errorf("未找到本地备份文件路径")
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	case "object":
+		if objectStorage == nil {
+			return fmt.Errorf("未找到备份目标对象存储")
+		}
+		return remotestorage.DeleteObject(ctx, *objectStorage, artifact.Name)
+	default:
+		return fmt.Errorf("该备份目标暂不支持清理备份文件")
+	}
+}
+
+func backupArtifactLocalPath(job model.BackupJob, artifact model.BackupArtifact) string {
+	if strings.TrimSpace(artifact.Path) != "" {
+		return artifact.Path
+	}
+	if job.Request.Destination != "" && strings.TrimSpace(artifact.Name) != "" {
+		return filepath.Join(job.Request.Destination, filepath.FromSlash(artifact.Name))
+	}
+	return ""
+}
+
+func cleanupEventLevel(result expiredBackupArtifactCleanup) string {
+	if result.Failed > 0 {
+		return "WARN"
+	}
+	return "INFO"
+}
+
+func cleanupEventMessage(result expiredBackupArtifactCleanup) string {
+	retention := retentionDaysLabel(result.RetentionDays)
+	if result.Deleted == 0 && result.Failed == 0 {
+		return "过期备份文件清理完成：未发现超过 " + retention + " 的备份文件"
+	}
+	if result.Failed == 0 {
+		return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个超过 %s 的备份文件", result.Deleted, retention)
+	}
+	return fmt.Sprintf("过期备份文件清理完成：已删除 %d 个，%d 个删除失败，请检查存储权限", result.Deleted, result.Failed)
+}
+
+func retentionDaysLabel(days int) string {
+	return fmt.Sprintf("%d 天", days)
+}
+
+func backupRetentionDays(days, months int) int {
+	if days > 0 {
+		return normalizeBackupRetentionDays(days)
+	}
+	if months > 0 {
+		return normalizeBackupRetentionDays(months * 30)
+	}
+	return 0
+}
+
+func normalizeBackupRetentionDays(days int) int {
+	if days < 1 {
+		return 30
+	}
+	if days > 1095 {
+		return 1095
+	}
+	return days
+}
+
+func retentionMonthsForCompatibility(days int) int {
+	if days <= 0 {
+		return 0
+	}
+	months := days / 30
+	if months < 1 {
+		return 1
+	}
+	if months > 36 {
+		return 36
+	}
+	return months
 }
 
 func (s *Server) recordBackupArtifact(id, versionID, database string, progress backup.Progress) {
@@ -1502,6 +1667,8 @@ func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time
 		job.ScheduleTime = request.ScheduleTime
 		job.ScheduleWeekday = request.ScheduleWeekday
 		job.ScheduleMonthDay = request.ScheduleMonthDay
+		job.RetentionDays = request.RetentionDays
+		job.RetentionMonths = request.RetentionMonths
 		job.NextRunAt = &next
 		appendJobEvent(&job.Events, model.Event{Time: now, Level: "INFO", Message: "已按应用时区修正下一次执行时间"})
 	}); err != nil {
@@ -1526,6 +1693,12 @@ func scheduleRequestForBackup(item model.BackupJob) (model.BackupRequest, bool) 
 	}
 	if request.ScheduleMonthDay == 0 {
 		request.ScheduleMonthDay = item.ScheduleMonthDay
+	}
+	if request.RetentionMonths == 0 {
+		request.RetentionMonths = item.RetentionMonths
+	}
+	if request.RetentionDays == 0 {
+		request.RetentionDays = item.RetentionDays
 	}
 	normalizeBackupSchedule(&request)
 	return request, true
@@ -1577,6 +1750,10 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 		return item, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	if err := s.store.SetBackupCancel(item.ID, cancel); err != nil {
+		cancel()
+		return item, err
+	}
 	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
 		job.Request = request
 		job.Status = model.StatusPending
@@ -1586,6 +1763,7 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 		appendJobEvent(&job.Events, model.Event{Time: now, Level: "INFO", Message: message})
 	}); err != nil {
 		cancel()
+		s.store.ClearBackupCancel(item.ID)
 		return item, err
 	}
 	updated, err := s.store.Backup(item.ID)
@@ -1658,6 +1836,12 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 	if request.ScheduleMonthDay == 0 {
 		request.ScheduleMonthDay = item.ScheduleMonthDay
 	}
+	if request.RetentionMonths == 0 {
+		request.RetentionMonths = item.RetentionMonths
+	}
+	if request.RetentionDays == 0 {
+		request.RetentionDays = item.RetentionDays
+	}
 	if !request.Notification.Enabled && request.Notification.Method == "" && request.Notification.Target == "" {
 		request.Notification.Enabled = item.Notification.Enabled || item.NotificationEnabled
 		if item.Notification.Method != "" || item.Notification.Target != "" {
@@ -1687,6 +1871,8 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 		request.ScheduleTime = ""
 		request.ScheduleWeekday = 0
 		request.ScheduleMonthDay = 0
+		request.RetentionDays = 0
+		request.RetentionMonths = 0
 		request.Notification = model.BackupNotification{}
 		request.NotificationEnabled = false
 		request.NotificationMethod = ""
@@ -1705,6 +1891,11 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 	if request.ScheduleMonthDay < 1 || request.ScheduleMonthDay > 28 {
 		request.ScheduleMonthDay = 1
 	}
+	request.RetentionDays = backupRetentionDays(request.RetentionDays, request.RetentionMonths)
+	if request.RetentionDays <= 0 {
+		request.RetentionDays = 30
+	}
+	request.RetentionMonths = retentionMonthsForCompatibility(request.RetentionDays)
 	normalizeBackupNotification(request)
 	if request.Notification.Enabled {
 		if request.Notification.Method != "webhook" && request.Notification.Method != "email" {
@@ -2169,6 +2360,8 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.ScheduleTime = input.ScheduleTime
 	request.ScheduleWeekday = input.ScheduleWeekday
 	request.ScheduleMonthDay = input.ScheduleMonthDay
+	request.RetentionDays = input.RetentionDays
+	request.RetentionMonths = input.RetentionMonths
 	request.NotificationEnabled = input.NotificationEnabled
 	request.NotificationMethod = input.NotificationMethod
 	request.NotificationTarget = input.NotificationTarget
@@ -2188,6 +2381,8 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.ScheduleTime = request.ScheduleTime
 		item.ScheduleWeekday = request.ScheduleWeekday
 		item.ScheduleMonthDay = request.ScheduleMonthDay
+		item.RetentionDays = request.RetentionDays
+		item.RetentionMonths = request.RetentionMonths
 		item.Notification = request.Notification
 		item.NotificationEnabled = request.Notification.Enabled
 		item.NotificationMethod = request.Notification.Method
@@ -2261,6 +2456,15 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	if target.Type != sourceJob.SourceType {
 		writeError(w, http.StatusBadRequest, "invalid_target", "恢复目标类型必须与备份源类型一致")
+		return
+	}
+	precheck := s.runRestorePrecheck(r.Context(), sourceJob, target, plan)
+	if !precheck.OK {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"code":    "restore_precheck_failed",
+			"message": "恢复前检查未通过，请处理后再重试",
+			"checks":  precheck.Checks,
+		})
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2698,6 +2902,7 @@ func backupArtifactMap(job model.BackupJob) map[string]model.BackupArtifact {
 }
 
 func (s *Server) runRestore(ctx context.Context, id string, target model.Connection, sourceDatabases []string, targetDatabases map[string]string, strategy string, source restoreSource) {
+	defer s.store.ClearBackupCancel(id)
 	log.Printf("restore[%s] started: %s -> %s/%s", id, restoreSourceLabel(source), target.Name, restoreTargetLabel(sourceDatabases, targetDatabases))
 	started := time.Now()
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
@@ -2880,57 +3085,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) deleteBackupArtifact(w http.ResponseWriter, r *http.Request) {
-	item, artifact, err := s.backupArtifactForRequest(r)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
-		return
-	}
-	if item.Status == model.StatusRunning || item.Status == model.StatusPending {
-		writeError(w, http.StatusConflict, "task_running", "任务正在执行，请先停止后再删除备份文件")
-		return
-	}
-	switch item.DestinationType {
-	case "local":
-		path := artifact.Path
-		if path == "" {
-			path = restoreArtifactPath(item)
-		}
-		if path == "" {
-			writeError(w, http.StatusBadRequest, "invalid_artifact", "未找到本地备份文件路径")
-			return
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusBadRequest, "delete_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
-			return
-		}
-	case "object":
-		storage, err := s.backupArtifactStorage(item)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
-			return
-		}
-		if err := remotestorage.DeleteObject(r.Context(), storage, artifact.Name); err != nil {
-			writeError(w, http.StatusBadRequest, "delete_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
-			return
-		}
-	default:
-		writeError(w, http.StatusBadRequest, "invalid_artifact", "该备份目标暂不支持删除备份文件")
-		return
-	}
-	now := time.Now().In(appLocation)
-	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
-		removeBackupArtifact(job, artifact.Database)
-		appendJobEvent(&job.Events, model.Event{Time: now, Level: "WARN", Message: "备份文件已删除：" + artifact.Name})
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
-		return
-	}
-	updated, err := s.store.Backup(item.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
+	writeError(w, http.StatusMethodNotAllowed, "artifact_delete_disabled", "备份文件删除已禁用，请在存储系统中按运维流程处理")
 }
 
 func (s *Server) backupArtifactForRequest(r *http.Request) (model.BackupJob, model.BackupArtifact, error) {
@@ -2981,29 +3136,6 @@ func backupArtifactsForDisplay(job model.BackupJob) []model.BackupArtifact {
 		database = "default"
 	}
 	return []model.BackupArtifact{{Database: database, Name: job.ArtifactName, Size: job.ArtifactSize, Path: restoreArtifactPath(job)}}
-}
-
-func removeBackupArtifact(job *model.BackupJob, database string) {
-	if len(job.Artifacts) > 0 {
-		next := job.Artifacts[:0]
-		for _, artifact := range job.Artifacts {
-			if artifact.Database != database {
-				next = append(next, artifact)
-			}
-		}
-		job.Artifacts = next
-	}
-	if len(job.Artifacts) > 0 {
-		job.ArtifactName = job.Artifacts[0].Name
-		job.ArtifactSize = job.Artifacts[0].Size
-		job.ArtifactPath = job.Artifacts[0].Path
-		return
-	}
-	if job.Artifacts == nil || job.SourceDatabase == database || job.ArtifactName != "" {
-		job.ArtifactName = ""
-		job.ArtifactSize = 0
-		job.ArtifactPath = ""
-	}
 }
 
 func sanitizeDownloadFileName(value string) string {

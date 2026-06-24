@@ -36,6 +36,7 @@ export function BackupWizard({
     scheduleTime: "02:00:00",
     scheduleWeekday: 1,
     scheduleMonthDay: 1,
+    retentionDays: 30,
     notificationEnabled: false,
     notificationMethod: "webhook",
     notificationTarget: "",
@@ -175,6 +176,7 @@ export function BackupWizard({
                   <TimeSelect value={config.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setConfig({ ...config, scheduleTime })} />
                   {config.scheduleFrequency === "weekly" && <SelectField label="每周" value={config.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setConfig({ ...config, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
                   {config.scheduleFrequency === "monthly" && <SelectField label="每月" value={config.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setConfig({ ...config, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+                  <RetentionDaysField value={config.retentionDays ?? 30} onChange={(retentionDays) => setConfig({ ...config, retentionDays })} />
                 </div>
                 <div className="notification-panel">
                   <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
@@ -196,7 +198,7 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
+          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
         </Card>
       )}
 
@@ -209,6 +211,7 @@ export function BackupWizard({
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+export const retentionDayOptions = [30, 60, 90, 180, 365, 730, 1095];
 
 function scheduleLabel(config: BackupConfig) {
   if (config.scheduleMode !== "scheduled") return "一次性立即执行";
@@ -220,6 +223,96 @@ function scheduleLabel(config: BackupConfig) {
 function notificationLabel(config: BackupConfig) {
   if (config.scheduleMode !== "scheduled" || !config.notificationEnabled) return "未开启";
   return config.notificationMethod === "email" ? `Email · ${config.notificationTarget || "未填写"}` : `Webhook · ${config.notificationTarget || "未填写"}`;
+}
+
+function retentionPolicyLabel(config: BackupConfig) {
+  if (config.scheduleMode !== "scheduled") return "不适用";
+  return retentionLabel(config.retentionDays ?? 30);
+}
+
+function retentionLabel(days: number) {
+  return `${days} 天`;
+}
+
+export function RetentionDaysField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(String(value || 30));
+  const rootRef = useRef<HTMLLabelElement | null>(null);
+
+  useEffect(() => setDraft(String(value || 30)), [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        commitRetentionDays(draft, onChange, setDraft);
+        setOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDraft(String(value || 30));
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [draft, onChange, open, value]);
+
+  return (
+    <label className="field retention-combobox-field" ref={rootRef}>
+      <span>保留期限（天）</span>
+      <div className={`retention-combobox ${open ? "open" : ""}`}>
+        <input
+          inputMode="numeric"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value.replace(/[^\d]/g, ""))}
+          onBlur={() => commitRetentionDays(draft, onChange, setDraft)}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitRetentionDays(draft, onChange, setDraft);
+              setOpen(false);
+            }
+          }}
+        />
+        <button type="button" aria-label="展开保留期限选项" aria-expanded={open} onMouseDown={(event) => event.preventDefault()} onClick={() => setOpen((current) => !current)}><ChevronDown size={16} /></button>
+      </div>
+      {open && (
+        <div className="select-menu retention-combobox-menu" role="listbox" aria-label="保留期限">
+          {retentionDayOptions.map((days) => (
+            <button
+              type="button"
+              key={days}
+              className={Number(draft) === days ? "active" : ""}
+              role="option"
+              aria-selected={Number(draft) === days}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setDraft(String(days));
+                onChange(days);
+                setOpen(false);
+              }}
+            >
+              {retentionLabel(days)}
+            </button>
+          ))}
+        </div>
+      )}
+    </label>
+  );
+}
+
+function commitRetentionDays(input: string, onChange: (value: number) => void, setDraft: (value: string) => void) {
+  const parsed = Number(input);
+  const next = Number.isFinite(parsed) ? Math.max(1, Math.min(1095, Math.floor(parsed))) : 30;
+  setDraft(String(next));
+  onChange(next);
 }
 
 export function TimeSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {

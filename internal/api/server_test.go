@@ -1,13 +1,18 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"databridge/internal/model"
+	"databridge/internal/store"
 )
 
 func TestNextBackupRunUsesAppTimezone(t *testing.T) {
@@ -58,6 +63,32 @@ func TestScheduleClockMatchesDetectsLegacyUTCNextRun(t *testing.T) {
 	localNextRun := time.Date(2026, 6, 18, 3, 0, 0, 0, appLocation)
 	if !scheduleClockMatches(request, localNextRun) {
 		t.Fatal("local next run should match the configured schedule clock")
+	}
+}
+
+func TestNormalizeBackupScheduleRetentionDays(t *testing.T) {
+	request := model.BackupRequest{ScheduleMode: "scheduled", RetentionDays: 99}
+	normalizeBackupSchedule(&request)
+	if request.RetentionDays != 99 {
+		t.Fatalf("retention days = %d, want 99", request.RetentionDays)
+	}
+
+	request = model.BackupRequest{ScheduleMode: "scheduled"}
+	normalizeBackupSchedule(&request)
+	if request.RetentionDays != 30 {
+		t.Fatalf("default retention days = %d, want 30", request.RetentionDays)
+	}
+
+	request = model.BackupRequest{ScheduleMode: "scheduled", RetentionMonths: 2}
+	normalizeBackupSchedule(&request)
+	if request.RetentionDays != 60 {
+		t.Fatalf("legacy retention months should convert to days = %d, want 60", request.RetentionDays)
+	}
+
+	request = model.BackupRequest{ScheduleMode: "once", RetentionDays: 3}
+	normalizeBackupSchedule(&request)
+	if request.RetentionDays != 0 {
+		t.Fatalf("one-time retention days = %d, want 0", request.RetentionDays)
 	}
 }
 
@@ -195,4 +226,221 @@ func TestCompactBackupResponseQuery(t *testing.T) {
 	if compactBackupResponse(req) {
 		t.Fatal("missing compact query should keep full response")
 	}
+}
+
+func TestDeleteBackupArtifactEndpointIsDisabled(t *testing.T) {
+	appStore, _, handler := newTestServer(t)
+	now := time.Now().UTC()
+	artifactPath := filepath.Join(t.TempDir(), "app.tar.gz")
+	if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	job := model.BackupJob{
+		ID:              store.NewID(),
+		Name:            "local backup",
+		Status:          model.StatusCompleted,
+		Stage:           "completed",
+		StartedAt:       now,
+		SourceName:      "source",
+		SourceType:      "PostgreSQL",
+		SourceDatabase:  "app",
+		DestinationType: "local",
+		Destination:     t.TempDir(),
+		ArtifactName:    "app.tar.gz",
+		Artifacts:       []model.BackupArtifact{{Database: "app", Name: "app.tar.gz", Path: artifactPath}},
+		Events:          []model.Event{},
+	}
+	if err := appStore.AddBackup(job, func() {}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/backups/"+job.ID+"/artifacts/app", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["code"] != "artifact_delete_disabled" {
+		t.Fatalf("code = %q", payload["code"])
+	}
+	if _, err := os.Stat(artifactPath); err != nil {
+		t.Fatalf("artifact file should not be removed: %v", err)
+	}
+}
+
+func TestCleanupExpiredBackupArtifactsDeletesOldLocalVersions(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	destination := t.TempDir()
+	oldPath := filepath.Join(destination, "old.tar.gz")
+	newPath := filepath.Join(destination, "new.tar.gz")
+	if err := os.WriteFile(oldPath, []byte("old backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("new backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	oldFinished := now.AddDate(0, 0, -2)
+	newFinished := now.Add(-time.Hour)
+	job := model.BackupJob{
+		ID:              store.NewID(),
+		Name:            "scheduled local backup",
+		Status:          model.StatusScheduled,
+		Stage:           "scheduled",
+		StartedAt:       now.Add(-time.Hour),
+		SourceName:      "source",
+		SourceType:      "PostgreSQL",
+		SourceDatabase:  "app",
+		DestinationType: "local",
+		Destination:     destination,
+		ScheduleMode:    "scheduled",
+		RetentionDays:   1,
+		RetentionMonths: 1,
+		ArtifactName:    "new.tar.gz",
+		ArtifactPath:    newPath,
+		Artifacts:       []model.BackupArtifact{{Database: "app", Name: "new.tar.gz", Path: newPath}},
+		ArtifactVersions: []model.BackupArtifactVersion{
+			{
+				ID:         "new-version",
+				StartedAt:  newFinished.Add(-time.Minute),
+				FinishedAt: &newFinished,
+				Status:     model.StatusCompleted,
+				Stage:      "completed",
+				Artifacts:  []model.BackupArtifact{{Database: "app", Name: "new.tar.gz", Path: newPath}},
+			},
+			{
+				ID:         "old-version",
+				StartedAt:  oldFinished.Add(-time.Minute),
+				FinishedAt: &oldFinished,
+				Status:     model.StatusCompleted,
+				Stage:      "completed",
+				Artifacts:  []model.BackupArtifact{{Database: "app", Name: "old.tar.gz", Path: oldPath}},
+			},
+		},
+		Events: []model.Event{},
+		Request: model.BackupRequest{
+			DestinationType: "local",
+			Destination:     destination,
+			ScheduleMode:    "scheduled",
+			RetentionDays:   1,
+			RetentionMonths: 1,
+		},
+	}
+	if err := appStore.AddBackup(job, func() {}); err != nil {
+		t.Fatal(err)
+	}
+
+	server.cleanupExpiredBackupArtifacts(httptest.NewRequest(http.MethodGet, "/", nil).Context(), job, "new-version", now)
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old artifact should be removed, stat error = %v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new artifact should remain: %v", err)
+	}
+	updated, err := appStore.Backup(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range updated.ArtifactVersions {
+		switch version.ID {
+		case "old-version":
+			if len(version.Artifacts) != 0 {
+				t.Fatalf("old version artifacts should be pruned: %#v", version.Artifacts)
+			}
+			if version.Error != "备份文件已按保留期限清理" {
+				t.Fatalf("old version error = %q", version.Error)
+			}
+		case "new-version":
+			if len(version.Artifacts) != 1 {
+				t.Fatalf("new version artifacts should remain: %#v", version.Artifacts)
+			}
+		}
+	}
+	if _, err := backupJobForArtifactVersion(updated, "old-version"); err == nil {
+		t.Fatal("old version should no longer be restorable")
+	}
+	foundCleanupEvent := false
+	for _, event := range updated.Events {
+		if strings.Contains(event.Message, "过期备份文件清理完成") && strings.Contains(event.Message, "已删除 1 个") {
+			foundCleanupEvent = true
+		}
+	}
+	if !foundCleanupEvent {
+		t.Fatalf("cleanup event not found: %#v", updated.Events)
+	}
+}
+
+func TestRestoreBackupRequiresPrecheckBeforeCreatingJob(t *testing.T) {
+	appStore, _, handler := newTestServer(t)
+	now := time.Now().UTC()
+	artifactPath := filepath.Join(t.TempDir(), "app.tar.gz")
+	if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourceJob := model.BackupJob{
+		ID:              store.NewID(),
+		Name:            "source backup",
+		Status:          model.StatusCompleted,
+		Stage:           "completed",
+		StartedAt:       now,
+		SourceName:      "source",
+		SourceType:      "PostgreSQL",
+		SourceDatabase:  "app",
+		DestinationType: "local",
+		Destination:     t.TempDir(),
+		ArtifactName:    "app.tar.gz",
+		Artifacts:       []model.BackupArtifact{{Database: "app", Name: "app.tar.gz", Path: artifactPath}},
+		Events:          []model.Event{},
+	}
+	if err := appStore.AddBackup(sourceJob, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	target, err := appStore.AddConnection(model.ConnectionInput{
+		Type: "PostgreSQL", Name: "target", Host: "127.0.0.1", Port: 1,
+		Username: "postgres", Password: "postgres", SSLMode: "disable",
+	}, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"targetId":"` + target.ID + `","targetDatabase":"app_restore","strategy":"append"}`)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/backups/"+sourceJob.ID+"/restore", body)
+	request.RemoteAddr = "127.0.0.1:12345"
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest && response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	jobs, err := appStore.Backups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.DestinationType == "restore" {
+			t.Fatalf("restore job should not be created when precheck fails: %#v", job)
+		}
+	}
+}
+
+func newTestServer(t *testing.T) (*store.Store, *Server, http.Handler) {
+	t.Helper()
+	directory := t.TempDir()
+	appStore, err := store.New(filepath.Join(directory, "databridge.db"), filepath.Join(directory, "databridge.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := appStore.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	return appStore, &Server{store: appStore}, New(appStore)
 }

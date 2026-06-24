@@ -4,7 +4,7 @@ import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupConfig, BackupJob, DatabaseConnection } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
-import { TimeSelect } from "./BackupWizard";
+import { RetentionDaysField, TimeSelect } from "./BackupWizard";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
 export type BackupArtifactVersionOption = { id: string; label: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; artifacts: BackupArtifactItem[]; current?: boolean };
@@ -152,7 +152,7 @@ export function BackupMonitoring({
       {failed && <div className="error-banner detail-error"><strong>{job.error || "备份任务已取消"}</strong>{lastError && <span>{lastError}</span>}</div>}
       <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
-      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label="备份文件" value={job.artifactName || "待生成"} detail={formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
+      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label={scheduled ? "保留期限" : "备份文件"} value={scheduled ? retentionLabel(retentionDaysFromJob(job)) : job.artifactName || "待生成"} detail={scheduled ? "按保留期限自动清理" : formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
       <div className="monitor-grid single">
         <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
       </div>
@@ -451,7 +451,6 @@ function stageLabel(stage: string) {
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-
 function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () => void; onSave: (config: BackupConfig) => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -469,6 +468,7 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     scheduleTime: job.scheduleTime ?? "02:00:00",
     scheduleWeekday: job.scheduleWeekday ?? 1,
     scheduleMonthDay: job.scheduleMonthDay ?? 1,
+    retentionDays: retentionDaysFromJob(job),
     notificationEnabled: job.notificationEnabled ?? false,
     notificationMethod: job.notificationMethod ?? "webhook",
     notificationTarget: job.notificationTarget ?? "",
@@ -511,6 +511,7 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
           <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
           {form.scheduleFrequency === "weekly" && <SelectField label="每周" value={form.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
           {form.scheduleFrequency === "monthly" && <SelectField label="每月" value={form.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
+          <RetentionDaysField value={form.retentionDays ?? 30} onChange={(retentionDays) => setForm({ ...form, retentionDays })} />
         </div>
         <div className="notification-panel modal-notification-panel">
           <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
@@ -532,6 +533,14 @@ function scheduleLabel(job: BackupJob) {
   if (job.scheduleFrequency === "weekly") return `每周${weekdays[job.scheduleWeekday ?? 1]} ${job.scheduleTime}`;
   if (job.scheduleFrequency === "monthly") return `每月 ${job.scheduleMonthDay ?? 1} 日 ${job.scheduleTime}`;
   return `每天 ${job.scheduleTime ?? "02:00:00"}`;
+}
+
+function retentionDaysFromJob(job: BackupJob) {
+  return job.retentionDays ?? ((job.retentionMonths ?? 1) * 30);
+}
+
+function retentionLabel(days: number) {
+  return `${days} 天`;
 }
 
 export function formatDateTime(value?: string) {

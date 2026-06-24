@@ -547,6 +547,12 @@ func (s *Store) CancelMigration(id string) error {
 	return nil
 }
 
+func (s *Store) ClearMigrationCancel(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cancels, id)
+}
+
 func (s *Store) DeleteMigration(id string) error {
 	if _, err := s.Migration(id); err != nil {
 		return err
@@ -651,6 +657,22 @@ func (s *Store) CancelBackup(id string) error {
 		cancel()
 	}
 	return nil
+}
+
+func (s *Store) SetBackupCancel(id string, cancel context.CancelFunc) error {
+	if _, err := s.Backup(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancels[id] = cancel
+	return nil
+}
+
+func (s *Store) ClearBackupCancel(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cancels, id)
 }
 
 func (s *Store) DeleteBackup(id string) error {

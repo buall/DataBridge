@@ -116,6 +116,8 @@ export interface BackupConfig {
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  retentionDays?: number;
+  retentionMonths?: number;
   notificationEnabled?: boolean;
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
@@ -223,6 +225,8 @@ export interface BackupJob {
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  retentionDays?: number;
+  retentionMonths?: number;
   notificationEnabled?: boolean;
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;

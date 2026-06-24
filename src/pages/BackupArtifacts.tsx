@@ -1,32 +1,28 @@
-import { Archive, ArrowLeft, ChevronDown, Clipboard, Copy, Download, HardDrive, Trash2 } from "lucide-react";
+import { Archive, ArrowLeft, ChevronDown, Clipboard, Copy, Download, HardDrive } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
+import { Badge, Button, Card } from "../components/UI";
 import type { BackupJob } from "../types";
 import { artifactVersionsForRestore, backupArtifacts, formatBytes, storageTypeLabel, totalArtifactSize } from "./BackupMonitoring";
 
 type BackupArtifactItem = ReturnType<typeof backupArtifacts>[number];
 
 export function BackupArtifacts({
-  job,
-  onBack,
-  onUpdated,
+	job,
+	onBack,
 }: {
-  job: BackupJob;
-  onBack: () => void;
-  onUpdated: (job: BackupJob) => void;
+	job: BackupJob;
+	onBack: () => void;
 }) {
   const versions = artifactVersionsForRestore(job);
   const [selectedVersionId, setSelectedVersionId] = useState(versions[0]?.id ?? "current");
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? versions[0] ?? null;
   const artifacts = selectedVersion?.artifacts ?? backupArtifacts(job);
-  const [copied, setCopied] = useState("");
-  const [downloading, setDownloading] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<BackupArtifactItem | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState("");
-  const [versionMenuOpen, setVersionMenuOpen] = useState(false);
-  const versionMenuRef = useRef<HTMLDivElement | null>(null);
+	const [copied, setCopied] = useState("");
+	const [downloading, setDownloading] = useState("");
+	const [error, setError] = useState("");
+	const [versionMenuOpen, setVersionMenuOpen] = useState(false);
+	const versionMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!versions.length) {
@@ -87,22 +83,7 @@ export function BackupArtifacts({
     }
   }
 
-  async function confirmDeleteArtifact() {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    setError("");
-    try {
-      const next = await api.deleteBackupArtifact(job.id, deleteTarget.database, selectedVersion?.current ? undefined : selectedVersion?.id);
-      onUpdated(next);
-      setDeleteTarget(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "删除备份产物失败");
-    } finally {
-      setDeleting(false);
-    }
-  }
-
-  return (
+	return (
     <div className="page-stack artifact-manager-page">
       <div className="page-heading">
         <div><h2>备份产物</h2><p>{job.name} · 任务 ID {job.id}</p></div>
@@ -129,20 +110,18 @@ export function BackupArtifacts({
                     <div><dt>{job.destinationType === "local" ? "本地路径" : "对象路径"}</dt><dd>{artifact.path || artifact.name}</dd></div>
                   </dl>
                 </div>
-                <div className="artifact-actions">
-                  <button type="button" title="复制路径" onClick={() => copyArtifactPath(artifact)}>{copied === artifact.database ? <Clipboard size={15} /> : <Copy size={15} />}<span>{copied === artifact.database ? "已复制路径" : "复制路径"}</span></button>
-                  <button type="button" title="下载备份产物" disabled={downloading === artifact.database} onClick={() => downloadArtifact(artifact)}><Download size={15} /><span>{downloading === artifact.database ? "下载中" : "下载"}</span></button>
-                  <button type="button" className="danger" title="删除备份文件" onClick={() => setDeleteTarget(artifact)}><Trash2 size={15} /><span>删文件</span></button>
-                </div>
-              </div>
+				<div className="artifact-actions">
+				  <button type="button" title="复制路径" onClick={() => copyArtifactPath(artifact)}>{copied === artifact.database ? <Clipboard size={15} /> : <Copy size={15} />}<span>{copied === artifact.database ? "已复制路径" : "复制路径"}</span></button>
+				  <button type="button" title="下载备份产物" disabled={downloading === artifact.database} onClick={() => downloadArtifact(artifact)}><Download size={15} /><span>{downloading === artifact.database ? "下载中" : "下载"}</span></button>
+				</div>
+			  </div>
             ))}
           </div>
         ) : (
           <div className="backup-artifact"><span className="artifact-icon"><Archive size={22} /></span><div><strong>当前版本没有可管理产物</strong><span>0 B</span><small>请选择其他备份版本或等待备份完成。</small></div></div>
         )}
       </Card>
-      {deleteTarget && <ConfirmDialog title="删除备份文件" description="这是高危操作，会删除当前所选备份版本中的真实备份产物，任务记录仍会保留。" tone="danger" confirmText="确认删除文件" submitting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDeleteArtifact} details={[`备份版本：${selectedVersion?.label ?? "当前最新产物"}`, `数据库：${deleteTarget.database}`, `文件：${deleteTarget.name}`, `路径：${deleteTarget.path || deleteTarget.name}`, "删除后该数据库将无法再从这个备份版本恢复，操作不可撤销。"]} />}
-    </div>
+	</div>
   );
 }
 

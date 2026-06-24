@@ -171,8 +171,6 @@ export const api = {
     request<{ ok: boolean }>(`/backups/${id}/cancel`, { method: "POST" }),
   downloadBackupArtifact: (id: string, database: string, artifactVersionId?: string) =>
     requestBlob(`/backups/${id}/artifacts/${encodeURIComponent(database)}/download${artifactVersionId ? `?artifactVersionId=${encodeURIComponent(artifactVersionId)}` : ""}`),
-  deleteBackupArtifact: async (id: string, database: string, artifactVersionId?: string) =>
-    normalizeBackup(await request<BackupJob>(`/backups/${id}/artifacts/${encodeURIComponent(database)}${artifactVersionId ? `?artifactVersionId=${encodeURIComponent(artifactVersionId)}` : ""}`, { method: "DELETE" })),
   deleteBackup: (id: string) =>
     request<{ ok: boolean }>(`/backups/${id}`, { method: "DELETE" }),
   smtpSettings: () => request<SMTPSettings>("/settings/smtp"),

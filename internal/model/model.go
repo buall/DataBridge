@@ -146,6 +146,8 @@ type BackupRequest struct {
 	ScheduleTime        string             `json:"scheduleTime,omitempty"`
 	ScheduleWeekday     int                `json:"scheduleWeekday,omitempty"`
 	ScheduleMonthDay    int                `json:"scheduleMonthDay,omitempty"`
+	RetentionDays       int                `json:"retentionDays,omitempty"`
+	RetentionMonths     int                `json:"retentionMonths,omitempty"`
 	Notification        BackupNotification `json:"notification,omitempty"`
 	NotificationEnabled bool               `json:"notificationEnabled,omitempty"`
 	NotificationMethod  string             `json:"notificationMethod,omitempty"`
@@ -324,6 +326,8 @@ type BackupJob struct {
 	ScheduleTime        string                  `json:"scheduleTime,omitempty"`
 	ScheduleWeekday     int                     `json:"scheduleWeekday,omitempty"`
 	ScheduleMonthDay    int                     `json:"scheduleMonthDay,omitempty"`
+	RetentionDays       int                     `json:"retentionDays,omitempty"`
+	RetentionMonths     int                     `json:"retentionMonths,omitempty"`
 	Notification        BackupNotification      `json:"notification,omitempty"`
 	NotificationEnabled bool                    `json:"notificationEnabled,omitempty"`
 	NotificationMethod  string                  `json:"notificationMethod,omitempty"`

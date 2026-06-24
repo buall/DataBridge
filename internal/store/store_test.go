@@ -114,3 +114,46 @@ func TestStoreMarksRunningMigrationFailedAfterRestart(t *testing.T) {
 		t.Fatalf("error = %q", loaded.Error)
 	}
 }
+
+func TestStoreReplacesAndClearsBackupCancel(t *testing.T) {
+	directory := t.TempDir()
+	appStore, err := New(filepath.Join(directory, "databridge.db"), filepath.Join(directory, "databridge.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appStore.Close()
+
+	backup := model.BackupJob{
+		ID:          NewID(),
+		Name:        "scheduled",
+		Status:      model.StatusScheduled,
+		Stage:       "scheduled",
+		StartedAt:   time.Now().UTC(),
+		SourceName:  "source",
+		SourceType:  "PostgreSQL",
+		Destination: "local",
+		Events:      []model.Event{},
+	}
+	firstCancelled := 0
+	if err := appStore.AddBackup(backup, func() { firstCancelled++ }); err != nil {
+		t.Fatal(err)
+	}
+	secondCancelled := 0
+	if err := appStore.SetBackupCancel(backup.ID, func() { secondCancelled++ }); err != nil {
+		t.Fatal(err)
+	}
+	if err := appStore.CancelBackup(backup.ID); err != nil {
+		t.Fatal(err)
+	}
+	if firstCancelled != 0 || secondCancelled != 1 {
+		t.Fatalf("cancel counts after replacement: first=%d second=%d", firstCancelled, secondCancelled)
+	}
+
+	appStore.ClearBackupCancel(backup.ID)
+	if err := appStore.CancelBackup(backup.ID); err != nil {
+		t.Fatal(err)
+	}
+	if secondCancelled != 1 {
+		t.Fatalf("cleared cancel should not be called again: second=%d", secondCancelled)
+	}
+}
