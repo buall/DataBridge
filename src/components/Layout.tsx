@@ -106,7 +106,11 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
       {isMobile && mobileNavOpen ? <button type="button" className="sidebar-scrim" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)} /> : null}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark" data-label="DataBridge">DB</div>
+          <div className="brand-mark" data-label="DataBridge" aria-hidden="true">
+            <span className="brand-bridge" />
+            <span className="brand-node brand-node-left" />
+            <span className="brand-node brand-node-right" />
+          </div>
           <div className="brand-copy">
             <strong>DataBridge</strong>
             <span>DATABASE MIGRATION</span>
