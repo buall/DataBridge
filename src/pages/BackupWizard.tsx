@@ -16,6 +16,7 @@ export function BackupWizard({
   onStart: (config: BackupConfig) => Promise<void>;
 }) {
   const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "local"), [storages]);
+  const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB"), [connections]);
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [databaseConnectionId, setDatabaseConnectionId] = useState("");
@@ -26,7 +27,7 @@ export function BackupWizard({
   const [notificationTestResult, setNotificationTestResult] = useState("");
   const [config, setConfig] = useState<BackupConfig>({
     name: "",
-    sourceId: connections[0]?.id ?? "",
+    sourceId: backupableConnections[0]?.id ?? "",
     sourceDatabase: "",
     sourceDatabases: [],
     destinationType: "storage",
@@ -45,10 +46,10 @@ export function BackupWizard({
   useEffect(() => {
     setConfig((current) => ({
       ...current,
-      sourceId: connections.some((item) => item.id === current.sourceId) ? current.sourceId : (connections[0]?.id ?? ""),
+      sourceId: backupableConnections.some((item) => item.id === current.sourceId) ? current.sourceId : (backupableConnections[0]?.id ?? ""),
       destination: writableStorages.some((item) => item.id === current.destination) ? current.destination : (writableStorages[0]?.id ?? ""),
     }));
-  }, [connections, writableStorages]);
+  }, [backupableConnections, writableStorages]);
 
   useEffect(() => {
     const sourceId = config.sourceId;
@@ -84,7 +85,7 @@ export function BackupWizard({
     return () => { cancelled = true; };
   }, [config.sourceId]);
 
-  const source = connections.find((item) => item.id === config.sourceId);
+  const source = backupableConnections.find((item) => item.id === config.sourceId);
   const destination = writableStorages.find((item) => item.id === config.destination);
   const activeDatabases = databaseConnectionId === config.sourceId ? databases : [];
   const selectedDatabases = activeDatabases.filter((item) => config.sourceDatabases.includes(item.name));
@@ -130,8 +131,8 @@ export function BackupWizard({
     }
   }
 
-  if (!connections.length) {
-    return <div className="empty-state"><div>DB</div><h2>暂无可用连接</h2><p>请先添加数据库连接，再创建备份任务。</p></div>;
+  if (!backupableConnections.length) {
+    return <div className="empty-state"><div>DB</div><h2>暂无可备份连接</h2><p>请先添加 PostgreSQL、MySQL 或 MongoDB 连接，再创建备份任务。</p></div>;
   }
   if (!writableStorages.length) {
     return <div className="empty-state"><div>DB</div><h2>暂无备份目标</h2><p>请先在远端存储中添加对象存储或本地目录。</p></div>;
@@ -146,7 +147,7 @@ export function BackupWizard({
 
       {step === 0 && (
         <Card className="wizard-card connection-step">
-          <div className="card-heading"><h3>选择要备份的数据库</h3><p>当前支持 PostgreSQL 和 MySQL 全库导出。</p></div>
+          <div className="card-heading"><h3>选择要备份的数据库</h3><p>当前支持 PostgreSQL、MySQL 和 MongoDB 全库导出。</p></div>
           <div className="config-grid backup-source-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase || "数据库"} 备份`} /></label>
             <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [] })} />
@@ -198,7 +199,7 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>tar.gz</strong></div></div>
+          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>{source?.type === "MongoDB" ? "mongodump + tar.gz" : "tar.gz"}</strong></div></div>
         </Card>
       )}
 

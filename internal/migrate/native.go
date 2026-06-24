@@ -137,6 +137,8 @@ func (e *Engine) RunNative(
 		return e.RunNativePostgres(ctx, source, target, request, report)
 	case "MySQL":
 		return e.RunNativeMySQL(ctx, source, target, request, report)
+	case "MongoDB":
+		return e.RunNativeMongo(ctx, source, target, request, report)
 	default:
 		return fmt.Errorf("unsupported native migration type %q", source.Type)
 	}

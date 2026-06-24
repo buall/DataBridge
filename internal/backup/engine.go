@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"databridge/internal/model"
+	dbmongo "databridge/internal/mongo"
 	"databridge/internal/remotestorage"
 )
 
@@ -45,6 +46,8 @@ func (e *Engine) Run(ctx context.Context, source model.Connection, request model
 		return e.runPostgres(ctx, source, request, report)
 	case "MySQL":
 		return e.runMySQL(ctx, source, request, report)
+	case "MongoDB":
+		return e.runMongo(ctx, source, request, report)
 	default:
 		return fmt.Errorf("unsupported backup source type %q", source.Type)
 	}
@@ -108,6 +111,46 @@ func (e *Engine) runMySQL(ctx context.Context, source model.Connection, request 
 		return err
 	}
 	archive, err := compressBackup(tempDir, dumpFile, source, request.SourceDatabase, report)
+	if err != nil {
+		return err
+	}
+	return dest.upload(ctx, archive, backupObjectKey(source, request.SourceDatabase, filepath.Base(archive)), report)
+}
+
+func (e *Engine) runMongo(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	for _, name := range []string{"mongodump"} {
+		if _, err := toolPath(name); err != nil {
+			return err
+		}
+	}
+	dest, err := newDestination(request)
+	if err != nil {
+		return err
+	}
+	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	dumpDir := filepath.Join(tempDir, sanitize(request.SourceDatabase))
+	if err := os.MkdirAll(dumpDir, 0o700); err != nil {
+		return err
+	}
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在导出 MongoDB 数据库"})
+	args := []string{
+		"--host", source.Host,
+		"--port", fmt.Sprintf("%d", source.Port),
+		"--username", source.Username,
+		"--password", source.Password,
+		"--authenticationDatabase", "admin",
+		"--db", request.SourceDatabase,
+		"--out", tempDir,
+	}
+	if err := runCommand(ctx, "mongodump", args, os.Environ(), "export", report); err != nil {
+		return err
+	}
+	archive, err := compressBackup(tempDir, dumpDir, source, request.SourceDatabase, report)
 	if err != nil {
 		return err
 	}
@@ -209,7 +252,8 @@ func (d s3Destination) upload(ctx context.Context, filePath, objectKey string, r
 }
 
 type RestoreOptions struct {
-	Strategy string
+	Strategy       string
+	SourceDatabase string
 }
 
 func (e *Engine) Restore(ctx context.Context, target model.Connection, database, archivePath string, options RestoreOptions, report Reporter) error {
@@ -231,6 +275,8 @@ func (e *Engine) Restore(ctx context.Context, target model.Connection, database,
 		return e.restorePostgres(ctx, target, database, dumpFile, options, report)
 	case "MySQL":
 		return e.restoreMySQL(ctx, target, database, dumpFile, options, report)
+	case "MongoDB":
+		return e.restoreMongo(ctx, target, database, dumpFile, options, report)
 	default:
 		return fmt.Errorf("unsupported restore target type %q", target.Type)
 	}
@@ -279,6 +325,45 @@ func (e *Engine) restoreMySQL(ctx context.Context, target model.Connection, data
 	return nil
 }
 
+func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, database, dumpPath string, options RestoreOptions, report Reporter) error {
+	for _, name := range []string{"mongorestore"} {
+		if _, err := toolPath(name); err != nil {
+			return err
+		}
+	}
+	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
+		if err := recreateMongoDatabase(ctx, target, database, report); err != nil {
+			return err
+		}
+	}
+	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 MongoDB 数据库"})
+	restoreSourcePath := dumpPath
+	if info, err := os.Stat(dumpPath); err == nil && info.IsDir() {
+		restoreSourcePath = filepath.Dir(dumpPath)
+	}
+	sourceDatabase := strings.TrimSpace(options.SourceDatabase)
+	if sourceDatabase == "" {
+		sourceDatabase = database
+	}
+	args := []string{
+		"--host", target.Host,
+		"--port", fmt.Sprintf("%d", target.Port),
+		"--username", target.Username,
+		"--password", target.Password,
+		"--authenticationDatabase", "admin",
+		"--nsFrom", sourceDatabase+".*",
+		"--nsTo", database+".*",
+		restoreSourcePath,
+	}
+	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
+		args = append([]string{"--drop"}, args...)
+	}
+	if err := runCommand(ctx, "mongorestore", args, os.Environ(), "restore", report); err != nil {
+		return fmt.Errorf("mongorestore restore: %w", err)
+	}
+	return nil
+}
+
 func normalizeRestoreStrategy(strategy string) string {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
 	case "recreate", "drop-create", "drop_create":
@@ -313,6 +398,14 @@ func recreateMySQLDatabase(ctx context.Context, target model.Connection, databas
 	args := []string{"--default-character-set=utf8mb4", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--user", target.Username, "--password=" + target.Password, "--execute", statement}
 	if err := runCommandToWriter(ctx, "mysql", args, "restore", io.Discard, report); err != nil {
 		return fmt.Errorf("recreate mysql database: %w", err)
+	}
+	return nil
+}
+
+func recreateMongoDatabase(ctx context.Context, target model.Connection, database string, report Reporter) error {
+	report(Progress{Stage: "restore", EventLevel: "WARN", EventMessage: "正在重建 MongoDB 目标数据库 " + database})
+	if err := dbmongo.DropDatabase(ctx, target, database); err != nil {
+		return fmt.Errorf("recreate mongo database: %w", err)
 	}
 	return nil
 }
@@ -432,6 +525,7 @@ func extractBackup(archivePath, tempDir string) (string, error) {
 	defer gzipReader.Close()
 	tarReader := tar.NewReader(gzipReader)
 	var dumpFile string
+	var dumpDir string
 	for {
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
@@ -447,7 +541,10 @@ func extractBackup(archivePath, tempDir string) (string, error) {
 		if name == "." || name == string(filepath.Separator) {
 			continue
 		}
-		target := filepath.Join(tempDir, name)
+		target := filepath.Join(tempDir, header.Name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return "", err
+		}
 		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return "", err
@@ -462,9 +559,18 @@ func extractBackup(archivePath, tempDir string) (string, error) {
 		if strings.HasSuffix(strings.ToLower(name), ".sql") {
 			dumpFile = target
 		}
+		if dumpDir == "" {
+			parts := strings.Split(filepath.ToSlash(header.Name), "/")
+			if len(parts) > 1 && parts[0] != "" {
+				dumpDir = filepath.Join(tempDir, parts[0])
+			}
+		}
 	}
 	if dumpFile == "" {
-		return "", fmt.Errorf("backup archive does not contain a sql dump")
+		if dumpDir != "" {
+			return dumpDir, nil
+		}
+		return "", fmt.Errorf("backup archive does not contain a recognizable dump")
 	}
 	return dumpFile, nil
 }
@@ -478,34 +584,40 @@ func compressBackup(tempDir, dumpFile string, source model.Connection, database 
 	}
 	gzipWriter := gzip.NewWriter(output)
 	tarWriter := tar.NewWriter(gzipWriter)
-	input, err := os.Open(dumpFile)
+	info, err := os.Stat(dumpFile)
 	if err != nil {
 		output.Close()
 		return "", err
 	}
-	info, err := input.Stat()
-	if err != nil {
+	if info.IsDir() {
+		if err := addDirectoryToTar(tarWriter, dumpFile, filepath.Dir(dumpFile)); err != nil {
+			output.Close()
+			return "", err
+		}
+	} else {
+		input, err := os.Open(dumpFile)
+		if err != nil {
+			output.Close()
+			return "", err
+		}
+		header := &tar.Header{
+			Name:    filepath.Base(dumpFile),
+			Mode:    0o600,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			input.Close()
+			output.Close()
+			return "", err
+		}
+		if _, err := io.Copy(tarWriter, input); err != nil {
+			input.Close()
+			output.Close()
+			return "", err
+		}
 		input.Close()
-		output.Close()
-		return "", err
 	}
-	header := &tar.Header{
-		Name:    filepath.Base(dumpFile),
-		Mode:    0o600,
-		Size:    info.Size(),
-		ModTime: info.ModTime(),
-	}
-	if err := tarWriter.WriteHeader(header); err != nil {
-		input.Close()
-		output.Close()
-		return "", err
-	}
-	if _, err := io.Copy(tarWriter, input); err != nil {
-		input.Close()
-		output.Close()
-		return "", err
-	}
-	input.Close()
 	if err := tarWriter.Close(); err != nil {
 		output.Close()
 		return "", err
@@ -518,6 +630,39 @@ func compressBackup(tempDir, dumpFile string, source model.Connection, database 
 		return "", err
 	}
 	return archive, nil
+}
+
+func addDirectoryToTar(tarWriter *tar.Writer, root, base string) error {
+	return filepath.Walk(root, func(current string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(base, current)
+		if err != nil {
+			return err
+		}
+		header := &tar.Header{
+			Name:    filepath.ToSlash(relative),
+			Mode:    0o600,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			return err
+		}
+		input, err := os.Open(current)
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		if _, err := io.Copy(tarWriter, input); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func backupObjectKey(source model.Connection, database, fileName string) string {

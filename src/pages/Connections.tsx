@@ -17,6 +17,9 @@ export function Connections({
   onDelete: (connectionId: string) => void;
   onCreateMigration: (sourceId?: string) => void;
 }) {
+  const supportsMigration = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
+  const supportsDirectDatabaseCreate = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
+  const supportsSeedData = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
   const [showForm, setShowForm] = useState(false);
   const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: { name: string; note: string; host: string; port: string; username: string; password: string; sslMode: string }; submitting: boolean; error: string } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
@@ -291,9 +294,9 @@ export function Connections({
                     <button onClick={() => openEditConnection(connection)}><Edit3 size={15} /><span>编辑连接信息</span></button>
                     <button onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>{testing === connection.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>刷新状态</span></button>
                     <button onClick={() => showDatabases(connection)}><Database size={15} /><span>查看数据库</span></button>
-                    <button onClick={() => openCreateDatabase(connection)}><Plus size={15} /><span>创建数据库</span></button>
-                    <button onClick={() => openSeedData(connection)}><WandSparkles size={15} /><span>写入假数据</span></button>
-                    <button onClick={() => startMigration(connection.id)}><Play size={15} /><span>发起迁移</span></button>
+                    {supportsDirectDatabaseCreate(connection.type) && <button onClick={() => openCreateDatabase(connection)}><Plus size={15} /><span>创建数据库</span></button>}
+                    {supportsSeedData(connection.type) && <button onClick={() => openSeedData(connection)}><WandSparkles size={15} /><span>写入假数据</span></button>}
+                    {supportsMigration(connection.type) && <button onClick={() => startMigration(connection.id)}><Play size={15} /><span>发起迁移</span></button>}
                     <button className="danger-action" onClick={() => openDeleteConnection(connection)}><Trash2 size={15} /><span>删除连接</span></button>
                   </div>
                 )}
@@ -319,7 +322,7 @@ export function Connections({
       {databaseModal && (
         <div className="modal-backdrop" onMouseDown={() => setDatabaseModal(null)}>
           <div className="modal database-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><h3>{databaseModal.connection.name} 的数据库</h3><p>{databaseModal.connection.host}:{databaseModal.connection.port}</p></div><div className="modal-head-actions"><Button type="button" variant="secondary" onClick={() => openCreateDatabase(databaseModal.connection)}><Plus size={15} />创建数据库</Button><button type="button" className="plain-icon" onClick={() => setDatabaseModal(null)}><X /></button></div></div>
+            <div className="modal-head"><div><h3>{databaseModal.connection.name} 的数据库</h3><p>{databaseModal.connection.host}:{databaseModal.connection.port}</p></div><div className="modal-head-actions">{supportsDirectDatabaseCreate(databaseModal.connection.type) && <Button type="button" variant="secondary" onClick={() => openCreateDatabase(databaseModal.connection)}><Plus size={15} />创建数据库</Button>}<button type="button" className="plain-icon" onClick={() => setDatabaseModal(null)}><X /></button></div></div>
             {databaseModal.loading && <div className="loading-copy">正在加载数据库...</div>}
             {databaseModal.error && <div className="form-error left">{databaseModal.error}</div>}
             {!databaseModal.loading && !databaseModal.error && (
@@ -337,7 +340,7 @@ export function Connections({
           <form className="modal create-database-modal" onSubmit={submitCreateDatabase} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>创建数据库</h3><p>{createDatabaseModal.connection.name} · {createDatabaseModal.connection.host}:{createDatabaseModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setCreateDatabaseModal(null)}><X /></button></div>
             <label className="field"><span>数据库名称</span><input required autoFocus value={createDatabaseModal.name} onChange={(event) => setCreateDatabaseModal({ ...createDatabaseModal, name: event.target.value, error: "" })} placeholder="例如 app_prod" /></label>
-            <p className="field-hint">最多 63 个字符，使用字母或下划线开头，只包含字母、数字、下划线或短横线。</p>
+            <p className="field-hint">{createDatabaseModal.connection.type === "MongoDB" ? "MongoDB 会创建一个初始化集合，让数据库立即可见。数据库名不要包含空格以及 / \\ . \" $ 等字符。" : "最多 63 个字符，使用字母或下划线开头，只包含字母、数字、下划线或短横线。"}</p>
             {createDatabaseModal.error && <div className="form-error left">{createDatabaseModal.error}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setCreateDatabaseModal(null)}>取消</Button><Button type="submit" disabled={createDatabaseModal.submitting}>{createDatabaseModal.submitting ? "正在创建..." : "创建数据库"}</Button></div>
           </form>
@@ -348,7 +351,7 @@ export function Connections({
         <div className="modal-backdrop" onMouseDown={() => setSeedDataModal(null)}>
           <form className="modal seed-data-modal" onSubmit={submitSeedData} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>写入假数据</h3><p>{seedDataModal.connection.name} · {seedDataModal.connection.host}:{seedDataModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setSeedDataModal(null)}><X /></button></div>
-            <p className="field-hint">可按模板生成演示数据。每个模板会写入自己的演示表，默认追加写入，也可切换为覆盖写入。</p>
+            <p className="field-hint">{seedDataModal.connection.type === "MongoDB" ? "可按模板生成演示数据。每个模板会写入自己的演示集合，默认追加写入，也可切换为覆盖写入。" : "可按模板生成演示数据。每个模板会写入自己的演示表，默认追加写入，也可切换为覆盖写入。"}</p>
             {seedDataModal.loading ? <div className="loading-copy">正在加载数据库...</div> : <>
               <SelectField label="目标数据库" value={seedDataModal.database} onChange={(database) => setSeedDataModal({ ...seedDataModal, database, error: "", result: null })}>{seedDataModal.databases.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</SelectField>
               <SelectField label="写入模板" value={seedDataModal.template} onChange={(template) => setSeedDataModal({ ...seedDataModal, template: template as "users" | "orders" | "products", error: "", result: null })}><option value="users">用户数据</option><option value="orders">订单数据</option><option value="products">商品数据</option></SelectField>
@@ -356,7 +359,7 @@ export function Connections({
               <label className="field"><span>写入条数</span><input type="number" min={1} max={50000} value={seedDataModal.rows} onChange={(event) => setSeedDataModal({ ...seedDataModal, rows: event.target.value, error: "", result: null })} /></label>
             </>}
             {seedDataModal.error && <div className="form-error left">{seedDataModal.error}</div>}
-            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
+            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table}{seedDataModal.connection.type === "MongoDB" ? " 集合" : ""} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setSeedDataModal(null)}>关闭</Button><Button type="submit" disabled={seedDataModal.loading || seedDataModal.submitting || !seedDataModal.database}>{seedDataModal.submitting ? "正在写入..." : "开始写入"}</Button></div>
           </form>
         </div>
@@ -398,11 +401,11 @@ export function Connections({
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={() => setShowForm(false)}><X /></button></div>
             <label className="field"><span>连接名称</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
-            <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: type === "MySQL" ? "3306" : "5432", sslMode: type === "MySQL" ? "prefer" : "prefer" })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option></SelectField>
+            <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: type === "MySQL" ? "3306" : type === "MongoDB" ? "27017" : "5432", sslMode: "prefer" })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option></SelectField>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>端口</span><input required type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} /></label></div>
             <label className="field"><span>用户名</span><input required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="migration_user" /></label>
             <label className="field"><span>密码</span><input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-            <SelectField label="SSL 模式" value={form.sslMode} onChange={(sslMode) => setForm({ ...form, sslMode })}>{form.type === "MySQL" ? <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option></> : <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></>}</SelectField>
+            <SelectField label="SSL 模式" value={form.sslMode} onChange={(sslMode) => setForm({ ...form, sslMode })}>{form.type === "PostgreSQL" ? <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></> : <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option></>}</SelectField>
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setShowForm(false)}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>

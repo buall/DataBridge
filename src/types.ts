@@ -1,4 +1,4 @@
-export type DatabaseType = "PostgreSQL" | "MySQL" | "Redis";
+export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";

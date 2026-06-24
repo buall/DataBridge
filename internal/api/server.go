@@ -24,6 +24,7 @@ import (
 	"databridge/internal/backup"
 	"databridge/internal/migrate"
 	"databridge/internal/model"
+	"databridge/internal/mongo"
 	"databridge/internal/mysql"
 	"databridge/internal/postgres"
 	"databridge/internal/remotestorage"
@@ -521,8 +522,8 @@ func (s *Server) createDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(request.Name)
-	if !validDatabaseName(name) {
-		writeError(w, http.StatusBadRequest, "invalid_database", "数据库名格式不正确，请使用字母或下划线开头，只包含字母、数字、下划线或短横线")
+	if !validDatabaseNameForType(connection.Type, name) {
+		writeError(w, http.StatusBadRequest, "invalid_database", invalidDatabaseNameMessage(connection.Type))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
@@ -827,10 +828,6 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	if request.SourceID == "" || request.TargetID == "" || request.SourceDatabase == "" || request.TargetDatabase == "" || len(request.Tables) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "请完整选择源端、目标端、数据库，并至少勾选一张表")
-		return
-	}
 	if request.ConflictStrategy == "" {
 		request.ConflictStrategy = "backup"
 	}
@@ -844,9 +841,16 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_target", "未找到目标端连接，请重新选择")
 		return
 	}
+	if request.SourceID == "" || request.TargetID == "" || request.SourceDatabase == "" || request.TargetDatabase == "" || (len(request.Tables) == 0 && source.Type != "MongoDB") {
+		writeError(w, http.StatusBadRequest, "invalid_request", "请完整选择源端、目标端、数据库，并至少勾选一张表")
+		return
+	}
 	if source.Type != target.Type {
 		writeError(w, http.StatusBadRequest, "invalid_request", "源端和目标端必须是同一种数据库类型")
 		return
+	}
+	if source.Type == "MongoDB" && len(request.Tables) == 0 {
+		request.Tables = []string{request.SourceDatabase}
 	}
 	if request.Engine == "" {
 		if source.Type == "PostgreSQL" {
@@ -2642,8 +2646,20 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 	add("target_connection", "目标连接", "passed", target.Name+" 连接可用")
 	for _, sourceDatabase := range plan.SourceDatabases {
 		targetDatabase := strings.TrimSpace(plan.TargetDatabases[sourceDatabase])
-		if !validRestoreDatabaseName(targetDatabase) {
+		if !validRestoreDatabaseNameForType(target.Type, targetDatabase) {
 			add("database_name_"+sourceDatabase, "目标库名", "failed", fmt.Sprintf("目标数据库 %s 名称不合法", targetDatabase))
+			continue
+		}
+		if target.Type == "MongoDB" {
+			if plan.Strategy == "append" {
+				if _, err := mongo.CollectionNames(timeoutCtx, target, targetDatabase); err != nil {
+					add("target_database_"+sourceDatabase, "目标数据库", "failed", fmt.Sprintf("%s：%s", targetDatabase, userFacingErrorMessage(errorContextDatabaseDiscovery, err)))
+				} else {
+					add("target_database_"+sourceDatabase, "目标数据库", "passed", targetDatabase+" 可访问")
+				}
+			} else {
+				add("recreate_"+sourceDatabase, "重建策略", "passed", targetDatabase+" 将在恢复前清空并重新导入")
+			}
 			continue
 		}
 		if plan.Strategy == "append" {
@@ -2776,6 +2792,13 @@ func validRestoreDatabaseName(name string) bool {
 	return true
 }
 
+func validRestoreDatabaseNameForType(databaseType, name string) bool {
+	if databaseType == "MongoDB" {
+		return validMongoDatabaseName(name)
+	}
+	return validRestoreDatabaseName(name)
+}
+
 func restoreClientToolAvailable(databaseType string) error {
 	switch databaseType {
 	case "PostgreSQL":
@@ -2783,6 +2806,9 @@ func restoreClientToolAvailable(databaseType string) error {
 		return err
 	case "MySQL":
 		_, err := backup.ToolPathForPrecheck("mysql")
+		return err
+	case "MongoDB":
+		_, err := backup.ToolPathForPrecheck("mongorestore")
 		return err
 	default:
 		return fmt.Errorf("unsupported restore target type %q", databaseType)
@@ -2792,6 +2818,9 @@ func restoreClientToolAvailable(databaseType string) error {
 func restoreClientToolLabel(databaseType string) string {
 	if databaseType == "MySQL" {
 		return "mysql"
+	}
+	if databaseType == "MongoDB" {
+		return "mongorestore"
 	}
 	return "psql"
 }
@@ -2982,7 +3011,7 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 				}
 				break
 			}
-			if restoreErr := s.backup.Restore(ctx, target, targetDatabase, artifactPathForRestoreDatabase(artifactPath, sourceDatabase), backup.RestoreOptions{Strategy: strategy}, func(progress backup.Progress) {
+			if restoreErr := s.backup.Restore(ctx, target, targetDatabase, artifactPathForRestoreDatabase(artifactPath, sourceDatabase), backup.RestoreOptions{Strategy: strategy, SourceDatabase: sourceDatabase}, func(progress backup.Progress) {
 				if len(sourceDatabases) > 1 {
 					progress.Progress = 20 + index*70/len(sourceDatabases) + backupProgress(progress.Stage, progress.Progress)/len(sourceDatabases)
 				}
@@ -2999,11 +3028,21 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 		reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: "正在校验恢复后的目标库"})
 		for _, sourceDatabase := range sourceDatabases {
 			targetDatabase := targetDatabases[sourceDatabase]
-			if tables, tableErr := tables(ctx, target, targetDatabase); tableErr != nil {
-				err = fmt.Errorf("restore validation: %w", tableErr)
-				break
-			} else {
-				reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 张普通表", targetDatabase, len(tables)), Progress: 95})
+			switch target.Type {
+			case "MongoDB":
+				collections, collectionErr := mongo.CollectionNames(ctx, target, targetDatabase)
+				if collectionErr != nil {
+					err = fmt.Errorf("restore validation: %w", collectionErr)
+					break
+				}
+				reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 个集合", targetDatabase, len(collections)), Progress: 95})
+			default:
+				if tables, tableErr := tables(ctx, target, targetDatabase); tableErr != nil {
+					err = fmt.Errorf("restore validation: %w", tableErr)
+					break
+				} else {
+					reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 张普通表", targetDatabase, len(tables)), Progress: 95})
+				}
 			}
 		}
 	}
@@ -3427,6 +3466,8 @@ func normalizeDatabaseType(value string) string {
 		return "PostgreSQL"
 	case "mysql":
 		return "MySQL"
+	case "mongodb", "mongo":
+		return "MongoDB"
 	default:
 		return ""
 	}
@@ -3435,6 +3476,9 @@ func normalizeDatabaseType(value string) string {
 func defaultPort(databaseType string) int {
 	if databaseType == "MySQL" {
 		return 3306
+	}
+	if databaseType == "MongoDB" {
+		return 27017
 	}
 	return 5432
 }
@@ -3445,6 +3489,8 @@ func testConnection(ctx context.Context, input model.ConnectionInput) (time.Dura
 		return postgres.Test(ctx, input)
 	case "MySQL":
 		return mysql.Test(ctx, input)
+	case "MongoDB":
+		return mongo.Test(ctx, input)
 	default:
 		return 0, "", fmt.Errorf("unsupported database type %q", input.Type)
 	}
@@ -3456,6 +3502,8 @@ func serverVersion(ctx context.Context, connection model.Connection) (string, er
 		return postgres.ServerVersion(ctx, connection)
 	case "MySQL":
 		return mysql.ServerVersion(ctx, connection)
+	case "MongoDB":
+		return mongo.ServerVersion(ctx, connection)
 	default:
 		return "", fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3467,6 +3515,8 @@ func databases(ctx context.Context, connection model.Connection) ([]model.Databa
 		return postgres.Databases(ctx, connection)
 	case "MySQL":
 		return mysql.Databases(ctx, connection)
+	case "MongoDB":
+		return mongo.Databases(ctx, connection)
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3478,6 +3528,8 @@ func createDatabase(ctx context.Context, connection model.Connection, name strin
 		return postgres.CreateDatabase(ctx, connection, name)
 	case "MySQL":
 		return mysql.CreateDatabase(ctx, connection, name)
+	case "MongoDB":
+		return mongo.CreateDatabase(ctx, connection, name)
 	default:
 		return fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3489,6 +3541,22 @@ func tables(ctx context.Context, connection model.Connection, database string) (
 		return postgres.Tables(ctx, connection, database)
 	case "MySQL":
 		return mysql.Tables(ctx, connection, database)
+	case "MongoDB":
+		items, err := mongo.CollectionNames(ctx, connection, database)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]model.TableInfo, 0, len(items))
+		for _, item := range items {
+			result = append(result, model.TableInfo{
+				ID:        item,
+				Schema:    database,
+				Name:      item,
+				SizeBytes: 0,
+				Rows:      0,
+			})
+		}
+		return result, nil
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3500,6 +3568,8 @@ func seedData(ctx context.Context, connection model.Connection, database string,
 		return postgres.SeedData(ctx, connection, database, rows, mode, template)
 	case "MySQL":
 		return mysql.SeedData(ctx, connection, database, rows, mode, template)
+	case "MongoDB":
+		return mongo.SeedData(ctx, connection, database, rows, mode, template)
 	default:
 		return model.SeedDataResult{}, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3561,13 +3631,15 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		if context == errorContextRemoteStorage {
 			return "对象存储 Endpoint 格式不正确，请填写完整地址，例如 https://s3.example.com"
 		}
-	case strings.Contains(lower, "mysqldump not found"), strings.Contains(lower, "mysql not found"), strings.Contains(lower, "pg_dump not found"), strings.Contains(lower, "pg_restore not found"), strings.Contains(lower, "psql not found"):
+	case strings.Contains(lower, "mysqldump not found"), strings.Contains(lower, "mysql not found"), strings.Contains(lower, "pg_dump not found"), strings.Contains(lower, "pg_restore not found"), strings.Contains(lower, "psql not found"), strings.Contains(lower, "mongodump not found"), strings.Contains(lower, "mongorestore not found"):
 		if context == errorContextMigrationRuntime {
 			return "迁移依赖的数据库客户端工具未安装或不在 PATH 中，请先检查运行环境"
 		}
 		return "数据库客户端工具未安装或不在 PATH 中，请先检查运行环境"
 	case strings.Contains(lower, "mysqldump:"):
 		return "源端导出失败，请确认源数据库可访问、账号具备导出权限，且客户端工具版本兼容"
+	case strings.Contains(lower, "mongodump:"):
+		return "MongoDB 导出失败，请确认源数据库可访问、账号具备备份权限，并检查认证库和客户端工具版本"
 	case strings.Contains(lower, "mysql restore:"):
 		return "目标端导入失败，请确认目标数据库可访问、账号具备建表和写入权限，并检查目标端是否存在同名对象冲突"
 	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "command denied"), strings.Contains(lower, "must be owner"), strings.Contains(lower, "insufficient privilege"), strings.Contains(lower, "permission"), strings.Contains(lower, "denied to user"):
@@ -3622,6 +3694,36 @@ func validDatabaseName(name string) bool {
 		}
 	}
 	return true
+}
+
+func validMongoDatabaseName(name string) bool {
+	if name == "" || len(name) > 63 {
+		return false
+	}
+	for _, value := range name {
+		if value < 32 || value == 127 {
+			return false
+		}
+		switch value {
+		case '/', '\\', '.', '"', '$', ' ':
+			return false
+		}
+	}
+	return true
+}
+
+func validDatabaseNameForType(databaseType, name string) bool {
+	if databaseType == "MongoDB" {
+		return validMongoDatabaseName(name)
+	}
+	return validDatabaseName(name)
+}
+
+func invalidDatabaseNameMessage(databaseType string) string {
+	if databaseType == "MongoDB" {
+		return "MongoDB 数据库名格式不正确，请避免使用空格以及 / \\ . \" $ 等字符，长度不要超过 63 个字符"
+	}
+	return "数据库名格式不正确，请使用字母或下划线开头，只包含字母、数字、下划线或短横线"
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {

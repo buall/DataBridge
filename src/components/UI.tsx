@@ -1,6 +1,7 @@
 import { Children, Fragment, isValidElement, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactElement, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, X } from "lucide-react";
 import mysqlIcon from "../assets/icons/devicon--mysql.svg";
+import mongodbIcon from "../assets/icons/devicon--mongodb.svg";
 import postgresqlIcon from "../assets/icons/devicon--postgresql.svg";
 import redisIcon from "../assets/icons/devicon--redis.svg";
 import type { DatabaseType } from "../types";
@@ -73,12 +74,12 @@ export function Badge({
 }
 
 export function DatabaseLogo({ type, name, size = "md" }: { type: DatabaseType; name?: string; size?: "sm" | "md" }) {
-  const letters = connectionInitials(name) || (type === "PostgreSQL" ? "PG" : type === "MySQL" ? "MY" : "RD");
+  const letters = connectionInitials(name) || (type === "PostgreSQL" ? "PG" : type === "MySQL" ? "MY" : type === "MongoDB" ? "MG" : "RD");
   return <span className={`database-logo ${type.toLowerCase()} ${size}`}>{letters}</span>;
 }
 
 export function DatabaseTypeIcon({ type }: { type: DatabaseType }) {
-  const icon = type === "PostgreSQL" ? postgresqlIcon : type === "MySQL" ? mysqlIcon : redisIcon;
+  const icon = type === "PostgreSQL" ? postgresqlIcon : type === "MySQL" ? mysqlIcon : type === "MongoDB" ? mongodbIcon : redisIcon;
   return <span className="database-type-icon" aria-hidden="true"><img src={icon} alt="" /></span>;
 }
 
