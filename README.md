@@ -188,6 +188,7 @@ Neo4j 原生工具引擎依赖运行环境中存在以下条件：
 
 ```bash
 cypher-shell
+java
 ```
 
 并且源端 Neo4j 需要安装 APOC，启用导出过程：
@@ -340,8 +341,9 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 - MySQL 客户端：`mysql`、`mysqldump`
 - MongoDB Database Tools：`mongodump`、`mongorestore`、`mongoexport`、`mongoimport`、`mongostat`、`mongotop`
 - Neo4j Cypher Shell：`cypher-shell`
+- Java 21 运行时：`temurin-21-jre`
 
-Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 export 过程。`cypher-shell` 需要 Java 运行时，Dockerfile 仅安装 Cypher Shell 客户端包，不安装 Neo4j Server；Java 依赖由官方 DEB 包按需解析安装。
+Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 export 过程。`cypher-shell` 需要 Java 运行时，Dockerfile 会显式安装 Temurin 21 JRE 和 Cypher Shell 客户端包，不安装 Neo4j Server。
 
 本地构建当前架构镜像：
 
