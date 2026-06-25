@@ -37,6 +37,17 @@ export interface ConnectionInput {
   tlsConfig?: ConnectionTLSConfig;
 }
 
+export interface DuplicateConnectionInput {
+  name: string;
+  note?: string;
+  host: string;
+  port: number;
+  username: string;
+  sslMode: string;
+  password?: string;
+  tlsConfig?: ConnectionTLSConfig;
+}
+
 export type RemoteStorageType = "object" | "google_drive" | "one_drive" | "local";
 export type RemoteStorageStatus = "connected" | "warning" | "needs_auth" | "untested";
 

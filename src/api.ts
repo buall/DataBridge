@@ -5,6 +5,7 @@ import type {
   BackupJob,
   DatabaseConnection,
   DatabaseInfo,
+  DuplicateConnectionInput,
   MigrationConfig,
   MigrationJob,
   RemoteStorage,
@@ -106,6 +107,8 @@ export const api = {
     request<DatabaseConnection>("/connections", { method: "POST", body: JSON.stringify(input) }),
   updateConnection: (connectionId: string, input: ConnectionInput & { password?: string }) =>
     request<DatabaseConnection>(`/connections/${connectionId}`, { method: "PUT", body: JSON.stringify(input) }),
+  duplicateConnection: (connectionId: string, input: DuplicateConnectionInput) =>
+    request<DatabaseConnection>(`/connections/${connectionId}/duplicate`, { method: "POST", body: JSON.stringify(input) }),
   deleteConnection: (connectionId: string) =>
     request<{ ok: boolean }>(`/connections/${connectionId}`, { method: "DELETE" }),
   refreshConnection: (connectionId: string) =>

@@ -29,6 +29,17 @@ type UpdateConnectionInput struct {
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
 }
 
+type DuplicateConnectionInput struct {
+	Name      string              `json:"name"`
+	Note      string              `json:"note,omitempty"`
+	Host      string              `json:"host"`
+	Port      int                 `json:"port"`
+	Username  string              `json:"username"`
+	SSLMode   string              `json:"sslMode"`
+	Password  string              `json:"password,omitempty"`
+	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+}
+
 type ConnectionTLSConfig struct {
 	CACert     string `json:"caCert,omitempty"`
 	ClientCert string `json:"clientCert,omitempty"`

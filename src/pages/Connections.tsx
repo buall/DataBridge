@@ -1,7 +1,7 @@
 import { AlertTriangle, Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, SeedDataResult } from "../types";
+import type { ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 
 type ConnectionFormState = {
@@ -17,6 +17,10 @@ type ConnectionFormState = {
 };
 
 type EditConnectionFormState = Omit<ConnectionFormState, "type">;
+type DuplicateConnectionFormState = Omit<ConnectionFormState, "type" | "password" | "tlsConfig"> & {
+  password: string;
+  tlsConfig: ConnectionTLSConfig;
+};
 
 export function Connections({
   connections,
@@ -36,6 +40,7 @@ export function Connections({
   const supportsSeedData = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
   const [showForm, setShowForm] = useState(false);
   const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: EditConnectionFormState; submitting: boolean; error: string } | null>(null);
+  const [duplicateModal, setDuplicateModal] = useState<{ connection: DatabaseConnection; form: DuplicateConnectionFormState; submitting: boolean; error: string } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [databaseModal, setDatabaseModal] = useState<{ connection: DatabaseConnection; databases: DatabaseInfo[]; loading: boolean; error: string } | null>(null);
@@ -90,8 +95,7 @@ export function Connections({
       const input: ConnectionInput = { ...form, port: Number(form.port) };
       const connection = await api.createConnection(input);
       onAdd(connection);
-      setShowForm(false);
-      setForm(emptyConnectionForm("PostgreSQL"));
+      closeConnectionForm();
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "连接失败");
     } finally {
@@ -164,6 +168,59 @@ export function Connections({
       submitting: false,
       error: "",
     });
+  }
+
+  function openNewConnection() {
+    setForm(emptyConnectionForm("PostgreSQL"));
+    setFormError("");
+    setShowForm(true);
+  }
+
+  function openCopyConnection(connection: DatabaseConnection) {
+    setOpenMenu(null);
+    setDuplicateModal({
+      connection,
+      form: {
+        name: duplicateConnectionName(connection.name, connections.map((item) => item.name)),
+        note: connection.note ?? "",
+        host: connection.host,
+        port: String(connection.port),
+        username: connection.username,
+        password: "",
+        sslMode: connection.sslMode,
+        tlsConfig: emptyTLSConfig(),
+      },
+      submitting: false,
+      error: "",
+    });
+  }
+
+  async function submitDuplicateConnection(event: React.FormEvent) {
+    event.preventDefault();
+    if (!duplicateModal) return;
+    setDuplicateModal({ ...duplicateModal, submitting: true, error: "" });
+    try {
+      const input: DuplicateConnectionInput = {
+        ...duplicateModal.form,
+        port: Number(duplicateModal.form.port),
+      };
+      const connection = await api.duplicateConnection(duplicateModal.connection.id, input);
+      onAdd(connection);
+      setDuplicateModal(null);
+    } catch (error) {
+      setDuplicateModal({ ...duplicateModal, submitting: false, error: error instanceof Error ? error.message : "复制连接失败" });
+    }
+  }
+
+  function updateDuplicateForm(patch: Partial<DuplicateConnectionFormState>) {
+    if (!duplicateModal) return;
+    setDuplicateModal({ ...duplicateModal, form: { ...duplicateModal.form, ...patch }, error: "" });
+  }
+
+  function closeConnectionForm() {
+    setShowForm(false);
+    setForm(emptyConnectionForm("PostgreSQL"));
+    setFormError("");
   }
 
   function openDeleteConnection(connection: DatabaseConnection) {
@@ -276,7 +333,7 @@ export function Connections({
     <div className="page-stack">
       <div className="page-heading">
         <div><h2>数据连接</h2><p>统一管理迁移源端和目标端。</p></div>
-        <Button onClick={() => setShowForm(true)}><Plus size={17} />新建连接</Button>
+        <Button onClick={openNewConnection}><Plus size={17} />新建连接</Button>
       </div>
       <div className="toolbar">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接名称、地址或类型" /></label>
@@ -308,6 +365,7 @@ export function Connections({
                 {openMenu === connection.id && (
                   <div className="connection-action-menu">
                     <button onClick={() => openEditConnection(connection)}><Edit3 size={15} /><span>编辑连接信息</span></button>
+                    <button onClick={() => openCopyConnection(connection)}><Copy size={15} /><span>复制连接</span></button>
                     <button onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>{testing === connection.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>刷新状态</span></button>
                     <button onClick={() => showDatabases(connection)}><Database size={15} /><span>查看数据库</span></button>
                     {supportsDirectDatabaseCreate(connection.type) && <button onClick={() => openCreateDatabase(connection)}><Plus size={15} /><span>创建数据库</span></button>}
@@ -393,6 +451,33 @@ export function Connections({
         </div>
       )}
 
+      {duplicateModal && (
+        <div className="modal-backdrop" onMouseDown={() => setDuplicateModal(null)}>
+          <form className="modal" onSubmit={submitDuplicateConnection} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-head"><div><h3>复制连接</h3><p>从 {duplicateModal.connection.name} 复制配置，默认沿用已保存的密码和证书。</p></div><button type="button" className="plain-icon" onClick={() => setDuplicateModal(null)}><X /></button></div>
+            <label className="field"><span>连接名称</span><input required value={duplicateModal.form.name} onChange={(e) => updateDuplicateForm({ name: e.target.value })} /></label>
+            <SelectField label="数据库类型" value={duplicateModal.connection.type} disabled onChange={() => undefined}><option value={duplicateModal.connection.type}>{duplicateModal.connection.type}</option></SelectField>
+            <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={duplicateModal.form.host} onChange={(e) => updateDuplicateForm({ host: e.target.value })} /></label><label className="field port"><span>端口</span><input required type="number" value={duplicateModal.form.port} onChange={(e) => updateDuplicateForm({ port: e.target.value })} /></label></div>
+            <label className="field"><span>用户名</span><input required value={duplicateModal.form.username} onChange={(e) => updateDuplicateForm({ username: e.target.value })} /></label>
+            <label className="field"><span>密码</span><input type="password" value={duplicateModal.form.password} onChange={(e) => updateDuplicateForm({ password: e.target.value })} placeholder="留空则沿用原连接密码" /></label>
+            <SelectField label={connectionSecurityConfig(duplicateModal.connection.type).label} value={duplicateModal.form.sslMode} onChange={(sslMode) => updateDuplicateForm({ sslMode })}>
+              {connectionSecurityConfig(duplicateModal.connection.type).options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </SelectField>
+            <p className="field-hint">{connectionSecurityConfig(duplicateModal.connection.type).hint}</p>
+            {duplicateModal.form.sslMode === "verify-full" && (
+              <TLSCertificateFields
+                value={duplicateModal.form.tlsConfig}
+                onChange={(tlsConfig) => updateDuplicateForm({ tlsConfig })}
+                preserveExisting
+              />
+            )}
+            <label className="field"><span>备注</span><input value={duplicateModal.form.note} onChange={(e) => updateDuplicateForm({ note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
+            {duplicateModal.error && <div className="form-error left">{duplicateModal.error}</div>}
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setDuplicateModal(null)}>取消</Button><Button type="submit" disabled={duplicateModal.submitting}>{duplicateModal.submitting ? "正在复制..." : "复制并测试"}</Button></div>
+          </form>
+        </div>
+      )}
+
       {editModal && (
         <div className="modal-backdrop" onMouseDown={() => setEditModal(null)}>
           <form className="modal" onSubmit={submitEditConnection} onMouseDown={(event) => event.stopPropagation()}>
@@ -423,9 +508,9 @@ export function Connections({
       {seedDataConfirmOpen && seedDataModal && <ConfirmDialog title="覆盖写入假数据" description="这是中危操作，目标演示表中的现有数据会被覆盖。" tone="warning" confirmText="确认覆盖写入" submitting={seedDataModal.submitting} onCancel={() => setSeedDataConfirmOpen(false)} onConfirm={() => void executeSeedData()} details={[`目标：${seedDataModal.connection.name} / ${seedDataModal.database}`, `模板：${seedDataModal.template}`, `写入条数：${seedDataModal.rows}`]} />}
 
       {showForm && (
-        <div className="modal-backdrop" onMouseDown={() => setShowForm(false)}>
+        <div className="modal-backdrop" onMouseDown={closeConnectionForm}>
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={() => setShowForm(false)}><X /></button></div>
+            <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={closeConnectionForm}><X /></button></div>
             <label className="field"><span>连接名称</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
             <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option></SelectField>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>端口</span><input required type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} /></label></div>
@@ -440,7 +525,7 @@ export function Connections({
             )}
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
-            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setShowForm(false)}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={closeConnectionForm}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>
           </form>
         </div>
       )}
@@ -464,6 +549,16 @@ function formatDatabaseMetric(type: DatabaseType, database: DatabaseInfo) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function duplicateConnectionName(name: string, existingNames: string[]) {
+  const base = `${name} 副本`;
+  if (!existingNames.includes(base)) return base;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base} ${index}`;
+    if (!existingNames.includes(candidate)) return candidate;
+  }
+  return `${base} ${Date.now()}`;
 }
 
 function seedDataHint(type: DatabaseType) {

@@ -97,6 +97,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/connections", server.createConnection)
 	protected.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
 	protected.HandleFunc("DELETE /api/connections/{id}", server.deleteConnection)
+	protected.HandleFunc("POST /api/connections/{id}/duplicate", server.duplicateConnection)
 	protected.HandleFunc("POST /api/connections/{id}/refresh", server.refreshConnection)
 	protected.HandleFunc("GET /api/connections/{id}/databases", server.listDatabases)
 	protected.HandleFunc("POST /api/connections/{id}/databases", server.createDatabase)
@@ -292,6 +293,54 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	connection.Region = s.connectionRegion(r.Context(), connection.Host)
 	writeJSON(w, http.StatusOK, connection)
+}
+
+func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Connection(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "connection not found")
+		return
+	}
+	var input model.DuplicateConnectionInput
+	if !decodeJSON(w, r, &input) || !validateDuplicateConnection(w, input) {
+		return
+	}
+	password := current.Password
+	if strings.TrimSpace(input.Password) != "" {
+		password = input.Password
+	}
+	tlsConfig := current.TLSConfig
+	if !input.TLSConfig.Empty() {
+		tlsConfig = input.TLSConfig
+	}
+	if !validateConnectionTLSConfig(w, current.Type, input.SSLMode, tlsConfig) {
+		return
+	}
+	duplicate := model.ConnectionInput{
+		Type:      current.Type,
+		Name:      input.Name,
+		Note:      input.Note,
+		Host:      input.Host,
+		Port:      input.Port,
+		Username:  input.Username,
+		Password:  password,
+		SSLMode:   input.SSLMode,
+		TLSConfig: tlsConfig,
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	latency, version, err := testConnection(ctx, duplicate)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
+		return
+	}
+	connection, err := s.store.AddConnection(duplicate, latency, version)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
+		return
+	}
+	connection.Region = s.connectionRegion(r.Context(), connection.Host)
+	writeJSON(w, http.StatusCreated, connection)
 }
 
 func (s *Server) deleteConnection(w http.ResponseWriter, r *http.Request) {
@@ -3487,6 +3536,21 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 }
 
 func validateConnectionUpdate(w http.ResponseWriter, input model.UpdateConnectionInput) bool {
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称、主机地址和用户名不能为空")
+		return false
+	}
+	if input.Port == 0 {
+		input.Port = 1
+	}
+	if input.Port < 1 || input.Port > 65535 {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "端口号必须在 1 到 65535 之间")
+		return false
+	}
+	return true
+}
+
+func validateDuplicateConnection(w http.ResponseWriter, input model.DuplicateConnectionInput) bool {
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称、主机地址和用户名不能为空")
 		return false
