@@ -339,8 +339,9 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 - PostgreSQL 客户端：`psql`、`pg_dump`、`pg_restore`
 - MySQL 客户端：`mysql`、`mysqldump`
 - MongoDB Database Tools：`mongodump`、`mongorestore`、`mongoexport`、`mongoimport`、`mongostat`、`mongotop`
+- Neo4j Cypher Shell：`cypher-shell`
 
-Neo4j 备份、恢复和迁移还需要运行环境提供 `cypher-shell`，且 Neo4j 服务端已安装 APOC 并启用 export 过程。当前 Dockerfile 尚未内置 `cypher-shell`，使用 Neo4j 功能时请在运行环境中额外安装。
+Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 export 过程。`cypher-shell` 需要 Java 运行时，Dockerfile 仅安装 Cypher Shell 客户端包，不安装 Neo4j Server；Java 依赖由官方 DEB 包按需解析安装。
 
 本地构建当前架构镜像：
 

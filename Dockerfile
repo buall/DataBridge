@@ -50,9 +50,13 @@ RUN set -eux; \
       xz-utils; \
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg; \
+    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /etc/apt/keyrings/neotechnology.gpg; \
+    chmod a+r /etc/apt/keyrings/postgresql.gpg /etc/apt/keyrings/neotechnology.gpg; \
     echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list; \
+    echo "deb [signed-by=/etc/apt/keyrings/neotechnology.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+      cypher-shell \
       default-mysql-client \
       postgresql-client-${PG_MAJOR} \
       tini \
