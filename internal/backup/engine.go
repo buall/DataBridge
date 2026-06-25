@@ -48,6 +48,8 @@ func (e *Engine) Run(ctx context.Context, source model.Connection, request model
 		return e.runMySQL(ctx, source, request, report)
 	case "MongoDB":
 		return e.runMongo(ctx, source, request, report)
+	case "Neo4j":
+		return e.runNeo4j(ctx, source, request, report)
 	default:
 		return fmt.Errorf("unsupported backup source type %q", source.Type)
 	}
@@ -155,6 +157,87 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 		return err
 	}
 	return dest.upload(ctx, archive, backupObjectKey(source, request.SourceDatabase, filepath.Base(archive)), report)
+}
+
+func (e *Engine) runNeo4j(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	dest, err := newDestination(request)
+	if err != nil {
+		return err
+	}
+	archive, cleanup, err := e.ExportLocal(ctx, source, request.SourceDatabase, report)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	return dest.upload(ctx, archive, backupObjectKey(source, request.SourceDatabase, filepath.Base(archive)), report)
+}
+
+func (e *Engine) ExportLocal(ctx context.Context, source model.Connection, database string, report Reporter) (string, func(), error) {
+	switch source.Type {
+	case "Neo4j":
+		return e.exportNeo4jLocal(ctx, source, database, report)
+	default:
+		return "", nil, fmt.Errorf("unsupported local export source type %q", source.Type)
+	}
+}
+
+func (e *Engine) exportNeo4jLocal(ctx context.Context, source model.Connection, database string, report Reporter) (string, func(), error) {
+	for _, name := range []string{"cypher-shell"} {
+		if _, err := toolPath(name); err != nil {
+			return "", nil, err
+		}
+	}
+	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { os.RemoveAll(tempDir) }
+
+	dumpFile := filepath.Join(tempDir, backupFileName(source, database, "cypher"))
+	rawFile := dumpFile + ".raw"
+	rawOutput, err := os.Create(rawFile)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在使用 APOC 导出 Neo4j Cypher 备份"})
+	statement := `CALL apoc.export.cypher.all(null, {format: "plain", stream: true, useOptimizations: {type: "UNWIND_BATCH", unwindBatchSize: 1000}, cypherFormat: "updateAll", ifNotExists: true})
+		YIELD cypherStatements
+		RETURN cypherStatements`
+	args := []string{
+		"-a", neo4jBoltURI(source),
+		"-u", source.Username,
+		"-p", source.Password,
+		"-d", database,
+		"--format", "plain",
+		statement,
+	}
+	if err := runCommandToWriterEnv(ctx, "cypher-shell", args, neo4jEnv(), "export", rawOutput, report); err != nil {
+		rawOutput.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("cypher-shell export: %w", err)
+	}
+	if err := rawOutput.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if err := decodeCypherShellPlainOutput(rawFile, dumpFile); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if stat, err := os.Stat(dumpFile); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("neo4j cypher export file was not created: %w", err)
+	} else if stat.Size() == 0 {
+		cleanup()
+		return "", nil, fmt.Errorf("neo4j cypher export file is empty")
+	}
+	archive, err := compressBackup(tempDir, dumpFile, source, database, report)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return archive, cleanup, nil
 }
 
 type destination interface {
@@ -277,6 +360,8 @@ func (e *Engine) Restore(ctx context.Context, target model.Connection, database,
 		return e.restoreMySQL(ctx, target, database, dumpFile, options, report)
 	case "MongoDB":
 		return e.restoreMongo(ctx, target, database, dumpFile, options, report)
+	case "Neo4j":
+		return e.restoreNeo4j(ctx, target, database, dumpFile, options, report)
 	default:
 		return fmt.Errorf("unsupported restore target type %q", target.Type)
 	}
@@ -351,8 +436,8 @@ func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, data
 		"--username", target.Username,
 		"--password", target.Password,
 		"--authenticationDatabase", "admin",
-		"--nsFrom", sourceDatabase+".*",
-		"--nsTo", database+".*",
+		"--nsFrom", sourceDatabase + ".*",
+		"--nsTo", database + ".*",
 		restoreSourcePath,
 	}
 	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
@@ -360,6 +445,32 @@ func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, data
 	}
 	if err := runCommand(ctx, "mongorestore", args, os.Environ(), "restore", report); err != nil {
 		return fmt.Errorf("mongorestore restore: %w", err)
+	}
+	return nil
+}
+
+func (e *Engine) restoreNeo4j(ctx context.Context, target model.Connection, database, dumpFile string, options RestoreOptions, report Reporter) error {
+	for _, name := range []string{"cypher-shell"} {
+		if _, err := toolPath(name); err != nil {
+			return err
+		}
+	}
+	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
+		if err := clearNeo4jDatabase(ctx, target, database, report); err != nil {
+			return err
+		}
+	}
+	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 Neo4j 数据库"})
+	args := []string{
+		"-a", neo4jBoltURI(target),
+		"-u", target.Username,
+		"-p", target.Password,
+		"-d", database,
+		"--format", "plain",
+		"-f", dumpFile,
+	}
+	if err := runCommand(ctx, "cypher-shell", args, neo4jEnv(), "restore", report); err != nil {
+		return fmt.Errorf("cypher-shell restore: %w", err)
 	}
 	return nil
 }
@@ -406,6 +517,22 @@ func recreateMongoDatabase(ctx context.Context, target model.Connection, databas
 	report(Progress{Stage: "restore", EventLevel: "WARN", EventMessage: "正在重建 MongoDB 目标数据库 " + database})
 	if err := dbmongo.DropDatabase(ctx, target, database); err != nil {
 		return fmt.Errorf("recreate mongo database: %w", err)
+	}
+	return nil
+}
+
+func clearNeo4jDatabase(ctx context.Context, target model.Connection, database string, report Reporter) error {
+	report(Progress{Stage: "restore", EventLevel: "WARN", EventMessage: "正在清空 Neo4j 目标数据库 " + database})
+	args := []string{
+		"-a", neo4jBoltURI(target),
+		"-u", target.Username,
+		"-p", target.Password,
+		"-d", database,
+		"--format", "plain",
+		"MATCH (n) DETACH DELETE n",
+	}
+	if err := runCommand(ctx, "cypher-shell", args, neo4jEnv(), "restore", report); err != nil {
+		return fmt.Errorf("clear neo4j database: %w", err)
 	}
 	return nil
 }
@@ -465,6 +592,25 @@ func postgresEnv(password, sslMode string) []string {
 	return append(os.Environ(), "PGPASSWORD="+password, "PGSSLMODE="+sslMode)
 }
 
+func neo4jEnv() []string {
+	return append(os.Environ(), "LANG=C.UTF-8", "LC_ALL=C.UTF-8")
+}
+
+func neo4jBoltURI(source model.Connection) string {
+	port := source.Port
+	if port == 0 {
+		port = 7687
+	}
+	scheme := "bolt"
+	switch strings.ToLower(strings.TrimSpace(source.SSLMode)) {
+	case "require":
+		scheme = "bolt+ssc"
+	case "verify-full":
+		scheme = "bolt+s"
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, source.Host, port)
+}
+
 func runCommand(ctx context.Context, name string, args []string, env []string, stage string, report Reporter) error {
 	path, err := toolPath(name)
 	if err != nil {
@@ -479,6 +625,30 @@ func runCommand(ctx context.Context, name string, args []string, env []string, s
 	if stdout.Len() > 0 {
 		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stdout.String())})
 	}
+	if stderr.Len() > 0 {
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
+	}
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
+	return nil
+}
+
+func runCommandToWriterEnv(ctx context.Context, name string, args []string, env []string, stage string, stdout io.Writer, report Reporter, stdin ...io.Reader) error {
+	path, err := toolPath(name)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = env
+	cmd.Stdout = stdout
+	if len(stdin) > 0 && stdin[0] != nil {
+		cmd.Stdin = stdin[0]
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
 	if stderr.Len() > 0 {
 		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
 	}
@@ -510,6 +680,25 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
+}
+
+func decodeCypherShellPlainOutput(rawPath, outputPath string) error {
+	data, err := os.ReadFile(rawPath)
+	if err != nil {
+		return err
+	}
+	value := string(data)
+	firstLineEnd := strings.IndexByte(value, '\n')
+	if firstLineEnd < 0 {
+		return fmt.Errorf("cypher-shell output did not include a result body")
+	}
+	body := strings.TrimRight(value[firstLineEnd+1:], "\r\n")
+	if strings.HasPrefix(body, "\"") && strings.HasSuffix(body, "\"") && len(body) >= 2 {
+		body = body[1 : len(body)-1]
+	}
+	body = strings.ReplaceAll(body, `\"`, `"`)
+	body = strings.ReplaceAll(body, `\\`, `\`)
+	return os.WriteFile(outputPath, []byte(body), 0o600)
 }
 
 func extractBackup(archivePath, tempDir string) (string, error) {
@@ -556,7 +745,8 @@ func extractBackup(archivePath, tempDir string) (string, error) {
 		if err := output.Close(); err != nil {
 			return "", err
 		}
-		if strings.HasSuffix(strings.ToLower(name), ".sql") {
+		lowerName := strings.ToLower(name)
+		if strings.HasSuffix(lowerName, ".sql") || strings.HasSuffix(lowerName, ".cypher") {
 			dumpFile = target
 		}
 		if dumpDir == "" {

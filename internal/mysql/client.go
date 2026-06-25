@@ -10,14 +10,19 @@ import (
 	"strings"
 	"time"
 
+	"databridge/internal/dbtls"
 	"databridge/internal/fakedata"
 	"databridge/internal/model"
-	_ "github.com/go-sql-driver/mysql"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
 func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, string, error) {
 	start := time.Now()
-	conn, err := sql.Open("mysql", DSN(input.Host, input.Port, input.Username, input.Password, "", input.SSLMode))
+	dsn, err := DSNWithTLSConfig(input.Host, input.Port, input.Username, input.Password, "", input.SSLMode, input.TLSConfig)
+	if err != nil {
+		return 0, "", err
+	}
+	conn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return 0, "", err
 	}
@@ -36,7 +41,11 @@ func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, stri
 }
 
 func Connect(ctx context.Context, connection model.Connection, database string) (*sql.DB, error) {
-	conn, err := sql.Open("mysql", DSN(connection.Host, connection.Port, connection.Username, connection.Password, database, connection.SSLMode))
+	dsn, err := DSNWithTLSConfig(connection.Host, connection.Port, connection.Username, connection.Password, database, connection.SSLMode, connection.TLSConfig)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +73,25 @@ func ServerVersion(ctx context.Context, connection model.Connection) (string, er
 }
 
 func DSN(host string, port int, username, password, database, sslMode string) string {
+	return dsn(host, port, username, password, database, tlsMode(sslMode))
+}
+
+func DSNWithTLSConfig(host string, port int, username, password, database, sslMode string, tlsConfig model.ConnectionTLSConfig) (string, error) {
+	if !strings.EqualFold(strings.TrimSpace(sslMode), "verify-full") {
+		return DSN(host, port, username, password, database, sslMode), nil
+	}
+	config, err := dbtls.Config(host, tlsConfig, true)
+	if err != nil {
+		return "", err
+	}
+	key := "databridge-verify-full-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := mysqlDriver.RegisterTLSConfig(key, config); err != nil {
+		return "", err
+	}
+	return dsn(host, port, username, password, database, key), nil
+}
+
+func dsn(host string, port int, username, password, database, tlsMode string) string {
 	if port == 0 {
 		port = 3306
 	}
@@ -75,7 +103,7 @@ func DSN(host string, port int, username, password, database, sslMode string) st
 	params.Set("readTimeout", "30s")
 	params.Set("writeTimeout", "30s")
 	params.Set("multiStatements", "true")
-	params.Set("tls", tlsMode(sslMode))
+	params.Set("tls", tlsMode)
 	return fmt.Sprintf("%s:%s@tcp(%s)%s?%s",
 		username,
 		password,

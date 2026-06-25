@@ -139,6 +139,8 @@ func (e *Engine) RunNative(
 		return e.RunNativeMySQL(ctx, source, target, request, report)
 	case "MongoDB":
 		return e.RunNativeMongo(ctx, source, target, request, report)
+	case "Neo4j":
+		return e.RunNativeNeo4j(ctx, source, target, request, report)
 	default:
 		return fmt.Errorf("unsupported native migration type %q", source.Type)
 	}

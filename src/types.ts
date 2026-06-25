@@ -1,4 +1,4 @@
-export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Redis";
+export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Neo4j" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";
@@ -19,6 +19,12 @@ export interface DatabaseConnection {
   createdAt: string;
 }
 
+export interface ConnectionTLSConfig {
+  caCert?: string;
+  clientCert?: string;
+  clientKey?: string;
+}
+
 export interface ConnectionInput {
   type: DatabaseType;
   name: string;
@@ -28,6 +34,7 @@ export interface ConnectionInput {
   username: string;
   password: string;
   sslMode: string;
+  tlsConfig?: ConnectionTLSConfig;
 }
 
 export type RemoteStorageType = "object" | "google_drive" | "one_drive" | "local";
@@ -67,6 +74,8 @@ export interface RemoteStorageInput {
 export interface DatabaseInfo {
   name: string;
   sizeBytes: number;
+  nodes?: number;
+  relationships?: number;
 }
 
 export interface SeedDataResult {

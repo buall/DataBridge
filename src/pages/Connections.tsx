@@ -1,8 +1,22 @@
 import { AlertTriangle, Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ConnectionInput, DatabaseConnection, DatabaseInfo, DatabaseType, SeedDataResult } from "../types";
+import type { ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, SeedDataResult } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+
+type ConnectionFormState = {
+  type: DatabaseType;
+  name: string;
+  note: string;
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  sslMode: string;
+  tlsConfig: ConnectionTLSConfig;
+};
+
+type EditConnectionFormState = Omit<ConnectionFormState, "type">;
 
 export function Connections({
   connections,
@@ -17,11 +31,11 @@ export function Connections({
   onDelete: (connectionId: string) => void;
   onCreateMigration: (sourceId?: string) => void;
 }) {
-  const supportsMigration = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
-  const supportsDirectDatabaseCreate = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
-  const supportsSeedData = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB";
+  const supportsMigration = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
+  const supportsDirectDatabaseCreate = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
+  const supportsSeedData = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
   const [showForm, setShowForm] = useState(false);
-  const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: { name: string; note: string; host: string; port: string; username: string; password: string; sslMode: string }; submitting: boolean; error: string } | null>(null);
+  const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: EditConnectionFormState; submitting: boolean; error: string } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [databaseModal, setDatabaseModal] = useState<{ connection: DatabaseConnection; databases: DatabaseInfo[]; loading: boolean; error: string } | null>(null);
@@ -33,10 +47,11 @@ export function Connections({
   const [manualCopyValue, setManualCopyValue] = useState("");
   const [actionError, setActionError] = useState("");
   const [query, setQuery] = useState("");
-  const [form, setForm] = useState<{ type: DatabaseType; name: string; note: string; host: string; port: string; username: string; password: string; sslMode: string }>({ type: "PostgreSQL", name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
+  const [form, setForm] = useState<ConnectionFormState>(emptyConnectionForm("PostgreSQL"));
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const filtered = connections.filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+  const formSecurityConfig = connectionSecurityConfig(form.type);
 
   function fallbackCopyText(value: string) {
     const textarea = document.createElement("textarea");
@@ -76,7 +91,7 @@ export function Connections({
       const connection = await api.createConnection(input);
       onAdd(connection);
       setShowForm(false);
-      setForm({ type: "PostgreSQL", name: "", note: "", host: "", port: "5432", username: "", password: "", sslMode: "prefer" });
+      setForm(emptyConnectionForm("PostgreSQL"));
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "连接失败");
     } finally {
@@ -144,6 +159,7 @@ export function Connections({
         username: connection.username,
         password: "",
         sslMode: connection.sslMode,
+        tlsConfig: emptyTLSConfig(),
       },
       submitting: false,
       error: "",
@@ -327,7 +343,7 @@ export function Connections({
             {databaseModal.error && <div className="form-error left">{databaseModal.error}</div>}
             {!databaseModal.loading && !databaseModal.error && (
               <div className="connection-database-list">
-                {databaseModal.databases.map((database) => <div key={database.name}><strong>{database.name}</strong><span>{formatBytes(database.sizeBytes)}</span></div>)}
+                {databaseModal.databases.map((database) => <div key={database.name}><strong>{database.name}</strong><span>{formatDatabaseMetric(databaseModal.connection.type, database)}</span></div>)}
                 {!databaseModal.databases.length && <div className="loading-copy">暂无可用数据库。</div>}
               </div>
             )}
@@ -340,7 +356,7 @@ export function Connections({
           <form className="modal create-database-modal" onSubmit={submitCreateDatabase} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>创建数据库</h3><p>{createDatabaseModal.connection.name} · {createDatabaseModal.connection.host}:{createDatabaseModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setCreateDatabaseModal(null)}><X /></button></div>
             <label className="field"><span>数据库名称</span><input required autoFocus value={createDatabaseModal.name} onChange={(event) => setCreateDatabaseModal({ ...createDatabaseModal, name: event.target.value, error: "" })} placeholder="例如 app_prod" /></label>
-            <p className="field-hint">{createDatabaseModal.connection.type === "MongoDB" ? "MongoDB 会创建一个初始化集合，让数据库立即可见。数据库名不要包含空格以及 / \\ . \" $ 等字符。" : "最多 63 个字符，使用字母或下划线开头，只包含字母、数字、下划线或短横线。"}</p>
+            <p className="field-hint">{createDatabaseModal.connection.type === "MongoDB" ? "MongoDB 会创建一个初始化集合，让数据库立即可见。数据库名不要包含空格以及 / \\ . \" $ 等字符。" : createDatabaseModal.connection.type === "Neo4j" ? "Neo4j Community 通常只支持默认库；如果实例不支持多数据库，创建时会返回权限或版本限制。" : "最多 63 个字符，使用字母或下划线开头，只包含字母、数字、下划线或短横线。"}</p>
             {createDatabaseModal.error && <div className="form-error left">{createDatabaseModal.error}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setCreateDatabaseModal(null)}>取消</Button><Button type="submit" disabled={createDatabaseModal.submitting}>{createDatabaseModal.submitting ? "正在创建..." : "创建数据库"}</Button></div>
           </form>
@@ -351,7 +367,7 @@ export function Connections({
         <div className="modal-backdrop" onMouseDown={() => setSeedDataModal(null)}>
           <form className="modal seed-data-modal" onSubmit={submitSeedData} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>写入假数据</h3><p>{seedDataModal.connection.name} · {seedDataModal.connection.host}:{seedDataModal.connection.port}</p></div><button type="button" className="plain-icon" onClick={() => setSeedDataModal(null)}><X /></button></div>
-            <p className="field-hint">{seedDataModal.connection.type === "MongoDB" ? "可按模板生成演示数据。每个模板会写入自己的演示集合，默认追加写入，也可切换为覆盖写入。" : "可按模板生成演示数据。每个模板会写入自己的演示表，默认追加写入，也可切换为覆盖写入。"}</p>
+            <p className="field-hint">{seedDataHint(seedDataModal.connection.type)}</p>
             {seedDataModal.loading ? <div className="loading-copy">正在加载数据库...</div> : <>
               <SelectField label="目标数据库" value={seedDataModal.database} onChange={(database) => setSeedDataModal({ ...seedDataModal, database, error: "", result: null })}>{seedDataModal.databases.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</SelectField>
               <SelectField label="写入模板" value={seedDataModal.template} onChange={(template) => setSeedDataModal({ ...seedDataModal, template: template as "users" | "orders" | "products", error: "", result: null })}><option value="users">用户数据</option><option value="orders">订单数据</option><option value="products">商品数据</option></SelectField>
@@ -359,7 +375,7 @@ export function Connections({
               <label className="field"><span>写入条数</span><input type="number" min={1} max={50000} value={seedDataModal.rows} onChange={(event) => setSeedDataModal({ ...seedDataModal, rows: event.target.value, error: "", result: null })} /></label>
             </>}
             {seedDataModal.error && <div className="form-error left">{seedDataModal.error}</div>}
-            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table}{seedDataModal.connection.type === "MongoDB" ? " 集合" : ""} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
+            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table}{seedDataTargetSuffix(seedDataModal.connection.type)} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setSeedDataModal(null)}>关闭</Button><Button type="submit" disabled={seedDataModal.loading || seedDataModal.submitting || !seedDataModal.database}>{seedDataModal.submitting ? "正在写入..." : "开始写入"}</Button></div>
           </form>
         </div>
@@ -386,7 +402,17 @@ export function Connections({
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={editModal.form.host} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, host: e.target.value }, error: "" })} /></label><label className="field port"><span>端口</span><input required type="number" value={editModal.form.port} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, port: e.target.value }, error: "" })} /></label></div>
             <label className="field"><span>用户名</span><input required value={editModal.form.username} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, username: e.target.value }, error: "" })} /></label>
             <label className="field"><span>密码</span><input type="password" value={editModal.form.password} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, password: e.target.value }, error: "" })} placeholder="留空则保持当前密码不变" /></label>
-            <SelectField label="SSL 模式" value={editModal.form.sslMode} onChange={(sslMode) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode }, error: "" })}><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></SelectField>
+            <SelectField label={connectionSecurityConfig(editModal.connection.type).label} value={editModal.form.sslMode} onChange={(sslMode) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode }, error: "" })}>
+              {connectionSecurityConfig(editModal.connection.type).options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </SelectField>
+            <p className="field-hint">{connectionSecurityConfig(editModal.connection.type).hint}</p>
+            {editModal.form.sslMode === "verify-full" && (
+              <TLSCertificateFields
+                value={editModal.form.tlsConfig}
+                onChange={(tlsConfig) => setEditModal({ ...editModal, form: { ...editModal.form, tlsConfig }, error: "" })}
+                preserveExisting
+              />
+            )}
             <label className="field"><span>备注</span><input value={editModal.form.note} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, note: e.target.value }, error: "" })} placeholder="可选，记录用途、环境或负责人" /></label>
             {editModal.error && <div className="form-error left">{editModal.error}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setEditModal(null)}>取消</Button><Button type="submit" disabled={editModal.submitting}>{editModal.submitting ? "正在保存..." : "保存并测试"}</Button></div>
@@ -401,11 +427,17 @@ export function Connections({
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={() => setShowForm(false)}><X /></button></div>
             <label className="field"><span>连接名称</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
-            <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: type === "MySQL" ? "3306" : type === "MongoDB" ? "27017" : "5432", sslMode: "prefer" })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option></SelectField>
+            <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option></SelectField>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>端口</span><input required type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} /></label></div>
             <label className="field"><span>用户名</span><input required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="migration_user" /></label>
             <label className="field"><span>密码</span><input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-            <SelectField label="SSL 模式" value={form.sslMode} onChange={(sslMode) => setForm({ ...form, sslMode })}>{form.type === "PostgreSQL" ? <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option><option value="verify-full">verify-full</option></> : <><option value="prefer">prefer</option><option value="require">require</option><option value="disable">disable</option></>}</SelectField>
+            <SelectField label={formSecurityConfig.label} value={form.sslMode} onChange={(sslMode) => setForm({ ...form, sslMode })}>
+              {formSecurityConfig.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </SelectField>
+            <p className="field-hint">{formSecurityConfig.hint}</p>
+            {form.sslMode === "verify-full" && (
+              <TLSCertificateFields value={form.tlsConfig} onChange={(tlsConfig) => setForm({ ...form, tlsConfig })} />
+            )}
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setShowForm(false)}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>
@@ -421,4 +453,140 @@ function formatBytes(value: number) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   return `${(value / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatDatabaseMetric(type: DatabaseType, database: DatabaseInfo) {
+  if (type === "Neo4j") {
+    return `${formatNumber(database.nodes ?? 0)} 节点 · ${formatNumber(database.relationships ?? 0)} 关系`;
+  }
+  return formatBytes(database.sizeBytes);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function seedDataHint(type: DatabaseType) {
+  if (type === "MongoDB") {
+    return "可按模板生成演示数据。每个模板会写入自己的演示集合，默认追加写入，也可切换为覆盖写入。";
+  }
+  if (type === "Neo4j") {
+    return "可按模板生成演示图数据。每个模板会写入自己的演示节点标签，默认追加写入，也可切换为覆盖写入。";
+  }
+  return "可按模板生成演示数据。每个模板会写入自己的演示表，默认追加写入，也可切换为覆盖写入。";
+}
+
+function seedDataTargetSuffix(type: DatabaseType) {
+  if (type === "MongoDB") return " 集合";
+  if (type === "Neo4j") return " 节点标签";
+  return "";
+}
+
+function connectionSecurityConfig(type: DatabaseType) {
+  switch (type) {
+    case "PostgreSQL":
+      return {
+        label: "SSL 模式",
+        hint: "PostgreSQL 原生支持 sslmode。prefer 会优先尝试加密，require 强制加密，verify-full 会校验证书和主机名。",
+        options: [
+          { value: "prefer", label: "prefer · 优先加密" },
+          { value: "require", label: "require · 强制加密" },
+          { value: "disable", label: "disable · 不加密" },
+          { value: "verify-full", label: "verify-full · 校验证书与主机名" },
+        ],
+      };
+    case "MySQL":
+      return {
+        label: "SSL 模式",
+        hint: "MySQL 这里映射为客户端 TLS 连接策略。prefer 会尽量协商 TLS，require 强制启用 TLS，verify-full 会启用严格校验。",
+        options: [
+          { value: "prefer", label: "prefer · 优先加密" },
+          { value: "require", label: "require · 强制加密" },
+          { value: "disable", label: "disable · 不加密" },
+          { value: "verify-full", label: "verify-full · 严格校验" },
+        ],
+      };
+    case "MongoDB":
+      return {
+        label: "TLS 模式",
+        hint: "MongoDB 默认不启用 TLS；require 只强制加密，verify-full 会校验证书链和主机名。",
+        options: [
+          { value: "disable", label: "disable · 不启用 TLS" },
+          { value: "require", label: "require · 启用 TLS" },
+          { value: "verify-full", label: "verify-full · 校验证书与主机名" },
+        ],
+      };
+    case "Neo4j":
+      return {
+        label: "TLS 模式",
+        hint: "Neo4j 当前映射到底层 Bolt 协议：默认使用 bolt；require 使用 bolt+ssc，verify-full 使用 bolt+s。",
+        options: [
+          { value: "disable", label: "disable · 使用 bolt" },
+          { value: "require", label: "require · 使用 bolt+ssc" },
+          { value: "verify-full", label: "verify-full · 使用 bolt+s" },
+        ],
+      };
+    default:
+      return {
+        label: "SSL 模式",
+        hint: "当前数据库类型未定义单独的连接加密策略说明。",
+        options: [
+          { value: "prefer", label: "prefer" },
+          { value: "require", label: "require" },
+          { value: "disable", label: "disable" },
+        ],
+      };
+  }
+}
+
+function defaultSecurityMode(type: DatabaseType) {
+  return type === "MongoDB" || type === "Neo4j" ? "disable" : "prefer";
+}
+
+function defaultPort(type: DatabaseType) {
+  if (type === "MySQL") return "3306";
+  if (type === "MongoDB") return "27017";
+  if (type === "Neo4j") return "7687";
+  return "5432";
+}
+
+function emptyTLSConfig(): ConnectionTLSConfig {
+  return { caCert: "", clientCert: "", clientKey: "" };
+}
+
+function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
+  return {
+    type,
+    name: "",
+    note: "",
+    host: "",
+    port: defaultPort(type),
+    username: "",
+    password: "",
+    sslMode: defaultSecurityMode(type),
+    tlsConfig: emptyTLSConfig(),
+  };
+}
+
+function TLSCertificateFields({
+  value,
+  onChange,
+  preserveExisting = false,
+}: {
+  value: ConnectionTLSConfig;
+  onChange: (value: ConnectionTLSConfig) => void;
+  preserveExisting?: boolean;
+}) {
+  const caPlaceholder = preserveExisting ? "留空则沿用已保存的 CA 证书" : "-----BEGIN CERTIFICATE-----";
+  return (
+    <div className="tls-panel">
+      <div>
+        <strong>证书校验</strong>
+        <p>{preserveExisting ? "verify-full 会校验证书链和主机名；如果不修改证书，可以留空。" : "verify-full 需要 CA 证书来校验服务端证书链和主机名。"}</p>
+      </div>
+      <label className="field"><span>CA 证书 PEM</span><textarea value={value.caCert ?? ""} onChange={(event) => onChange({ ...value, caCert: event.target.value })} placeholder={caPlaceholder} rows={4} /></label>
+      <label className="field"><span>客户端证书 PEM（可选）</span><textarea value={value.clientCert ?? ""} onChange={(event) => onChange({ ...value, clientCert: event.target.value })} placeholder="仅 mTLS 场景需要填写" rows={3} /></label>
+      <label className="field"><span>客户端私钥 PEM（可选）</span><textarea value={value.clientKey ?? ""} onChange={(event) => onChange({ ...value, clientKey: event.target.value })} placeholder="填写客户端证书时必须同时填写私钥" rows={3} /></label>
+    </div>
+  );
 }

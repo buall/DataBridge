@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"databridge/internal/dbtls"
 	"databridge/internal/fakedata"
 	"databridge/internal/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -21,7 +22,7 @@ const initCollectionName = "databridge_init"
 
 func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, string, error) {
 	start := time.Now()
-	client, err := connect(ctx, input.Host, input.Port, input.Username, input.Password, input.SSLMode)
+	client, err := connect(ctx, input.Host, input.Port, input.Username, input.Password, input.SSLMode, input.TLSConfig)
 	if err != nil {
 		return 0, "", err
 	}
@@ -34,7 +35,7 @@ func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, stri
 }
 
 func ServerVersion(ctx context.Context, connection model.Connection) (string, error) {
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +44,7 @@ func ServerVersion(ctx context.Context, connection model.Connection) (string, er
 }
 
 func Databases(ctx context.Context, connection model.Connection) ([]model.DatabaseInfo, error) {
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +67,18 @@ func Databases(ctx context.Context, connection model.Connection) ([]model.Databa
 	return items, nil
 }
 
-func connect(ctx context.Context, host string, port int, username, password, sslMode string) (*mongo.Client, error) {
-	client, err := mongo.Connect(options.Client().ApplyURI(uri(host, port, username, password, sslMode)))
+func connect(ctx context.Context, host string, port int, username, password, sslMode string, tlsConfig model.ConnectionTLSConfig) (*mongo.Client, error) {
+	clientOptions := options.Client().ApplyURI(uri(host, port, username, password, sslMode))
+	if strings.EqualFold(strings.TrimSpace(sslMode), "verify-full") {
+		customTLSConfig, err := dbtls.Config(host, tlsConfig, true)
+		if err != nil {
+			return nil, err
+		}
+		if customTLSConfig != nil {
+			clientOptions.SetTLSConfig(customTLSConfig)
+		}
+	}
+	client, err := mongo.Connect(clientOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +144,7 @@ func isSystemDatabase(name string) bool {
 }
 
 func CreateDatabase(ctx context.Context, connection model.Connection, name string) error {
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return err
 	}
@@ -159,7 +170,7 @@ func SeedData(ctx context.Context, connection model.Connection, database string,
 	if template == "" {
 		template = "users"
 	}
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return model.SeedDataResult{}, err
 	}
@@ -184,7 +195,7 @@ func SeedData(ctx context.Context, connection model.Connection, database string,
 }
 
 func CollectionNames(ctx context.Context, connection model.Connection, database string) ([]string, error) {
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +215,7 @@ func CollectionNames(ctx context.Context, connection model.Connection, database 
 }
 
 func DropDatabase(ctx context.Context, connection model.Connection, database string) error {
-	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode)
+	client, err := connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, connection.SSLMode, connection.TLSConfig)
 	if err != nil {
 		return err
 	}
@@ -236,13 +247,13 @@ func seedDocuments(template string, rows int) (string, []any, error) {
 		documents := make([]any, 0, len(items))
 		for _, row := range items {
 			documents = append(documents, bson.M{
-				"order_no":    row.OrderNo,
+				"order_no":      row.OrderNo,
 				"customer_name": row.Customer,
-				"city":        row.City,
-				"status":      row.Status,
-				"channel":     row.Channel,
-				"amount":      row.Amount,
-				"created_at":  row.CreatedAt,
+				"city":          row.City,
+				"status":        row.Status,
+				"channel":       row.Channel,
+				"amount":        row.Amount,
+				"created_at":    row.CreatedAt,
 			})
 		}
 		return "databridge_demo_orders", documents, nil

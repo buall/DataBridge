@@ -1,6 +1,6 @@
 # DataBridge
 
-DataBridge 是一个面向 PostgreSQL 和 MySQL 的数据库迁移工作台，包含 React 前端控制台和 Go 编写的迁移编排服务。当前版本适合小型数据库、受控测试环境和迁移流程验证，重点覆盖连接管理、数据库与表发现、迁移任务编排、运行日志和逐表行数校验。
+DataBridge 是一个面向 PostgreSQL、MySQL、MongoDB 和 Neo4j 的数据库迁移工作台，包含 React 前端控制台和 Go 编写的迁移编排服务。当前版本适合小型数据库、受控测试环境和迁移流程验证，重点覆盖连接管理、数据库发现、备份恢复、迁移任务编排、运行日志和结果校验。
 
 ## 当前支持
 
@@ -8,16 +8,22 @@ DataBridge 是一个面向 PostgreSQL 和 MySQL 的数据库迁移工作台，�
 
 - PostgreSQL
 - MySQL
+- MongoDB
+- Neo4j
 
 ### 迁移方向
 
 - PostgreSQL -> PostgreSQL
 - MySQL -> MySQL
+- MongoDB -> MongoDB
+- Neo4j -> Neo4j
 
 当前不支持跨类型迁移：
 
 - PostgreSQL -> MySQL
 - MySQL -> PostgreSQL
+- MongoDB -> PostgreSQL
+- Neo4j -> MySQL
 
 ### 迁移引擎矩阵
 
@@ -25,6 +31,8 @@ DataBridge 是一个面向 PostgreSQL 和 MySQL 的数据库迁移工作台，�
 | --- | --- | --- | --- |
 | PostgreSQL | PostgreSQL | 支持 | 支持 |
 | MySQL | MySQL | 支持 | 暂不支持 |
+| MongoDB | MongoDB | 支持 | 暂不支持 |
+| Neo4j | Neo4j | 支持 | 暂不支持 |
 
 ## PostgreSQL 迁移原理
 
@@ -140,16 +148,70 @@ mysql
 mysqldump
 ```
 
+## MongoDB 迁移原理
+
+MongoDB 当前支持原生工具引擎。
+
+- 原生工具引擎：使用 `mongodump` 按集合导出、`mongorestore` 导入，适合 MongoDB 到 MongoDB 的全量或按集合迁移。
+
+整体流程如下：
+
+1. 读取源端集合列表，并按用户选择确定迁移范围。
+2. 根据冲突策略处理目标库：
+   - `backup` / `overwrite`：当前会重建目标数据库后导入所选集合
+   - `skip`：如果目标库已有集合，则任务失败
+3. 对每个选中集合执行 `mongodump --collection`。
+4. 使用 `mongorestore --nsFrom --nsTo` 导入到目标数据库。
+5. 恢复完成后读取目标集合列表，校验所选集合是否已恢复。
+
+MongoDB 原生工具引擎依赖运行环境中存在以下命令：
+
+```bash
+mongodump
+mongorestore
+```
+
+## Neo4j 迁移原理
+
+Neo4j 当前支持基于 `cypher-shell` 和 APOC 的原生工具引擎，按整库图数据迁移。
+
+- 备份阶段：调用 `CALL apoc.export.cypher.all(null, {stream: true, ...})`，通过 `cypher-shell` 将 Cypher 结果流式写入本地临时文件并压缩。
+- 还原阶段：解压 `.tar.gz` 中的 `.cypher` 文件，使用 `cypher-shell -f` 导入目标库。
+- 校验阶段：对比源端和目标端节点数、关系数。
+
+冲突策略：
+
+- `skip`：目标库已有节点或关系则任务失败。
+- `backup` / `overwrite`：当前都会先清空目标图数据，再导入源端图数据。
+
+Neo4j 原生工具引擎依赖运行环境中存在以下条件：
+
+```bash
+cypher-shell
+```
+
+并且源端 Neo4j 需要安装 APOC，启用导出过程：
+
+```text
+NEO4J_PLUGINS='["apoc"]'
+NEO4J_apoc_export_file_enabled=true
+NEO4J_apoc_import_file_use__neo4j__config=false
+```
+
 ## 当前功能
 
-- 测试并保存 PostgreSQL / MySQL 连接，凭证使用 AES-256-GCM 加密存储。
+- 测试并保存 PostgreSQL / MySQL / MongoDB / Neo4j 连接，凭证使用 AES-256-GCM 加密存储。
 - 保存连接名称、备注、主机、端口、用户、SSL 模式、延迟、节点地区和版本号。
-- 支持编辑、删除、刷新状态、查看数据库和创建数据库。
-- 发现 PostgreSQL / MySQL 数据库和普通表。
-- 支持迁移向导中选择源端、目标端、数据库和待迁移表。
+- 支持编辑、删除、刷新状态、查看数据库、创建数据库和写入演示数据。
+- 发现 PostgreSQL / MySQL 数据库和普通表，发现 MongoDB 数据库和集合，发现 Neo4j 数据库、节点标签和关系类型。
+- 支持迁移向导中选择源端、目标端、数据库和待迁移对象；Neo4j 当前按整库图数据迁移。
 - PostgreSQL 支持原生工具迁移：`psql` 预处理目标对象，`pg_dump` 导出，`pg_restore` 恢复。
 - PostgreSQL 支持内置 COPY 迁移：由 Go 进程读取元数据、创建对象并执行 binary `COPY`。
 - MySQL 支持原生工具迁移：`mysqldump` 导出，`mysql` 导入。
+- MongoDB 支持原生工具迁移：`mongodump` 导出，`mongorestore` 导入。
+- Neo4j 支持原生工具迁移：APOC stream 导出，`cypher-shell` 导入。
+- 支持本地目录和对象存储备份，支持 PostgreSQL / MySQL / MongoDB / Neo4j 备份。
+- 支持从备份产物恢复 PostgreSQL / MySQL / MongoDB / Neo4j。
 - 支持冲突策略：`backup`、`overwrite`、`skip`。
 - 展示任务列表、任务进度、运行日志和校验报告。
 - 将迁移任务、事件、表级校验结果和报告持久化到 SQLite。
@@ -199,6 +261,20 @@ npm run dev:api
 - 目标端预处理当前按表级冲突策略执行，不会做更细粒度的对象级冲突编排。
 - 导入阶段直接执行 SQL 文件，导入行为和兼容性主要受源/目标版本差异、字符集、权限和客户端工具版本影响。
 - 删除已保存连接不会自动删除历史迁移记录，但后续无法再基于该连接继续发现数据库或重新发起迁移。
+
+### MongoDB 限制
+
+- MongoDB 当前只支持原生工具引擎，不支持进程内 COPY 类引擎。
+- MongoDB 迁移可按集合选择，但 `backup` / `overwrite` 策略当前都会重建目标数据库后导入所选集合。
+- MongoDB 行数级校验当前以集合是否恢复为主，不逐文档比对内容。
+
+### Neo4j 限制
+
+- Neo4j 当前只支持 `cypher-shell` + APOC 的原生工具链。
+- Neo4j 迁移和备份当前按整库图数据处理，暂不支持按标签或关系类型拆分。
+- Neo4j `backup` / `overwrite` 策略当前都会先执行 `MATCH (n) DETACH DELETE n` 清空目标图数据，再导入备份 Cypher。
+- Neo4j 校验当前对比节点数和关系数，不逐节点属性或关系属性比对。
+- 跨 Neo4j 大版本恢复需要提前演练，尤其是约束、索引和 APOC 导出的 Cypher 兼容性。
 
 ## 运行方式
 
@@ -263,6 +339,8 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 - PostgreSQL 客户端：`psql`、`pg_dump`、`pg_restore`
 - MySQL 客户端：`mysql`、`mysqldump`
 - MongoDB Database Tools：`mongodump`、`mongorestore`、`mongoexport`、`mongoimport`、`mongostat`、`mongotop`
+
+Neo4j 备份、恢复和迁移还需要运行环境提供 `cypher-shell`，且 Neo4j 服务端已安装 APOC 并启用 export 过程。当前 Dockerfile 尚未内置 `cypher-shell`，使用 Neo4j 功能时请在运行环境中额外安装。
 
 本地构建当前架构镜像：
 

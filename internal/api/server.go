@@ -26,6 +26,7 @@ import (
 	"databridge/internal/model"
 	"databridge/internal/mongo"
 	"databridge/internal/mysql"
+	"databridge/internal/neo4j"
 	"databridge/internal/postgres"
 	"databridge/internal/remotestorage"
 	"databridge/internal/store"
@@ -260,17 +261,25 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(input.Password) != "" {
 		password = input.Password
 	}
+	tlsConfig := current.TLSConfig
+	if !input.TLSConfig.Empty() {
+		tlsConfig = input.TLSConfig
+	}
+	if !validateConnectionTLSConfig(w, current.Type, input.SSLMode, tlsConfig) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	latency, version, err := testConnection(ctx, model.ConnectionInput{
-		Type:     current.Type,
-		Name:     input.Name,
-		Note:     input.Note,
-		Host:     input.Host,
-		Port:     input.Port,
-		Username: input.Username,
-		Password: password,
-		SSLMode:  input.SSLMode,
+		Type:      current.Type,
+		Name:      input.Name,
+		Note:      input.Note,
+		Host:      input.Host,
+		Port:      input.Port,
+		Username:  input.Username,
+		Password:  password,
+		SSLMode:   input.SSLMode,
+		TLSConfig: tlsConfig,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
@@ -841,7 +850,7 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_target", "未找到目标端连接，请重新选择")
 		return
 	}
-	if request.SourceID == "" || request.TargetID == "" || request.SourceDatabase == "" || request.TargetDatabase == "" || (len(request.Tables) == 0 && source.Type != "MongoDB") {
+	if request.SourceID == "" || request.TargetID == "" || request.SourceDatabase == "" || request.TargetDatabase == "" || (len(request.Tables) == 0 && source.Type != "MongoDB" && source.Type != "Neo4j") {
 		writeError(w, http.StatusBadRequest, "invalid_request", "请完整选择源端、目标端、数据库，并至少勾选一张表")
 		return
 	}
@@ -850,6 +859,9 @@ func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if source.Type == "MongoDB" && len(request.Tables) == 0 {
+		request.Tables = []string{request.SourceDatabase}
+	}
+	if source.Type == "Neo4j" && len(request.Tables) == 0 {
 		request.Tables = []string{request.SourceDatabase}
 	}
 	if request.Engine == "" {
@@ -2662,6 +2674,16 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 			}
 			continue
 		}
+		if target.Type == "Neo4j" {
+			if _, err := neo4j.LabelsAndRelationshipTypes(timeoutCtx, target, targetDatabase); err != nil {
+				add("target_database_"+sourceDatabase, "目标数据库", "failed", fmt.Sprintf("%s：%s", targetDatabase, userFacingErrorMessage(errorContextDatabaseDiscovery, err)))
+			} else if plan.Strategy == "append" {
+				add("target_database_"+sourceDatabase, "目标数据库", "passed", targetDatabase+" 可访问")
+			} else {
+				add("recreate_"+sourceDatabase, "清空策略", "passed", targetDatabase+" 将在恢复前清空图数据并重新导入")
+			}
+			continue
+		}
 		if plan.Strategy == "append" {
 			if _, err := tables(timeoutCtx, target, targetDatabase); err != nil {
 				add("target_database_"+sourceDatabase, "目标数据库", "failed", fmt.Sprintf("%s：%s", targetDatabase, userFacingErrorMessage(errorContextTableDiscovery, err)))
@@ -2796,6 +2818,9 @@ func validRestoreDatabaseNameForType(databaseType, name string) bool {
 	if databaseType == "MongoDB" {
 		return validMongoDatabaseName(name)
 	}
+	if databaseType == "Neo4j" {
+		return validDatabaseName(name)
+	}
 	return validRestoreDatabaseName(name)
 }
 
@@ -2810,6 +2835,9 @@ func restoreClientToolAvailable(databaseType string) error {
 	case "MongoDB":
 		_, err := backup.ToolPathForPrecheck("mongorestore")
 		return err
+	case "Neo4j":
+		_, err := backup.ToolPathForPrecheck("cypher-shell")
+		return err
 	default:
 		return fmt.Errorf("unsupported restore target type %q", databaseType)
 	}
@@ -2821,6 +2849,9 @@ func restoreClientToolLabel(databaseType string) string {
 	}
 	if databaseType == "MongoDB" {
 		return "mongorestore"
+	}
+	if databaseType == "Neo4j" {
+		return "cypher-shell"
 	}
 	return "psql"
 }
@@ -3036,6 +3067,13 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 					break
 				}
 				reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 个集合", targetDatabase, len(collections)), Progress: 95})
+			case "Neo4j":
+				objects, objectErr := neo4j.LabelsAndRelationshipTypes(ctx, target, targetDatabase)
+				if objectErr != nil {
+					err = fmt.Errorf("restore validation: %w", objectErr)
+					break
+				}
+				reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("恢复校验完成，目标库 %s 发现 %d 个标签或关系类型", targetDatabase, len(objects)), Progress: 95})
 			default:
 				if tables, tableErr := tables(ctx, target, targetDatabase); tableErr != nil {
 					err = fmt.Errorf("restore validation: %w", tableErr)
@@ -3442,6 +3480,9 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 		writeError(w, http.StatusBadRequest, "invalid_connection", "端口号必须在 1 到 65535 之间")
 		return false
 	}
+	if !validateConnectionTLSConfig(w, input.Type, input.SSLMode, input.TLSConfig) {
+		return false
+	}
 	return true
 }
 
@@ -3460,6 +3501,21 @@ func validateConnectionUpdate(w http.ResponseWriter, input model.UpdateConnectio
 	return true
 }
 
+func validateConnectionTLSConfig(w http.ResponseWriter, databaseType, sslMode string, tlsConfig model.ConnectionTLSConfig) bool {
+	if strings.TrimSpace(sslMode) != "verify-full" {
+		return true
+	}
+	if strings.TrimSpace(tlsConfig.CACert) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_connection", databaseType+" 使用 verify-full 时需要填写 CA 证书 PEM")
+		return false
+	}
+	if (strings.TrimSpace(tlsConfig.ClientCert) == "") != (strings.TrimSpace(tlsConfig.ClientKey) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "客户端证书和私钥需要同时填写")
+		return false
+	}
+	return true
+}
+
 func normalizeDatabaseType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "postgresql", "postgres", "pg":
@@ -3468,6 +3524,8 @@ func normalizeDatabaseType(value string) string {
 		return "MySQL"
 	case "mongodb", "mongo":
 		return "MongoDB"
+	case "neo4j":
+		return "Neo4j"
 	default:
 		return ""
 	}
@@ -3480,6 +3538,9 @@ func defaultPort(databaseType string) int {
 	if databaseType == "MongoDB" {
 		return 27017
 	}
+	if databaseType == "Neo4j" {
+		return 7687
+	}
 	return 5432
 }
 
@@ -3491,6 +3552,8 @@ func testConnection(ctx context.Context, input model.ConnectionInput) (time.Dura
 		return mysql.Test(ctx, input)
 	case "MongoDB":
 		return mongo.Test(ctx, input)
+	case "Neo4j":
+		return neo4j.Test(ctx, input)
 	default:
 		return 0, "", fmt.Errorf("unsupported database type %q", input.Type)
 	}
@@ -3504,6 +3567,8 @@ func serverVersion(ctx context.Context, connection model.Connection) (string, er
 		return mysql.ServerVersion(ctx, connection)
 	case "MongoDB":
 		return mongo.ServerVersion(ctx, connection)
+	case "Neo4j":
+		return neo4j.ServerVersion(ctx, connection)
 	default:
 		return "", fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3517,6 +3582,8 @@ func databases(ctx context.Context, connection model.Connection) ([]model.Databa
 		return mysql.Databases(ctx, connection)
 	case "MongoDB":
 		return mongo.Databases(ctx, connection)
+	case "Neo4j":
+		return neo4j.Databases(ctx, connection)
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3530,6 +3597,8 @@ func createDatabase(ctx context.Context, connection model.Connection, name strin
 		return mysql.CreateDatabase(ctx, connection, name)
 	case "MongoDB":
 		return mongo.CreateDatabase(ctx, connection, name)
+	case "Neo4j":
+		return neo4j.CreateDatabase(ctx, connection, name)
 	default:
 		return fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3557,6 +3626,8 @@ func tables(ctx context.Context, connection model.Connection, database string) (
 			})
 		}
 		return result, nil
+	case "Neo4j":
+		return neo4j.LabelsAndRelationshipTypes(ctx, connection, database)
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3570,6 +3641,8 @@ func seedData(ctx context.Context, connection model.Connection, database string,
 		return mysql.SeedData(ctx, connection, database, rows, mode, template)
 	case "MongoDB":
 		return mongo.SeedData(ctx, connection, database, rows, mode, template)
+	case "Neo4j":
+		return neo4j.SeedData(ctx, connection, database, rows, mode, template)
 	default:
 		return model.SeedDataResult{}, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
@@ -3631,7 +3704,7 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		if context == errorContextRemoteStorage {
 			return "对象存储 Endpoint 格式不正确，请填写完整地址，例如 https://s3.example.com"
 		}
-	case strings.Contains(lower, "mysqldump not found"), strings.Contains(lower, "mysql not found"), strings.Contains(lower, "pg_dump not found"), strings.Contains(lower, "pg_restore not found"), strings.Contains(lower, "psql not found"), strings.Contains(lower, "mongodump not found"), strings.Contains(lower, "mongorestore not found"):
+	case strings.Contains(lower, "mysqldump not found"), strings.Contains(lower, "mysql not found"), strings.Contains(lower, "pg_dump not found"), strings.Contains(lower, "pg_restore not found"), strings.Contains(lower, "psql not found"), strings.Contains(lower, "mongodump not found"), strings.Contains(lower, "mongorestore not found"), strings.Contains(lower, "cypher-shell not found"):
 		if context == errorContextMigrationRuntime {
 			return "迁移依赖的数据库客户端工具未安装或不在 PATH 中，请先检查运行环境"
 		}
@@ -3640,6 +3713,10 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		return "源端导出失败，请确认源数据库可访问、账号具备导出权限，且客户端工具版本兼容"
 	case strings.Contains(lower, "mongodump:"):
 		return "MongoDB 导出失败，请确认源数据库可访问、账号具备备份权限，并检查认证库和客户端工具版本"
+	case strings.Contains(lower, "cypher-shell export:"):
+		return "Neo4j 导出失败，请确认 cypher-shell 可用、APOC 导出过程已启用，并且账号具备读取权限"
+	case strings.Contains(lower, "cypher-shell restore:"):
+		return "Neo4j 导入失败，请确认目标库可访问、账号具备写入权限，并检查目标端是否存在同名约束或数据冲突"
 	case strings.Contains(lower, "mysql restore:"):
 		return "目标端导入失败，请确认目标数据库可访问、账号具备建表和写入权限，并检查目标端是否存在同名对象冲突"
 	case strings.Contains(lower, "permission denied"), strings.Contains(lower, "command denied"), strings.Contains(lower, "must be owner"), strings.Contains(lower, "insufficient privilege"), strings.Contains(lower, "permission"), strings.Contains(lower, "denied to user"):
@@ -3716,12 +3793,18 @@ func validDatabaseNameForType(databaseType, name string) bool {
 	if databaseType == "MongoDB" {
 		return validMongoDatabaseName(name)
 	}
+	if databaseType == "Neo4j" {
+		return validDatabaseName(name)
+	}
 	return validDatabaseName(name)
 }
 
 func invalidDatabaseNameMessage(databaseType string) string {
 	if databaseType == "MongoDB" {
 		return "MongoDB 数据库名格式不正确，请避免使用空格以及 / \\ . \" $ 等字符，长度不要超过 63 个字符"
+	}
+	if databaseType == "Neo4j" {
+		return "Neo4j 数据库名格式不正确，请使用字母或下划线开头，只包含字母、数字、下划线或短横线"
 	}
 	return "数据库名格式不正确，请使用字母或下划线开头，只包含字母、数字、下划线或短横线"
 }

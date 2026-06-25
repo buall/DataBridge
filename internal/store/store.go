@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"databridge/internal/dbtls"
 	"databridge/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -176,19 +177,23 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 	connection := model.Connection{
 		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
-		SSLMode: input.SSLMode, Status: "connected",
+		SSLMode: input.SSLMode, TLSConfig: dbtls.Normalize(input.TLSConfig), Status: "connected",
 		LatencyMS: latency.Milliseconds(), Version: version, CreatedAt: time.Now().UTC(),
 	}
 	encrypted, err := s.encrypt(input.Password)
 	if err != nil {
 		return model.Connection{}, err
 	}
+	encryptedTLSConfig, err := s.encryptTLSConfig(connection.TLSConfig)
+	if err != nil {
+		return model.Connection{}, err
+	}
 	_, err = s.db.Exec(`
 		INSERT INTO connections
-		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, status, latency_ms, server_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		connection.ID, connection.Name, connection.Note, connection.Type, connection.Host, connection.Port,
-		connection.Username, encrypted, connection.SSLMode, connection.Status,
+		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, connection.Status,
 		connection.LatencyMS, connection.Version, connection.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("save connection: %w", err)
@@ -199,7 +204,7 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, status, latency_ms, server_version, created_at
+		       ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at
 		FROM connections ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -222,7 +227,7 @@ func (s *Store) Connections() ([]model.Connection, error) {
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, status, latency_ms, server_version, created_at
+		       ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
 }
@@ -251,7 +256,15 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	if strings.TrimSpace(input.Password) != "" {
 		password = input.Password
 	}
+	tlsConfig := current.TLSConfig
+	if !input.TLSConfig.Empty() {
+		tlsConfig = dbtls.Normalize(input.TLSConfig)
+	}
 	encrypted, err := s.encrypt(password)
+	if err != nil {
+		return model.Connection{}, err
+	}
+	encryptedTLSConfig, err := s.encryptTLSConfig(tlsConfig)
 	if err != nil {
 		return model.Connection{}, err
 	}
@@ -259,9 +272,9 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	status := "connected"
 	if _, err := s.db.Exec(`
 		UPDATE connections
-		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
+		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, tls_config_encrypted = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
 		WHERE id = ?`,
-		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, status, latency.Milliseconds(), version, current.Type, id); err != nil {
+		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, encryptedTLSConfig, status, latency.Milliseconds(), version, current.Type, id); err != nil {
 		return model.Connection{}, fmt.Errorf("update connection: %w", err)
 	}
 	updated, err := s.Connection(id)
@@ -708,6 +721,7 @@ func (s *Store) initialize() error {
 			username TEXT NOT NULL,
 			password_encrypted BLOB NOT NULL,
 			ssl_mode TEXT NOT NULL,
+			tls_config_encrypted BLOB,
 			status TEXT NOT NULL,
 			latency_ms INTEGER NOT NULL,
 			server_version TEXT NOT NULL DEFAULT '',
@@ -767,6 +781,9 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionNoteColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureConnectionTLSConfigColumn(); err != nil {
+		return err
+	}
 	if err := s.recoverInterruptedMigrations(); err != nil {
 		return err
 	}
@@ -789,6 +806,16 @@ func (s *Store) ensureConnectionNoteColumn() error {
 			return nil
 		}
 		return fmt.Errorf("migrate connections.note: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionTLSConfigColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN tls_config_encrypted BLOB`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.tls_config_encrypted: %w", err)
 	}
 	return nil
 }
@@ -850,9 +877,10 @@ type scanner interface {
 func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var item model.Connection
 	var encrypted []byte
+	var encryptedTLSConfig []byte
 	var createdAt string
 	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
-		&item.Username, &encrypted, &item.SSLMode, &item.Status, &item.LatencyMS,
+		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &item.Status, &item.LatencyMS,
 		&item.Version, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
@@ -864,6 +892,10 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 		return model.Connection{}, fmt.Errorf("decrypt connection %s: %w", item.ID, err)
 	}
 	item.Password = password
+	item.TLSConfig, err = s.decryptTLSConfig(encryptedTLSConfig)
+	if err != nil {
+		return model.Connection{}, fmt.Errorf("decrypt connection TLS config %s: %w", item.ID, err)
+	}
 	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("parse connection creation time: %w", err)
@@ -949,6 +981,33 @@ func (s *Store) decrypt(value []byte) (string, error) {
 		return "", err
 	}
 	return string(plaintext), nil
+}
+
+func (s *Store) encryptTLSConfig(config model.ConnectionTLSConfig) ([]byte, error) {
+	config = dbtls.Normalize(config)
+	if config.Empty() {
+		return nil, nil
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("encode connection TLS config: %w", err)
+	}
+	return s.encrypt(string(data))
+}
+
+func (s *Store) decryptTLSConfig(value []byte) (model.ConnectionTLSConfig, error) {
+	if len(value) == 0 {
+		return model.ConnectionTLSConfig{}, nil
+	}
+	data, err := s.decrypt(value)
+	if err != nil {
+		return model.ConnectionTLSConfig{}, err
+	}
+	var config model.ConnectionTLSConfig
+	if err := json.Unmarshal([]byte(data), &config); err != nil {
+		return model.ConnectionTLSConfig{}, fmt.Errorf("decode connection TLS config: %w", err)
+	}
+	return dbtls.Normalize(config), nil
 }
 
 func loadOrCreateKey(path string) ([]byte, error) {

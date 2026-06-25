@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"databridge/internal/dbtls"
 	"databridge/internal/fakedata"
 	"databridge/internal/model"
 	"github.com/jackc/pgx/v5"
@@ -15,7 +16,7 @@ import (
 
 func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, string, error) {
 	start := time.Now()
-	conn, err := pgx.Connect(ctx, DSN(input.Host, input.Port, input.Username, input.Password, "postgres", input.SSLMode))
+	conn, err := connect(ctx, input.Host, input.Port, input.Username, input.Password, "postgres", input.SSLMode, input.TLSConfig)
 	if err != nil {
 		return 0, "", err
 	}
@@ -31,7 +32,24 @@ func Test(ctx context.Context, input model.ConnectionInput) (time.Duration, stri
 }
 
 func Connect(ctx context.Context, connection model.Connection, database string) (*pgx.Conn, error) {
-	return pgx.Connect(ctx, DSN(connection.Host, connection.Port, connection.Username, connection.Password, database, connection.SSLMode))
+	return connect(ctx, connection.Host, connection.Port, connection.Username, connection.Password, database, connection.SSLMode, connection.TLSConfig)
+}
+
+func connect(ctx context.Context, host string, port int, username, password, database, sslMode string, tlsConfig model.ConnectionTLSConfig) (*pgx.Conn, error) {
+	config, err := pgx.ParseConfig(DSN(host, port, username, password, database, sslMode))
+	if err != nil {
+		return nil, err
+	}
+	if strings.EqualFold(strings.TrimSpace(sslMode), "verify-full") {
+		customTLSConfig, err := dbtls.Config(host, tlsConfig, true)
+		if err != nil {
+			return nil, err
+		}
+		if customTLSConfig != nil {
+			config.Config.TLSConfig = customTLSConfig
+		}
+	}
+	return pgx.ConnectConfig(ctx, config)
 }
 
 func ServerVersion(ctx context.Context, connection model.Connection) (string, error) {

@@ -5,6 +5,7 @@ go 1.26
 require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jackc/pgx/v5 v5.7.5
+	github.com/neo4j/neo4j-go-driver/v6 v6.1.0
 	go.mongodb.org/mongo-driver/v2 v2.3.1
 	modernc.org/sqlite v1.52.0
 )

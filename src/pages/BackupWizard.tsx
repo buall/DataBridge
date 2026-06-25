@@ -16,7 +16,7 @@ export function BackupWizard({
   onStart: (config: BackupConfig) => Promise<void>;
 }) {
   const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "local"), [storages]);
-  const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB"), [connections]);
+  const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB" || item.type === "Neo4j"), [connections]);
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [databaseConnectionId, setDatabaseConnectionId] = useState("");
@@ -132,7 +132,7 @@ export function BackupWizard({
   }
 
   if (!backupableConnections.length) {
-    return <div className="empty-state"><div>DB</div><h2>暂无可备份连接</h2><p>请先添加 PostgreSQL、MySQL 或 MongoDB 连接，再创建备份任务。</p></div>;
+    return <div className="empty-state"><div>DB</div><h2>暂无可备份连接</h2><p>请先添加 PostgreSQL、MySQL、MongoDB 或 Neo4j 连接，再创建备份任务。</p></div>;
   }
   if (!writableStorages.length) {
     return <div className="empty-state"><div>DB</div><h2>暂无备份目标</h2><p>请先在远端存储中添加对象存储或本地目录。</p></div>;
@@ -147,11 +147,11 @@ export function BackupWizard({
 
       {step === 0 && (
         <Card className="wizard-card connection-step">
-          <div className="card-heading"><h3>选择要备份的数据库</h3><p>当前支持 PostgreSQL、MySQL 和 MongoDB 全库导出。</p></div>
+          <div className="card-heading"><h3>选择要备份的数据库</h3><p>当前支持 PostgreSQL、MySQL、MongoDB 和 Neo4j 全库导出。</p></div>
           <div className="config-grid backup-source-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase || "数据库"} 备份`} /></label>
             <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [] })} />
-            <DatabaseMultiSelect databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
+            <DatabaseMultiSelect type={source?.type} databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
           </div>
           {loading && <p className="loading-copy">正在加载数据库...</p>}
         </Card>
@@ -199,7 +199,7 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>{source?.type === "MongoDB" ? "mongodump + tar.gz" : "tar.gz"}</strong></div></div>
+          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>{backupFormatLabel(source?.type)}</strong></div></div>
         </Card>
       )}
 
@@ -441,7 +441,7 @@ function SourceConnectionSelect({ connectionId, connections, onChange }: { conne
   );
 }
 
-function DatabaseMultiSelect({ databases, loading, selected, onChange }: { databases: DatabaseInfo[]; loading: boolean; selected: string[]; onChange: (value: string[]) => void }) {
+function DatabaseMultiSelect({ type, databases, loading, selected, onChange }: { type?: DatabaseConnection["type"]; databases: DatabaseInfo[]; loading: boolean; selected: string[]; onChange: (value: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedSet = new Set(selected);
@@ -477,7 +477,7 @@ function DatabaseMultiSelect({ databases, loading, selected, onChange }: { datab
             <button type="button" onClick={() => onChange(databases.map((item) => item.name))}>全选</button>
             <button type="button" onClick={() => onChange([])}>清空</button>
           </div>
-          {databases.length ? databases.map((item) => <button type="button" key={item.name} className={selected.includes(item.name) ? "active" : ""} onClick={() => toggle(item.name)}><span className={`checkbox ${selected.includes(item.name) ? "checked" : ""}`}>{selected.includes(item.name) && <Check size={13} />}</span><strong>{item.name}</strong><small>{formatBytes(item.sizeBytes)}</small></button>) : <div className="multi-select-empty">当前连接未发现可备份数据库</div>}
+          {databases.length ? databases.map((item) => <button type="button" key={item.name} className={selected.includes(item.name) ? "active" : ""} onClick={() => toggle(item.name)}><span className={`checkbox ${selected.includes(item.name) ? "checked" : ""}`}>{selected.includes(item.name) && <Check size={13} />}</span><strong>{item.name}</strong><small>{formatDatabaseMetric(type, item)}</small></button>) : <div className="multi-select-empty">当前连接未发现可备份数据库</div>}
         </div>
       )}
     </div>
@@ -500,4 +500,21 @@ function formatBytes(value: number) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   return `${(value / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
+}
+
+function formatDatabaseMetric(type: DatabaseConnection["type"] | undefined, database: DatabaseInfo) {
+  if (type === "Neo4j") {
+    return `${formatNumber(database.nodes ?? 0)} 节点 · ${formatNumber(database.relationships ?? 0)} 关系`;
+  }
+  return formatBytes(database.sizeBytes);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function backupFormatLabel(type: DatabaseConnection["type"] | undefined) {
+  if (type === "MongoDB") return "mongodump + tar.gz";
+  if (type === "Neo4j") return "cypher-shell + APOC + tar.gz";
+  return "tar.gz";
 }

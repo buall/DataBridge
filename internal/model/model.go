@@ -6,42 +6,55 @@ import (
 )
 
 type ConnectionInput struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	Note     string `json:"note,omitempty"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	SSLMode  string `json:"sslMode"`
+	Type      string              `json:"type"`
+	Name      string              `json:"name"`
+	Note      string              `json:"note,omitempty"`
+	Host      string              `json:"host"`
+	Port      int                 `json:"port"`
+	Username  string              `json:"username"`
+	Password  string              `json:"password"`
+	SSLMode   string              `json:"sslMode"`
+	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
 }
 
 type UpdateConnectionInput struct {
-	Type     string `json:"type,omitempty"`
-	Name     string `json:"name"`
-	Note     string `json:"note,omitempty"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password,omitempty"`
-	SSLMode  string `json:"sslMode"`
+	Type      string              `json:"type,omitempty"`
+	Name      string              `json:"name"`
+	Note      string              `json:"note,omitempty"`
+	Host      string              `json:"host"`
+	Port      int                 `json:"port"`
+	Username  string              `json:"username"`
+	Password  string              `json:"password,omitempty"`
+	SSLMode   string              `json:"sslMode"`
+	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+}
+
+type ConnectionTLSConfig struct {
+	CACert     string `json:"caCert,omitempty"`
+	ClientCert string `json:"clientCert,omitempty"`
+	ClientKey  string `json:"clientKey,omitempty"`
+}
+
+func (c ConnectionTLSConfig) Empty() bool {
+	return c.CACert == "" && c.ClientCert == "" && c.ClientKey == ""
 }
 
 type Connection struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Note      string    `json:"note,omitempty"`
-	Type      string    `json:"type"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	Region    string    `json:"region,omitempty"`
-	Username  string    `json:"username"`
-	SSLMode   string    `json:"sslMode"`
-	Status    string    `json:"status"`
-	LatencyMS int64     `json:"latency"`
-	Version   string    `json:"version,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	Password  string    `json:"-"`
+	ID        string              `json:"id"`
+	Name      string              `json:"name"`
+	Note      string              `json:"note,omitempty"`
+	Type      string              `json:"type"`
+	Host      string              `json:"host"`
+	Port      int                 `json:"port"`
+	Region    string              `json:"region,omitempty"`
+	Username  string              `json:"username"`
+	SSLMode   string              `json:"sslMode"`
+	Status    string              `json:"status"`
+	LatencyMS int64               `json:"latency"`
+	Version   string              `json:"version,omitempty"`
+	CreatedAt time.Time           `json:"createdAt"`
+	Password  string              `json:"-"`
+	TLSConfig ConnectionTLSConfig `json:"-"`
 }
 
 type StorageInput struct {
@@ -92,8 +105,10 @@ type RemoteStorage struct {
 }
 
 type DatabaseInfo struct {
-	Name string `json:"name"`
-	Size int64  `json:"sizeBytes"`
+	Name          string `json:"name"`
+	Size          int64  `json:"sizeBytes"`
+	Nodes         int64  `json:"nodes,omitempty"`
+	Relationships int64  `json:"relationships,omitempty"`
 }
 
 type CreateDatabaseRequest struct {
