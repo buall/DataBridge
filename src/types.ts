@@ -160,7 +160,11 @@ export interface RestorePrecheckResult {
     status: "passed" | "failed" | "warning";
     message: string;
   }>;
-  warnings?: string[];
+  warnings?: Array<{
+    key: string;
+    label: string;
+    message: string;
+  }>;
 }
 
 export interface SMTPSettings {

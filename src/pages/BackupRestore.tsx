@@ -33,8 +33,17 @@ export function BackupRestore({
   const [error, setError] = useState("");
   const [versionMenuOpen, setVersionMenuOpen] = useState(false);
   const versionMenuRef = useRef<HTMLDivElement | null>(null);
+  const sourceConnection = useMemo(() => connections.find((connection) => connection.name === job.sourceName && connection.type === job.sourceType) ?? null, [connections, job.sourceName, job.sourceType]);
   const targetConnection = targets.find((connection) => connection.id === targetId);
   const selectedSet = new Set(selectedDatabases);
+  const precheckWarnings = precheck?.warnings ?? [];
+  const precheckNeedsConfirm = Boolean(precheck?.ok && (strategy === "recreate" || precheckWarnings.length > 0));
+  const sourceVersion = sourceConnection?.version?.trim() ?? "";
+  const targetVersion = targetConnection?.version?.trim() ?? "";
+  const sourceMajor = majorVersion(sourceVersion);
+  const targetMajor = majorVersion(targetVersion);
+  const showVersionComparison = Boolean(targetConnection && (sourceVersion || targetVersion));
+  const crossMajorVersionRisk = job.sourceType === "Neo4j" && sourceMajor && targetMajor && sourceMajor !== targetMajor;
   const ready = Boolean(selectedVersion) && selectedVersion.status === "completed" && Boolean(targetId) && selectedDatabases.length > 0 && selectedDatabases.every((database) => targetDatabases[database]?.trim());
 
   useEffect(() => {
@@ -91,20 +100,32 @@ export function BackupRestore({
   async function runPrecheck() {
     setPrechecking(true);
     setError("");
+    setConfirmOpen(false);
     setPrecheck(null);
     try {
       const result = await api.restorePrecheck(job.id, restoreConfig());
       setPrecheck(result);
-      if (result.ok && strategy === "recreate") {
-        setConfirmOpen(true);
-      } else if (result.ok) {
-        await createRestore();
-      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "恢复前检查失败");
     } finally {
       setPrechecking(false);
     }
+  }
+
+  async function handleRestoreAction() {
+    if (!precheck) {
+      await runPrecheck();
+      return;
+    }
+    if (!precheck.ok) {
+      await runPrecheck();
+      return;
+    }
+    if (precheckNeedsConfirm) {
+      setConfirmOpen(true);
+      return;
+    }
+    await createRestore();
   }
 
   async function createRestore() {
@@ -168,6 +189,13 @@ export function BackupRestore({
           <div className="section-title compact"><div><h3>目标位置</h3><p>选择同类型连接，并确认源库到目标库的映射。</p></div><Badge tone="gray">{job.sourceType}</Badge></div>
           <div className="restore-target-form">
             <RestoreConnectionSelect connectionId={targetId} connections={targets} onChange={(value) => { setTargetId(value); setPrecheck(null); }} />
+            {showVersionComparison && (
+              <div className={`restore-version-compare ${crossMajorVersionRisk ? "warning" : "info"}`}>
+                <strong>版本对比</strong>
+                <span>{`${job.sourceName} ${sourceVersion || "版本未知"} -> ${targetConnection?.name ?? "目标端"} ${targetVersion || "版本未知"}`}</span>
+                <small>{crossMajorVersionRisk ? "跨大版本恢复有失败风险，建议优先恢复到相同大版本后再升级。" : "当前显示源端与目标端版本，建议优先使用相同大版本恢复。"}</small>
+              </div>
+            )}
             <div className="restore-database-map restore-target-map">
               <div className="restore-database-map-head"><span>恢复</span><span>源数据库</span><span>目标数据库</span></div>
               {sourceDatabases.map((database) => (
@@ -188,10 +216,10 @@ export function BackupRestore({
           </SelectField>
           {strategy === "recreate" && <div className="restore-strategy-warning">将先删除并重新创建目标数据库，再导入备份文件。目标库现有数据会被清空。</div>}
           {precheck ? <RestorePrecheckSummary result={precheck} /> : <div className="restore-precheck-placeholder"><AlertTriangle size={16} /><span>启动前会先运行恢复前检查。</span></div>}
-          <Button disabled={!ready || prechecking || restoring} onClick={runPrecheck}>{restoring ? "创建中..." : prechecking ? "检查中..." : "检查并启动恢复"}</Button>
+          <Button disabled={!ready || prechecking || restoring} onClick={() => void handleRestoreAction()}>{restoring ? "创建中..." : prechecking ? "检查中..." : precheckNeedsConfirm ? "确认继续恢复" : precheck?.ok ? "启动恢复" : "检查并启动恢复"}</Button>
         </Card>
       </div>
-      {confirmOpen && <ConfirmDialog title="重建目标库后恢复" description="这是高危操作，确认后会先删除并重新创建目标数据库。" tone="danger" confirmText="确认重建并恢复" submitting={restoring} onCancel={() => setConfirmOpen(false)} onConfirm={createRestore} details={[`目标连接：${targetConnection?.name ?? "未选择"} · ${targetConnection?.host ?? ""}`, `目标数据库：${selectedDatabases.map((database) => targetDatabases[database]?.trim() || database).join(", ")}`, "只会处理已勾选的数据库；目标库现有数据会被清空，该操作不可撤销。"]} />}
+      {confirmOpen && <ConfirmDialog title={strategy === "recreate" ? "重建目标库后恢复" : "确认恢复"} description={strategy === "recreate" ? "这是高危操作，确认后会先删除并重新创建目标数据库。" : "恢复前检查已通过，但存在需要重点关注的风险提示。"} tone={strategy === "recreate" ? "danger" : "warning"} confirmVariant="danger" confirmText={strategy === "recreate" ? "确认重建并恢复" : "确认继续恢复"} submitting={restoring} onCancel={() => setConfirmOpen(false)} onConfirm={createRestore} warnings={precheckWarnings.map((warning) => `${warning.label}：${warning.message}`)} details={[`目标连接：${targetConnection?.name ?? "未选择"} · ${targetConnection?.host ?? ""}`, `目标数据库：${selectedDatabases.map((database) => targetDatabases[database]?.trim() || database).join(", ")}`, strategy === "recreate" ? "只会处理已勾选的数据库；目标库现有数据会被清空，该操作不可撤销。" : "请先确认以上风险提示可接受，再继续恢复。"]} />}
     </div>
   );
 }
@@ -204,6 +232,12 @@ function RestorePrecheckSummary({ result }: { result: RestorePrecheckResult }) {
   return (
     <div className={`restore-precheck ${result.ok ? "passed" : "failed"}`}>
       <strong>{result.ok ? "恢复前检查通过" : "恢复前检查未通过"}</strong>
+      {result.warnings?.length ? (
+        <div className="restore-precheck-warning-banner">
+          <AlertTriangle size={14} />
+          <span>{result.warnings.length === 1 ? result.warnings[0].message : `发现 ${result.warnings.length} 项恢复风险，请确认后再继续。`}</span>
+        </div>
+      ) : null}
       <div>
         {result.checks.map((check) => (
           <span className={check.status} key={check.key}>
@@ -221,4 +255,11 @@ function restoreSourceDatabasesFromArtifacts(job: BackupJob, artifacts: ReturnTy
   const names = artifacts.map((artifact) => artifact.database).filter(Boolean);
   if (names.length) return Array.from(new Set(names));
   return job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function majorVersion(version?: string) {
+  const value = version?.trim();
+  if (!value) return 0;
+  const major = Number.parseInt(value.split(".")[0] ?? "", 10);
+  return Number.isFinite(major) ? major : 0;
 }

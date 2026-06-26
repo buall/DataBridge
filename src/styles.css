@@ -329,11 +329,13 @@ h1, h2, h3, h4, p { margin: 0; }
 .restore-precheck { border: 1px solid #dbe6f3; border-radius: 8px; padding: 10px 12px; background: #fff; display: grid; gap: 8px; font-size: 12px; }
 .restore-precheck strong { color: #172033; font-size: 12px; }
 .restore-precheck div { display: grid; gap: 6px; }
-.restore-precheck span { min-width: 0; display: grid; grid-template-columns: 16px auto minmax(0, 1fr); align-items: start; gap: 7px; color: #475467; line-height: 1.45; overflow-wrap: anywhere; }
-.restore-precheck span svg { margin-top: 2px; }
-.restore-precheck span.passed svg { color: var(--green); }
-.restore-precheck span.failed svg { color: var(--red); }
-.restore-precheck span.warning svg { color: #d67e00; }
+.restore-precheck-warning-banner { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid #fed7aa; border-radius: 8px; background: #fff7ed; color: #9a3412; line-height: 1.5; }
+.restore-precheck-warning-banner svg { width: 16px; height: 16px; align-self: center; color: #d67e00; }
+.restore-precheck > div:last-child > span { min-width: 0; display: grid; grid-template-columns: 16px auto minmax(0, 1fr); align-items: start; gap: 7px; color: #475467; line-height: 1.45; overflow-wrap: anywhere; }
+.restore-precheck > div:last-child > span svg { margin-top: 2px; }
+.restore-precheck > div:last-child > span.passed svg { color: var(--green); }
+.restore-precheck > div:last-child > span.failed svg { color: var(--red); }
+.restore-precheck > div:last-child > span.warning svg { color: #d67e00; }
 .restore-precheck em { color: #172033; font-style: normal; font-weight: 800; white-space: nowrap; }
 .restore-precheck.passed { border-color: #cbeed8; background: #f7fdf9; }
 .restore-precheck.failed { border-color: #f4b4b4; background: #fffafa; }
@@ -387,6 +389,13 @@ h1, h2, h3, h4, p { margin: 0; }
 .restore-execute-card > .restore-precheck-placeholder { margin-top: 12px; }
 .restore-execute-card > .button { margin-top: 14px; }
 .restore-target-form { display: grid; gap: 14px; }
+.restore-version-compare { border: 1px solid #dbe6f3; border-radius: 8px; padding: 11px 12px; background: #fbfcfe; display: grid; gap: 4px; }
+.restore-version-compare strong { color: #172033; font-size: 12px; }
+.restore-version-compare span { color: #1d4ed8; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.restore-version-compare small { color: #607086; font-size: 11px; line-height: 1.5; }
+.restore-version-compare.warning { border-color: #fed7aa; background: #fff7ed; }
+.restore-version-compare.warning span { color: #b45309; }
+.restore-version-compare.warning small { color: #9a3412; }
 .restore-target-map .restore-database-row,
 .restore-scope-map .restore-database-row { cursor: default; }
 .restore-scope-map .restore-database-row { cursor: pointer; }
@@ -465,6 +474,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .confirm-dialog-title > span { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%; display: grid; place-items: center; }
 .confirm-dialog.danger .confirm-dialog-title > span { color: #b42318; background: #fff1f1; }
 .confirm-dialog.warning .confirm-dialog-title > span { color: #b45309; background: #fff7ed; }
+.confirm-dialog-warnings { display: grid; gap: 10px; }
+.confirm-dialog-warning { border: 1px solid #fed7aa; border-radius: 10px; padding: 12px 14px; background: #fff7ed; color: #9a3412; font-size: 12px; line-height: 1.65; box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .14); }
 .confirm-dialog .delete-warning { border: 1px solid #edf0f4; border-radius: 8px; padding: 10px 12px; background: #fbfcfe; }
 .field-hint { color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: -8px; }
 .delete-warning { color: #475467; font-size: 12px; line-height: 1.7; }

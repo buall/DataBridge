@@ -32,8 +32,10 @@ export function ConfirmDialog({
   title,
   description,
   details = [],
+  warnings = [],
   confirmText = "确认",
   tone = "danger",
+  confirmVariant,
   submitting = false,
   onCancel,
   onConfirm,
@@ -41,12 +43,15 @@ export function ConfirmDialog({
   title: string;
   description: string;
   details?: ReactNode[];
+  warnings?: ReactNode[];
   confirmText?: string;
   tone?: "danger" | "warning";
+  confirmVariant?: "primary" | "danger";
   submitting?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const actionVariant = confirmVariant ?? (tone === "danger" ? "danger" : "primary");
   return (
     <div className="modal-backdrop confirm-dialog-backdrop" onMouseDown={onCancel}>
       <div className={`modal confirm-dialog ${tone}`} onMouseDown={(event) => event.stopPropagation()}>
@@ -57,8 +62,13 @@ export function ConfirmDialog({
           </div>
           <button type="button" className="plain-icon" onClick={onCancel}><X size={18} /></button>
         </div>
+        {warnings.length > 0 && (
+          <div className="confirm-dialog-warnings">
+            {warnings.map((item, index) => <p className="confirm-dialog-warning" key={index}>{item}</p>)}
+          </div>
+        )}
         {details.map((item, index) => <p className="delete-warning" key={index}>{item}</p>)}
-        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onCancel}>取消</Button><Button type="button" variant={tone === "danger" ? "danger" : "primary"} disabled={submitting} onClick={onConfirm}>{submitting ? "处理中..." : confirmText}</Button></div>
+        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onCancel}>取消</Button><Button type="button" variant={actionVariant} disabled={submitting} onClick={onConfirm}>{submitting ? "处理中..." : confirmText}</Button></div>
       </div>
     </div>
   );

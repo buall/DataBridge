@@ -2705,6 +2705,9 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 		return restorePrecheckResult(checks)
 	}
 	add("target_connection", "目标连接", "passed", target.Name+" 连接可用")
+	if warning := s.neo4jRestoreVersionWarning(timeoutCtx, sourceJob, target); warning != "" {
+		add("neo4j_version_compatibility", "版本兼容性", "warning", warning)
+	}
 	for _, sourceDatabase := range plan.SourceDatabases {
 		targetDatabase := strings.TrimSpace(plan.TargetDatabases[sourceDatabase])
 		if !validRestoreDatabaseNameForType(target.Type, targetDatabase) {
@@ -2750,6 +2753,49 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 	return restorePrecheckResult(checks)
 }
 
+func (s *Server) neo4jRestoreVersionWarning(ctx context.Context, sourceJob model.BackupJob, target model.Connection) string {
+	if sourceJob.SourceType != "Neo4j" || target.Type != "Neo4j" {
+		return ""
+	}
+	targetVersion := strings.TrimSpace(target.Version)
+	if targetVersion == "" {
+		version, err := serverVersion(ctx, target)
+		if err != nil {
+			return ""
+		}
+		targetVersion = version
+	}
+	sourceVersion := ""
+	sourceConnectionID := strings.TrimSpace(sourceJob.Request.SourceID)
+	if sourceConnectionID != "" {
+		if source, err := s.store.Connection(sourceConnectionID); err == nil && source.Type == "Neo4j" {
+			sourceVersion = strings.TrimSpace(source.Version)
+		}
+	}
+	sourceMajor, sourceOK := majorVersion(sourceVersion)
+	targetMajor, targetOK := majorVersion(targetVersion)
+	if !sourceOK || !targetOK || sourceMajor == targetMajor {
+		return ""
+	}
+	return fmt.Sprintf("当前备份来自 Neo4j %s，目标连接是 Neo4j %s。跨大版本恢复可能因 Cypher、约束或 APOC 导出语法差异而失败，建议优先恢复到相同大版本后再升级。", sourceVersion, targetVersion)
+}
+
+func majorVersion(version string) (int, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, false
+	}
+	segment := version
+	if index := strings.Index(segment, "."); index >= 0 {
+		segment = segment[:index]
+	}
+	value, err := strconv.Atoi(segment)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
 func restorePrecheckResult(checks []model.RestorePrecheckItem) model.RestorePrecheckResult {
 	result := model.RestorePrecheckResult{OK: true, Checks: checks}
 	for _, check := range checks {
@@ -2758,7 +2804,11 @@ func restorePrecheckResult(checks []model.RestorePrecheckItem) model.RestorePrec
 			break
 		}
 		if check.Status == "warning" {
-			result.Warnings = append(result.Warnings, check.Message)
+			result.Warnings = append(result.Warnings, model.RestoreWarning{
+				Key:     check.Key,
+				Label:   check.Label,
+				Message: check.Message,
+			})
 		}
 	}
 	return result

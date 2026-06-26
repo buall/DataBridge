@@ -194,13 +194,19 @@ type RestoreBackupRequest struct {
 type RestorePrecheckResult struct {
 	OK       bool                  `json:"ok"`
 	Checks   []RestorePrecheckItem `json:"checks"`
-	Warnings []string              `json:"warnings,omitempty"`
+	Warnings []RestoreWarning      `json:"warnings,omitempty"`
 }
 
 type RestorePrecheckItem struct {
 	Key     string `json:"key"`
 	Label   string `json:"label"`
 	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+type RestoreWarning struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
 	Message string `json:"message"`
 }
 
