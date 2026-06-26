@@ -364,13 +364,14 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	latency, version, err := testConnection(ctx, model.ConnectionInput{
-		Type:     connection.Type,
-		Name:     connection.Name,
-		Host:     connection.Host,
-		Port:     connection.Port,
-		Username: connection.Username,
-		Password: connection.Password,
-		SSLMode:  connection.SSLMode,
+		Type:      connection.Type,
+		Name:      connection.Name,
+		Host:      connection.Host,
+		Port:      connection.Port,
+		Username:  connection.Username,
+		Password:  connection.Password,
+		SSLMode:   connection.SSLMode,
+		TLSConfig: connection.TLSConfig,
 	})
 	if err != nil {
 		_ = s.store.UpdateConnectionHealth(connection.ID, "warning", 0, connection.Version)

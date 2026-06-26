@@ -455,13 +455,13 @@ func (e *Engine) restoreNeo4j(ctx context.Context, target model.Connection, data
 			return err
 		}
 	}
+	if err := normalizeNeo4jDumpForTarget(dumpFile, target.Version); err != nil {
+		return fmt.Errorf("normalize neo4j dump: %w", err)
+	}
 	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
 		if err := clearNeo4jDatabase(ctx, target, database, report); err != nil {
 			return err
 		}
-	}
-	if err := normalizeNeo4jDumpForTarget(dumpFile, target.Version); err != nil {
-		return fmt.Errorf("normalize neo4j dump: %w", err)
 	}
 	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 Neo4j 数据库"})
 	args := []string{
