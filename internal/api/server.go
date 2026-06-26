@@ -2781,19 +2781,7 @@ func (s *Server) neo4jRestoreVersionWarning(ctx context.Context, sourceJob model
 }
 
 func majorVersion(version string) (int, bool) {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return 0, false
-	}
-	segment := version
-	if index := strings.Index(segment, "."); index >= 0 {
-		segment = segment[:index]
-	}
-	value, err := strconv.Atoi(segment)
-	if err != nil {
-		return 0, false
-	}
-	return value, true
+	return migrate.ParseMajorVersion(version)
 }
 
 func restorePrecheckResult(checks []model.RestorePrecheckItem) model.RestorePrecheckResult {

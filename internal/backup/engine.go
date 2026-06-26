@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -56,10 +58,9 @@ func (e *Engine) Run(ctx context.Context, source model.Connection, request model
 }
 
 func (e *Engine) runPostgres(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
-	for _, name := range []string{"pg_dump"} {
-		if _, err := toolPath(name); err != nil {
-			return err
-		}
+	pgDumpTool, err := postgresToolForConnection("pg_dump", source)
+	if err != nil {
+		return err
 	}
 	dest, err := newDestination(request)
 	if err != nil {
@@ -73,7 +74,7 @@ func (e *Engine) runPostgres(ctx context.Context, source model.Connection, reque
 	dumpFile := filepath.Join(tempDir, backupFileName(source, request.SourceDatabase, "sql"))
 	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在导出 PostgreSQL 数据库"})
 	args := []string{"--format=plain", "--no-owner", "--no-privileges", "--verbose", "--file", dumpFile, "--host", source.Host, "--port", fmt.Sprintf("%d", source.Port), "--username", source.Username, "--dbname", request.SourceDatabase}
-	if err := runCommand(ctx, "pg_dump", args, postgresEnv(source.Password, source.SSLMode), "export", report); err != nil {
+	if err := runCommand(ctx, pgDumpTool, args, postgresEnv(source.Password, source.SSLMode), "export", report); err != nil {
 		return err
 	}
 	archive, err := compressBackup(tempDir, dumpFile, source, request.SourceDatabase, report)
@@ -368,19 +369,18 @@ func (e *Engine) Restore(ctx context.Context, target model.Connection, database,
 }
 
 func (e *Engine) restorePostgres(ctx context.Context, target model.Connection, database, dumpFile string, options RestoreOptions, report Reporter) error {
-	for _, name := range []string{"psql"} {
-		if _, err := toolPath(name); err != nil {
-			return err
-		}
+	psqlTool, err := postgresToolForConnection("psql", target)
+	if err != nil {
+		return err
 	}
 	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
-		if err := recreatePostgresDatabase(ctx, target, database, report); err != nil {
+		if err := recreatePostgresDatabase(ctx, target, database, psqlTool, report); err != nil {
 			return err
 		}
 	}
 	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 PostgreSQL 数据库"})
 	args := []string{"--set", "ON_ERROR_STOP=on", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--username", target.Username, "--dbname", database, "--file", dumpFile}
-	if err := runCommand(ctx, "psql", args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
+	if err := runCommand(ctx, psqlTool, args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
 		return fmt.Errorf("psql restore: %w", err)
 	}
 	return nil
@@ -460,6 +460,9 @@ func (e *Engine) restoreNeo4j(ctx context.Context, target model.Connection, data
 			return err
 		}
 	}
+	if err := normalizeNeo4jDumpForTarget(dumpFile, target.Version); err != nil {
+		return fmt.Errorf("normalize neo4j dump: %w", err)
+	}
 	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: "正在恢复 Neo4j 数据库"})
 	args := []string{
 		"-a", neo4jBoltURI(target),
@@ -484,7 +487,7 @@ func normalizeRestoreStrategy(strategy string) string {
 	}
 }
 
-func recreatePostgresDatabase(ctx context.Context, target model.Connection, database string, report Reporter) error {
+func recreatePostgresDatabase(ctx context.Context, target model.Connection, database, psqlTool string, report Reporter) error {
 	maintenanceDatabase := "postgres"
 	if strings.EqualFold(strings.TrimSpace(database), maintenanceDatabase) {
 		maintenanceDatabase = "template1"
@@ -496,7 +499,7 @@ func recreatePostgresDatabase(ctx context.Context, target model.Connection, data
 		fmt.Sprintf("CREATE DATABASE %s;", postgresIdentifier(database)),
 	} {
 		args := []string{"--set", "ON_ERROR_STOP=on", "--host", target.Host, "--port", fmt.Sprintf("%d", target.Port), "--username", target.Username, "--dbname", maintenanceDatabase, "--command", statement}
-		if err := runCommand(ctx, "psql", args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
+		if err := runCommand(ctx, psqlTool, args, postgresEnv(target.Password, target.SSLMode), "restore", report); err != nil {
 			return fmt.Errorf("recreate postgres database: %w", err)
 		}
 	}
@@ -566,6 +569,12 @@ func toolPath(name string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
 	}
+	if postgresMajor, postgresTool, ok := splitPostgresVersionedTool(name); ok {
+		candidate := filepath.Join("/usr/lib/postgresql", strconv.Itoa(postgresMajor), "bin", postgresTool)
+		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
+			return candidate, nil
+		}
+	}
 	for _, candidate := range []string{
 		filepath.Join("/opt/homebrew/opt/libpq/bin", name),
 		filepath.Join("/usr/local/opt/libpq/bin", name),
@@ -583,6 +592,52 @@ func toolPath(name string) (string, error) {
 
 func ToolPathForPrecheck(name string) (string, error) {
 	return toolPath(name)
+}
+
+func postgresToolForConnection(base string, connection model.Connection) (string, error) {
+	major, ok := parseMajorVersion(connection.Version)
+	if !ok {
+		return "", fmt.Errorf("unsupported postgres version %q", connection.Version)
+	}
+	name := base
+	if major >= 13 && major <= 18 {
+		name = fmt.Sprintf("%s-%d", base, major)
+	}
+	if _, err := toolPath(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func splitPostgresVersionedTool(name string) (int, string, bool) {
+	for _, base := range []string{"psql", "pg_dump", "pg_restore"} {
+		prefix := base + "-"
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		major, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		if err != nil {
+			return 0, "", false
+		}
+		return major, base, true
+	}
+	return 0, "", false
+}
+
+func parseMajorVersion(version string) (int, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, false
+	}
+	segment := version
+	if index := strings.Index(segment, "."); index >= 0 {
+		segment = segment[:index]
+	}
+	value, err := strconv.Atoi(segment)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func postgresEnv(password, sslMode string) []string {
@@ -699,6 +754,64 @@ func decodeCypherShellPlainOutput(rawPath, outputPath string) error {
 	body = strings.ReplaceAll(body, `\"`, `"`)
 	body = strings.ReplaceAll(body, `\\`, `\`)
 	return os.WriteFile(outputPath, []byte(body), 0o600)
+}
+
+var neo4jLegacyUniqueConstraintPattern = regexp.MustCompile(`^CREATE CONSTRAINT( IF NOT EXISTS)? ON \(([^)]+)\) ASSERT \(([^)]+)\) IS UNIQUE;?$`)
+var neo4jLegacyDropUniqueConstraintPattern = regexp.MustCompile(`^DROP CONSTRAINT ON \(([^)]+)\) ASSERT \(([^)]+)\) IS UNIQUE;?$`)
+
+func normalizeNeo4jDumpForTarget(dumpFile, targetVersion string) error {
+	if !neo4jNeedsConstraintSyntaxUpgrade(targetVersion) {
+		return nil
+	}
+	data, err := os.ReadFile(dumpFile)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		matches := neo4jLegacyUniqueConstraintPattern.FindStringSubmatch(trimmed)
+		if matches != nil {
+			replacement := "CREATE CONSTRAINT"
+			if matches[1] != "" {
+				replacement += matches[1]
+			}
+			replacement += " FOR (" + matches[2] + ") REQUIRE (" + matches[3] + ") IS UNIQUE;"
+			lines[i] = strings.Replace(line, trimmed, replacement, 1)
+			changed = true
+			continue
+		}
+		matches = neo4jLegacyDropUniqueConstraintPattern.FindStringSubmatch(trimmed)
+		if matches != nil {
+			replacement := "DROP CONSTRAINT " + neo4jLegacyConstraintName(matches[1], matches[2]) + " IF EXISTS;"
+			lines[i] = strings.Replace(line, trimmed, replacement, 1)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return os.WriteFile(dumpFile, []byte(strings.Join(lines, "\n")), 0o600)
+}
+
+func neo4jNeedsConstraintSyntaxUpgrade(version string) bool {
+	major, ok := parseMajorVersion(version)
+	return ok && major >= 5
+}
+
+func neo4jLegacyConstraintName(variable, propertyExpr string) string {
+	label := variable
+	if parts := strings.SplitN(variable, ":", 2); len(parts) == 2 {
+		label = parts[1]
+	}
+	label = strings.Trim(label, "` ")
+	property := propertyExpr
+	if parts := strings.SplitN(propertyExpr, ".", 2); len(parts) == 2 {
+		property = parts[1]
+	}
+	property = strings.Trim(property, "`() ")
+	return fmt.Sprintf("constraint_%s_%s", sanitize(label), sanitize(property))
 }
 
 func extractBackup(archivePath, tempDir string) (string, error) {

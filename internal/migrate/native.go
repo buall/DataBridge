@@ -27,7 +27,20 @@ func (e *Engine) RunNativePostgres(
 	request model.MigrationRequest,
 	report Reporter,
 ) error {
-	for _, name := range []string{"psql", "pg_dump", "pg_restore"} {
+	sourceMajor, err := postgresMajorVersion(source.Version)
+	if err != nil {
+		return fmt.Errorf("detect source postgres major version: %w", err)
+	}
+	targetMajor, err := postgresMajorVersion(target.Version)
+	if err != nil {
+		return fmt.Errorf("detect target postgres major version: %w", err)
+	}
+	tools := postgresNativeTools{
+		psql:      postgresToolName("psql", targetMajor),
+		pgDump:    postgresToolName("pg_dump", sourceMajor),
+		pgRestore: postgresToolName("pg_restore", targetMajor),
+	}
+	for _, name := range []string{tools.psql, tools.pgDump, tools.pgRestore} {
 		if _, err := postgresToolPath(name); err != nil {
 			return err
 		}
@@ -73,7 +86,7 @@ func (e *Engine) RunNativePostgres(
 	if err := createSchemas(ctx, targetConn, uniqueSchemas(tables)); err != nil {
 		return fmt.Errorf("create target schemas: %w", err)
 	}
-	if err := prepareNativeTarget(ctx, target, request.TargetDatabase, tables, request.ConflictStrategy, report); err != nil {
+	if err := prepareNativeTarget(ctx, target, request.TargetDatabase, tables, request.ConflictStrategy, tools.psql, report); err != nil {
 		return fmt.Errorf("prepare native target: %w", err)
 	}
 	if err := syncExtensions(ctx, sourceConn, targetConn, report); err != nil {
@@ -89,17 +102,17 @@ func (e *Engine) RunNativePostgres(
 	listPath := filepath.Join(tempDir, "restore.list")
 	jobs := nativeToolJobs(len(tables))
 
-	report(Progress{Stage: "dump", TablesDone: 0, RowsTotal: totalRows, EventLevel: "INFO", EventMessage: fmt.Sprintf("正在使用 pg_dump directory 格式并发导出源端数据，范围=%s，jobs=%d", scope, jobs)})
-	if err := runLoggedCommand(ctx, "pg_dump", pgDumpArgs(source, request.SourceDatabase, tables, dumpPath, jobs, dumpAll), source.Password, source.SSLMode, "dump", nil, dumpHeartbeat(dumpPath), report); err != nil {
-		return fmt.Errorf("pg_dump: %w", err)
+	report(Progress{Stage: "dump", TablesDone: 0, RowsTotal: totalRows, EventLevel: "INFO", EventMessage: fmt.Sprintf("正在使用 %s directory 格式并发导出源端数据，范围=%s，jobs=%d", tools.pgDump, scope, jobs)})
+	if err := runLoggedCommand(ctx, tools.pgDump, pgDumpArgs(source, request.SourceDatabase, tables, dumpPath, jobs, dumpAll), source.Password, source.SSLMode, "dump", nil, dumpHeartbeat(dumpPath), report); err != nil {
+		return fmt.Errorf("%s: %w", tools.pgDump, err)
 	}
-	if err := writeFilteredRestoreList(ctx, dumpPath, listPath, target.Password, target.SSLMode); err != nil {
+	if err := writeFilteredRestoreList(ctx, tools.pgRestore, dumpPath, listPath, target.Password, target.SSLMode); err != nil {
 		return fmt.Errorf("prepare pg_restore list: %w", err)
 	}
 
-	report(Progress{Stage: "restore", TablesDone: 0, RowsTotal: totalRows, EventLevel: "INFO", EventMessage: fmt.Sprintf("正在使用 pg_restore 并发恢复到目标端，jobs=%d", jobs)})
-	if err := runLoggedCommand(ctx, "pg_restore", pgRestoreArgs(target, request.TargetDatabase, dumpPath, listPath, jobs), target.Password, target.SSLMode, "restore", nil, commandHeartbeat("pg_restore"), report); err != nil {
-		return fmt.Errorf("pg_restore: %w", err)
+	report(Progress{Stage: "restore", TablesDone: 0, RowsTotal: totalRows, EventLevel: "INFO", EventMessage: fmt.Sprintf("正在使用 %s 并发恢复到目标端，jobs=%d", tools.pgRestore, jobs)})
+	if err := runLoggedCommand(ctx, tools.pgRestore, pgRestoreArgs(target, request.TargetDatabase, dumpPath, listPath, jobs), target.Password, target.SSLMode, "restore", nil, commandHeartbeat(tools.pgRestore), report); err != nil {
+		return fmt.Errorf("%s: %w", tools.pgRestore, err)
 	}
 
 	var copiedTotal int64
@@ -184,7 +197,7 @@ func pgRestoreArgs(connection model.Connection, database, dumpPath, listPath str
 	}
 }
 
-func prepareNativeTarget(ctx context.Context, connection model.Connection, database string, tables []tableDefinition, strategy string, report Reporter) error {
+func prepareNativeTarget(ctx context.Context, connection model.Connection, database string, tables []tableDefinition, strategy string, psqlTool string, report Reporter) error {
 	if strategy == "" {
 		strategy = "backup"
 	}
@@ -240,10 +253,16 @@ func prepareNativeTarget(ctx context.Context, connection model.Connection, datab
 	}
 	report(Progress{Stage: "target-prep", EventLevel: "INFO", EventMessage: "正在使用 psql 预处理目标端同名对象"})
 	script := strings.Join(statements, "\n") + "\n"
-	if err := runLoggedCommand(ctx, "psql", psqlArgs(connection, database), connection.Password, connection.SSLMode, "target-prep", strings.NewReader(script), nil, report); err != nil {
+	if err := runLoggedCommand(ctx, psqlTool, psqlArgs(connection, database), connection.Password, connection.SSLMode, "target-prep", strings.NewReader(script), nil, report); err != nil {
 		return err
 	}
 	return nil
+}
+
+type postgresNativeTools struct {
+	psql      string
+	pgDump    string
+	pgRestore string
 }
 
 func syncExtensions(ctx context.Context, source, target *pgx.Conn, report Reporter) error {
@@ -427,8 +446,8 @@ func runLoggedCommandToWriter(ctx context.Context, name string, args []string, e
 	return nil
 }
 
-func writeFilteredRestoreList(ctx context.Context, dumpPath, listPath, password, sslMode string) error {
-	output, err := runCommandOutput(ctx, "pg_restore", []string{"--list", dumpPath}, password, sslMode)
+func writeFilteredRestoreList(ctx context.Context, pgRestoreTool, dumpPath, listPath, password, sslMode string) error {
+	output, err := runCommandOutput(ctx, pgRestoreTool, []string{"--list", dumpPath}, password, sslMode)
 	if err != nil {
 		return err
 	}
@@ -464,9 +483,49 @@ func postgresToolPath(name string) (string, error) {
 	return toolPath(name)
 }
 
+func postgresToolName(base string, major int) string {
+	if major >= 13 && major <= 18 {
+		return fmt.Sprintf("%s-%d", base, major)
+	}
+	return base
+}
+
+func postgresMajorVersion(version string) (int, error) {
+	major, ok := ParseMajorVersion(version)
+	if !ok {
+		return 0, fmt.Errorf("unsupported version %q", version)
+	}
+	if major < 13 || major > 18 {
+		return 0, fmt.Errorf("version %q is outside supported compatibility matrix", version)
+	}
+	return major, nil
+}
+
+func ParseMajorVersion(version string) (int, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return 0, false
+	}
+	segment := version
+	if index := strings.Index(segment, "."); index >= 0 {
+		segment = segment[:index]
+	}
+	value, err := strconv.Atoi(segment)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
 func toolPath(name string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
+	}
+	if postgresMajor, postgresTool, ok := splitPostgresVersionedTool(name); ok {
+		candidate := filepath.Join("/usr/lib/postgresql", strconv.Itoa(postgresMajor), "bin", postgresTool)
+		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
+			return candidate, nil
+		}
 	}
 	for _, candidate := range []string{
 		filepath.Join("/opt/homebrew/opt/libpq/bin", name),
@@ -481,6 +540,21 @@ func toolPath(name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s not found in PATH", name)
+}
+
+func splitPostgresVersionedTool(name string) (int, string, bool) {
+	for _, base := range []string{"psql", "pg_dump", "pg_restore"} {
+		prefix := base + "-"
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		major, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		if err != nil {
+			return 0, "", false
+		}
+		return major, base, true
+	}
+	return 0, "", false
 }
 
 func postgresCommandEnv(password, sslMode string) []string {

@@ -32,8 +32,6 @@ FROM debian:bookworm-slim AS runtime
 ARG TARGETARCH
 ARG MONGO_TOOLS_VERSION=100.17.0
 ARG MONGO_TOOLS_DISTRO=ubuntu2204
-ARG PG_MAJOR=18
-
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
@@ -60,7 +58,12 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       cypher-shell \
       default-mysql-client \
-      postgresql-client-${PG_MAJOR} \
+      postgresql-client-13 \
+      postgresql-client-14 \
+      postgresql-client-15 \
+      postgresql-client-16 \
+      postgresql-client-17 \
+      postgresql-client-18 \
       temurin-21-jre \
       tini \
       xz-utils; \

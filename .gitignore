@@ -6,3 +6,5 @@ data/
 backups/
 *.tsbuildinfo
 .DS_Store
+scripts/compatibility/reports/*
+!scripts/compatibility/reports/.gitkeep

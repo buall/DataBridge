@@ -25,6 +25,24 @@ DataBridge 是一个面向 PostgreSQL、MySQL、MongoDB 和 Neo4j 的数据库�
 - MongoDB -> PostgreSQL
 - Neo4j -> MySQL
 
+## 兼容性验证摘要
+
+基于当前仓库内串行兼容性 runner，已完成首轮 PostgreSQL、MySQL、MongoDB、Neo4j 主矩阵验证。测试全部通过 DataBridge API 驱动执行，DataBridge 常驻运行，被测数据库按“每次只启动一组源库 + 目标库容器”的方式串行验证，case 结束后清理容器和 volume，并保留本地报告。
+
+- PostgreSQL：5 个主组合中 4 个 `passed`，`18 -> 13` 为 `conditional`
+- MySQL：4 个主组合全部 `passed`
+- MongoDB：4 个主组合全部 `passed`
+- Neo4j：3 个主组合全部 `passed`
+
+当前唯一明确的版本边界是 PostgreSQL `18 -> 13`。失败原因已定位为上游 PostgreSQL 工具链降级限制：`pg_dump-18` 生成的目录格式头 `1.16` 无法被 `pg_restore-13` 读取，不是 DataBridge 连接、发现或 API 链路失败。
+
+Neo4j `4.4 -> 5.x` 已验证通过。DataBridge 当前已在 Neo4j restore 链路中兼容 4.4 导出到 5.x 时的旧式约束语法差异。
+
+详细测试计划与逐组合结果见：
+
+- [docs/compatibility-test-plan.md](docs/compatibility-test-plan.md)
+- [docs/compatibility-matrix.md](docs/compatibility-matrix.md)
+
 ### 迁移引擎矩阵
 
 | 源端类型 | 目标端类型 | 原生工具引擎 | 内置引擎 |
