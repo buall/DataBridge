@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Copy, Database, Edit3, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Database, Edit3, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
@@ -21,6 +21,8 @@ type DuplicateConnectionFormState = Omit<ConnectionFormState, "type" | "password
   password: string;
   tlsConfig: ConnectionTLSConfig;
 };
+
+type ConnectionFormErrors = Partial<Record<"type" | "name" | "host" | "port" | "username" | "password" | "sslMode", string>>;
 
 export function Connections({
   connections,
@@ -53,10 +55,29 @@ export function Connections({
   const [actionError, setActionError] = useState("");
   const [query, setQuery] = useState("");
   const [form, setForm] = useState<ConnectionFormState>(emptyConnectionForm("PostgreSQL"));
+  const [nameCustomized, setNameCustomized] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
+  const [formErrors, setFormErrors] = useState<ConnectionFormErrors>({});
   const filtered = connections.filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   const formSecurityConfig = connectionSecurityConfig(form.type);
+  const formCompatibilityHint = connectionCompatibilityHint(form.type);
+
+  useEffect(() => {
+    if (nameCustomized) return;
+    const generatedName = suggestConnectionName(form.type, form.host, form.port);
+    if (form.name === generatedName) return;
+    setForm((current) => ({ ...current, name: generatedName }));
+  }, [form.type, form.host, form.port, form.name, nameCustomized]);
+
+  function updateFormField<K extends keyof ConnectionFormState>(key: K, value: ConnectionFormState[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function validateSingleField(key: keyof ConnectionFormErrors, nextForm: ConnectionFormState) {
+    const nextErrors = validateConnectionForm(nextForm);
+    setFormErrors((current) => ({ ...current, [key]: nextErrors[key] }));
+  }
 
   function fallbackCopyText(value: string) {
     const textarea = document.createElement("textarea");
@@ -89,6 +110,12 @@ export function Connections({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    const validationErrors = validateConnectionForm(form);
+    setFormErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) {
+      setFormError("请先修正表单中的必填项和格式问题。");
+      return;
+    }
     setSubmitting(true);
     setFormError("");
     try {
@@ -172,7 +199,9 @@ export function Connections({
 
   function openNewConnection() {
     setForm(emptyConnectionForm("PostgreSQL"));
+    setNameCustomized(false);
     setFormError("");
+    setFormErrors({});
     setShowForm(true);
   }
 
@@ -220,7 +249,9 @@ export function Connections({
   function closeConnectionForm() {
     setShowForm(false);
     setForm(emptyConnectionForm("PostgreSQL"));
+    setNameCustomized(false);
     setFormError("");
+    setFormErrors({});
   }
 
   function openDeleteConnection(connection: DatabaseConnection) {
@@ -511,14 +542,21 @@ export function Connections({
         <div className="modal-backdrop" onMouseDown={closeConnectionForm}>
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={closeConnectionForm}><X /></button></div>
-            <label className="field"><span>连接名称</span><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
-            <SelectField label="数据库类型" value={form.type} onChange={(type) => setForm({ ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() })}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option></SelectField>
-            <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>端口</span><input required type="number" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} /></label></div>
-            <label className="field"><span>用户名</span><input required value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="migration_user" /></label>
-            <label className="field"><span>密码</span><input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
-            <SelectField label={formSecurityConfig.label} value={form.sslMode} onChange={(sslMode) => setForm({ ...form, sslMode })}>
+            <SelectField label={requiredLabel("数据库类型")} ariaLabel="数据库类型" invalid={Boolean(formErrors.type)} value={form.type} onChange={(type) => { const nextForm = { ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() }; setForm(nextForm); setFormErrors((current) => ({ ...current, type: undefined, port: undefined, sslMode: undefined })); }}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option></SelectField>
+            {formErrors.type && <div className="form-error left field-error">{formErrors.type}</div>}
+            <div className="compatibility-hint"><Info size={16} /><span>{formCompatibilityHint}</span></div>
+            <label className="field"><span>{requiredLabel("连接名称")}</span><input value={form.name} className={formErrors.name ? "invalid" : ""} onChange={(e) => { updateFormField("name", e.target.value); setNameCustomized(e.target.value.trim().length > 0); setFormErrors((current) => ({ ...current, name: undefined })); }} onBlur={(e) => validateSingleField("name", { ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
+            {formErrors.name && <div className="form-error left field-error">{formErrors.name}</div>}
+            <div className="field-row"><label className="field grow"><span>{requiredLabel("主机地址")}</span><input value={form.host} className={formErrors.host ? "invalid" : ""} onChange={(e) => { const nextForm = { ...form, host: e.target.value }; setForm(nextForm); setFormErrors((current) => ({ ...current, host: validateConnectionForm(nextForm).host })); }} onBlur={(e) => validateSingleField("host", { ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>{requiredLabel("端口")}</span><input inputMode="numeric" pattern="[0-9]*" maxLength={5} value={form.port} className={formErrors.port ? "invalid" : ""} onBeforeInput={(e) => { const value = (e as unknown as { data?: string }).data ?? ""; if (value && /\D/.test(value)) e.preventDefault(); }} onChange={(e) => { const next = e.target.value.replace(/[^\d]/g, "").slice(0, 5); const nextForm = { ...form, port: next }; setForm(nextForm); setFormErrors((current) => ({ ...current, port: validateConnectionForm(nextForm).port })); }} onBlur={(e) => validateSingleField("port", { ...form, port: e.target.value })} /></label></div>
+            {(formErrors.host || formErrors.port) && <div className="form-error left field-error">{formErrors.host ?? formErrors.port}</div>}
+            <label className="field"><span>{requiredLabel("用户名")}</span><input value={form.username} className={formErrors.username ? "invalid" : ""} onChange={(e) => { updateFormField("username", e.target.value); setFormErrors((current) => ({ ...current, username: undefined })); }} onBlur={(e) => validateSingleField("username", { ...form, username: e.target.value })} placeholder="migration_user" /></label>
+            {formErrors.username && <div className="form-error left field-error">{formErrors.username}</div>}
+            <label className="field"><span>{requiredLabel("密码")}</span><input type="password" value={form.password} className={formErrors.password ? "invalid" : ""} onChange={(e) => { updateFormField("password", e.target.value); setFormErrors((current) => ({ ...current, password: undefined })); }} onBlur={(e) => validateSingleField("password", { ...form, password: e.target.value })} /></label>
+            {formErrors.password && <div className="form-error left field-error">{formErrors.password}</div>}
+            <SelectField label={requiredLabel(formSecurityConfig.label)} ariaLabel={formSecurityConfig.label} invalid={Boolean(formErrors.sslMode)} value={form.sslMode} onChange={(sslMode) => { setForm({ ...form, sslMode }); setFormErrors((current) => ({ ...current, sslMode: undefined })); }}>
               {formSecurityConfig.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </SelectField>
+            {formErrors.sslMode && <div className="form-error left field-error">{formErrors.sslMode}</div>}
             <p className="field-hint">{formSecurityConfig.hint}</p>
             {form.sslMode === "verify-full" && (
               <TLSCertificateFields value={form.tlsConfig} onChange={(tlsConfig) => setForm({ ...form, tlsConfig })} />
@@ -575,6 +613,25 @@ function seedDataTargetSuffix(type: DatabaseType) {
   if (type === "MongoDB") return " 集合";
   if (type === "Neo4j") return " 节点标签";
   return "";
+}
+
+function connectionCompatibilityHint(type: DatabaseType) {
+  switch (type) {
+    case "PostgreSQL":
+      return "适用版本建议：PostgreSQL 13、14、15、16、18 已完成主组合兼容性测试，建议优先使用这些版本；跨大版本降级迁移请先演练验证。";
+    case "MySQL":
+      return "适用版本建议：MySQL 5.7、8.0 已完成主组合兼容性测试，建议优先使用这些版本；其他版本请先在测试环境完成连接、迁移、备份恢复演练。";
+    case "MongoDB":
+      return "适用版本建议：MongoDB 5.0、6.0、7.0、8.0 已完成主组合兼容性测试，建议优先使用这些版本；其他版本请先完成兼容性演练。";
+    case "Neo4j":
+      return "适用版本建议：Neo4j 4.4、5.x 已完成主组合兼容性测试，建议优先使用这些版本；跨大版本场景请先验证约束和索引兼容性。";
+    default:
+      return "适用版本建议：当前数据库类型暂无兼容性测试结论，请先在测试环境完成连接、迁移、备份恢复演练。";
+  }
+}
+
+function requiredLabel(label: string) {
+  return <><span className="required-mark" aria-hidden="true">* </span>{label}</>;
 }
 
 function connectionSecurityConfig(type: DatabaseType) {
@@ -652,7 +709,7 @@ function emptyTLSConfig(): ConnectionTLSConfig {
 function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
   return {
     type,
-    name: "",
+    name: suggestConnectionName(type, "", defaultPort(type)),
     note: "",
     host: "",
     port: defaultPort(type),
@@ -661,6 +718,54 @@ function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
     sslMode: defaultSecurityMode(type),
     tlsConfig: emptyTLSConfig(),
   };
+}
+
+function suggestConnectionName(type: DatabaseType, host: string, port: string) {
+  const hostValue = host.trim() || "主机地址";
+  const portValue = port.trim() || defaultPort(type);
+  return `${type}-${hostValue}-${portValue}`;
+}
+
+function validateConnectionForm(form: ConnectionFormState): ConnectionFormErrors {
+  const errors: ConnectionFormErrors = {};
+  if (!form.type) errors.type = "请选择数据库类型";
+  if (!form.name.trim()) errors.name = "请输入连接名称";
+  if (!form.host.trim()) errors.host = "请输入主机地址";
+  else if (!isValidConnectionHost(form.host.trim())) errors.host = "请输入合法的 IPv4 地址或域名 / 主机名";
+
+  if (!form.port.trim()) errors.port = "请输入端口";
+  else if (!/^\d+$/.test(form.port.trim())) errors.port = "端口只能输入数字";
+  else {
+    const port = Number(form.port.trim());
+    if (!Number.isInteger(port) || port < 1 || port > 65535) errors.port = "端口范围需在 1 到 65535 之间";
+  }
+
+  if (!form.username.trim()) errors.username = "请输入用户名";
+  if (!form.password.trim()) errors.password = "请输入密码";
+  if (!form.sslMode.trim()) errors.sslMode = "请选择连接加密模式";
+  return errors;
+}
+
+function isValidConnectionHost(value: string) {
+  return isIPv4Host(value) || isDomainOrHostname(value);
+}
+
+function isIPv4Host(value: string) {
+  const segments = value.split(".");
+  if (segments.length !== 4) return false;
+  return segments.every((segment) => /^(0|[1-9]\d{0,2})$/.test(segment) && Number(segment) >= 0 && Number(segment) <= 255);
+}
+
+function isDomainOrHostname(value: string) {
+  if (value.length > 253) return false;
+  if (value === "localhost") return true;
+  const labels = value.split(".");
+  if (labels.some((label) => label.length === 0 || label.length > 63)) return false;
+  if (!labels.every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label))) return false;
+  if (labels.every((label) => /^\d+$/.test(label))) return false;
+  const topLevelLabel = labels[labels.length - 1];
+  if (/^\d+$/.test(topLevelLabel)) return false;
+  return true;
 }
 
 function TLSCertificateFields({

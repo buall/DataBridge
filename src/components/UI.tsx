@@ -143,16 +143,20 @@ function regionFlagClass(region?: string) {
 
 export function SelectField({
   label,
+  ariaLabel,
   value,
   onChange,
   children,
   disabled = false,
+  invalid = false,
 }: {
-  label: string;
+  label: ReactNode;
+  ariaLabel?: string;
   value: string | number;
   onChange: (value: string) => void;
   children: ReactNode;
   disabled?: boolean;
+  invalid?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -178,12 +182,12 @@ export function SelectField({
   return (
     <div className="field select-field" ref={rootRef}>
       <span>{label}</span>
-      <button type="button" className="select-trigger" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+      <button type="button" className={`select-trigger ${invalid ? "invalid" : ""}`} disabled={disabled} aria-label={ariaLabel ?? (typeof label === "string" ? label : undefined)} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
         <span>{selected?.label ?? "请选择"}</span>
         <ChevronDown size={16} />
       </button>
       {open && !disabled && (
-        <div className="select-menu" role="listbox" aria-label={label}>
+        <div className="select-menu" role="listbox" aria-label={ariaLabel ?? (typeof label === "string" ? label : undefined)}>
           {options.map((item) => (
             <button
               type="button"
