@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,26 @@ import (
 	"databridge/internal/model"
 	"databridge/internal/store"
 )
+
+func TestRemoteStorageErrorsUseStorageSpecificMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "timeout", err: errors.New("dial tcp 192.168.100.150:32647: i/o timeout"), want: "连接对象存储超时，请确认 Endpoint、网络连通性、防火墙规则和对象存储服务状态"},
+		{name: "refused", err: errors.New("dial tcp 192.168.100.150:32647: connect: connection refused"), want: "无法连接到对象存储 Endpoint，请确认地址、端口和网络访问策略是否正确"},
+		{name: "dns", err: errors.New("lookup minio.internal: no such host"), want: "无法解析对象存储 Endpoint，请确认域名或 IP 地址是否正确"},
+		{name: "auth", err: errors.New("AccessDenied: access denied"), want: "对象存储认证失败，请确认 Access Key、Secret Key、Region 和 Bucket 权限是否正确"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := userFacingErrorMessage(errorContextRemoteStorage, test.err); got != test.want {
+				t.Fatalf("message = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
 
 func TestNextBackupRunUsesAppTimezone(t *testing.T) {
 	request := model.BackupRequest{
@@ -29,6 +50,28 @@ func TestNextBackupRunUsesAppTimezone(t *testing.T) {
 	}
 	if got, want := next.In(appLocation).Format("2006-01-02 15:04:05"), "2026-06-18 03:00:00"; got != want {
 		t.Fatalf("next run = %s, want %s", got, want)
+	}
+}
+
+func TestFailedScheduledBackupRemainsEligibleForNextRun(t *testing.T) {
+	next := time.Now().Add(time.Hour)
+	job := model.BackupJob{
+		Status:       model.StatusFailed,
+		ScheduleMode: "scheduled",
+		NextRunAt:    &next,
+		Request: model.BackupRequest{
+			ScheduleMode:      "scheduled",
+			ScheduleFrequency: "daily",
+			ScheduleTime:      "02:00:00",
+		},
+	}
+
+	request, ok := scheduleRequestForBackup(job)
+	if !ok {
+		t.Fatal("failed execution must not disable its scheduled backup plan")
+	}
+	if request.ScheduleMode != "scheduled" {
+		t.Fatalf("schedule mode = %q", request.ScheduleMode)
 	}
 }
 
@@ -229,6 +272,18 @@ func TestFeishuNotificationCardUsesStatusTemplate(t *testing.T) {
 	}
 	if card["schema"] != "2.0" {
 		t.Fatalf("schema = %#v", card["schema"])
+	}
+	body, ok := card["body"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected Feishu body: %#v", card["body"])
+	}
+	elements, ok := body["elements"].([]map[string]any)
+	if !ok || len(elements) != 1 {
+		t.Fatalf("unexpected Feishu elements: %#v", body["elements"])
+	}
+	content, _ := elements[0]["content"].(string)
+	if !strings.Contains(content, "**任务名称：** 通知测试\n\n**源数据库：** system") {
+		t.Fatalf("Feishu card fields should use paragraph breaks: %q", content)
 	}
 }
 

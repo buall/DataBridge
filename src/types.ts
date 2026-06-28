@@ -37,6 +37,57 @@ export interface ConnectionInput {
   tlsConfig?: ConnectionTLSConfig;
 }
 
+export interface BatchImportIssue {
+  sheet: string;
+  row: number;
+  field?: string;
+  message: string;
+}
+
+export interface BatchImportConnectionPreview {
+  row: number;
+  key: string;
+  name: string;
+  type: string;
+  host: string;
+  port: number;
+  username: string;
+  sslMode: string;
+  note?: string;
+  errors: string[];
+}
+
+export interface BatchImportSchedulePreview {
+  row: number;
+  name: string;
+  connectionKey: string;
+  databases: string[];
+  storageName: string;
+  frequency: string;
+  time: string;
+  weekday?: string;
+  monthDay?: number;
+  retentionDays: number;
+  recipientNames: string[];
+  errors: string[];
+}
+
+export interface BatchImportPreview {
+  fileName: string;
+  valid: boolean;
+  summary: { connections: number; schedules: number; errors: number };
+  connections: BatchImportConnectionPreview[];
+  schedules: BatchImportSchedulePreview[];
+  issues: BatchImportIssue[];
+}
+
+export interface BatchImportResult {
+  success: boolean;
+  preview: BatchImportPreview;
+  connections: DatabaseConnection[];
+  backups: BackupJob[];
+}
+
 export interface DuplicateConnectionInput {
   name: string;
   note?: string;

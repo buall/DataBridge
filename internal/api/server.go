@@ -94,6 +94,8 @@ func New(appStore *store.Store) http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", server.logout)
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/connections", server.listConnections)
+	protected.HandleFunc("POST /api/imports/excel/preview", server.previewBatchImport)
+	protected.HandleFunc("POST /api/imports/excel", server.executeBatchImport)
 	protected.HandleFunc("POST /api/connections/test", server.testConnection)
 	protected.HandleFunc("POST /api/connections", server.createConnection)
 	protected.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
@@ -1264,16 +1266,29 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			return
 		}
 		if errors.Is(err, context.Canceled) {
-			item.Status = model.StatusCancelled
-			item.Stage = "cancelled"
+			if item.ScheduleMode == "scheduled" {
+				item.Status = model.StatusScheduled
+				item.Stage = "scheduled"
+			} else {
+				item.Status = model.StatusCancelled
+				item.Stage = "cancelled"
+			}
 			finishBackupArtifactVersion(item, versionID, model.StatusCancelled, "cancelled", finished, "任务已取消")
 			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "WARN", Message: "任务已取消"})
 		} else {
-			item.Status = model.StatusFailed
-			item.Stage = "failed"
+			if item.ScheduleMode == "scheduled" {
+				item.Status = model.StatusScheduled
+				item.Stage = "scheduled"
+			} else {
+				item.Status = model.StatusFailed
+				item.Stage = "failed"
+			}
 			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
 			finishBackupArtifactVersion(item, versionID, model.StatusFailed, "failed", finished, err.Error())
 			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
+		}
+		if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
+			appendJobEvent(&item.Events, model.Event{Time: finished.Add(time.Millisecond), Level: "INFO", Message: "定时计划保持有效，下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
 		}
 	})
 	if err == nil {
@@ -1745,7 +1760,7 @@ func (s *Server) runDueBackups() {
 	}
 	now := time.Now().In(appLocation)
 	for _, item := range items {
-		if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled || item.NextRunAt == nil || item.NextRunAt.After(now) {
+		if item.ScheduleMode != "scheduled" || item.Status == model.StatusRunning || item.Status == model.StatusPending || item.NextRunAt == nil || item.NextRunAt.After(now) {
 			continue
 		}
 		if _, err := s.triggerScheduledBackup(item, "定时备份已触发"); err != nil {
@@ -1780,7 +1795,7 @@ func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time
 		return
 	}
 	if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
-		if job.ScheduleMode != "scheduled" || job.Status != model.StatusScheduled {
+		if job.ScheduleMode != "scheduled" || job.Status == model.StatusRunning || job.Status == model.StatusPending {
 			return
 		}
 		job.Request = request
@@ -1799,7 +1814,7 @@ func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time
 }
 
 func scheduleRequestForBackup(item model.BackupJob) (model.BackupRequest, bool) {
-	if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled {
+	if item.ScheduleMode != "scheduled" || item.Status == model.StatusRunning || item.Status == model.StatusPending {
 		return model.BackupRequest{}, false
 	}
 	request := item.Request
@@ -1837,7 +1852,7 @@ func scheduleClockMatches(request model.BackupRequest, value time.Time) bool {
 
 func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (model.BackupJob, error) {
 	now := time.Now().In(appLocation)
-	if item.ScheduleMode != "scheduled" || item.Status != model.StatusScheduled {
+	if item.ScheduleMode != "scheduled" || item.Status == model.StatusRunning || item.Status == model.StatusPending {
 		return item, fmt.Errorf("仅已计划的定时备份可以触发")
 	}
 	request, err := s.backfillBackupRequest(item)
@@ -2222,7 +2237,7 @@ func webhookPayloadForTarget(host string, payload map[string]any, message string
 				"direction": "vertical",
 				"padding":   "12px 12px 12px 12px",
 				"elements": []map[string]any{{
-					"tag": "markdown", "content": notificationDetailsMarkdown(markdownMessage),
+					"tag": "markdown", "content": feishuCardMarkdown(markdownMessage),
 					"text_align": "left", "margin": "0px 0px 0px 0px",
 				}},
 			},
@@ -2276,6 +2291,10 @@ func notificationDetailsMarkdown(message string) string {
 		formatted = append(formatted, line)
 	}
 	return strings.Join(formatted, "\n")
+}
+
+func feishuCardMarkdown(message string) string {
+	return strings.ReplaceAll(notificationDetailsMarkdown(message), "\n", "\n\n")
 }
 
 func dingtalkMarkdown(message string) string {
@@ -2640,7 +2659,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "backup not found")
 		return
 	}
-	if current.ScheduleMode != "scheduled" || current.Status != model.StatusScheduled {
+	if current.ScheduleMode != "scheduled" || current.Status == model.StatusRunning || current.Status == model.StatusPending {
 		writeError(w, http.StatusBadRequest, "invalid_request", "仅已计划的定时备份可以编辑")
 		return
 	}
@@ -4146,6 +4165,23 @@ func userFacingErrorMessage(context errorContext, err error) string {
 	raw := strings.TrimSpace(err.Error())
 	lower := strings.ToLower(raw)
 
+	if context == errorContextRemoteStorage {
+		switch {
+		case strings.Contains(lower, "connection refused"):
+			return "无法连接到对象存储 Endpoint，请确认地址、端口和网络访问策略是否正确"
+		case strings.Contains(lower, "i/o timeout"), strings.Contains(lower, "deadline exceeded"), strings.Contains(lower, "timeout"):
+			return "连接对象存储超时，请确认 Endpoint、网络连通性、防火墙规则和对象存储服务状态"
+		case strings.Contains(lower, "no such host"), strings.Contains(lower, "lookup "):
+			return "无法解析对象存储 Endpoint，请确认域名或 IP 地址是否正确"
+		case strings.Contains(lower, "signaturedoesnotmatch"), strings.Contains(lower, "invalidaccesskeyid"), strings.Contains(lower, "accessdenied"), strings.Contains(lower, "access denied"):
+			return "对象存储认证失败，请确认 Access Key、Secret Key、Region 和 Bucket 权限是否正确"
+		case strings.Contains(lower, "nosuchbucket"), strings.Contains(lower, "bucket"):
+			return "对象存储 Bucket 不存在或当前账号无权访问，请确认 Bucket 名称和授权策略"
+		case strings.Contains(lower, "endpoint must include"), strings.Contains(lower, "invalid endpoint"):
+			return "对象存储 Endpoint 格式不正确，请填写完整地址，例如 https://s3.example.com"
+		}
+	}
+
 	switch {
 	case strings.Contains(lower, "connection refused"):
 		return "无法连接到数据库主机，请确认主机地址、端口和网络访问策略是否正确"
@@ -4227,6 +4263,8 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		return "创建备份任务失败，请确认源端数据库和备份目标是否正确"
 	case errorContextBackupRuntime:
 		return "备份执行失败，请查看任务日志并确认数据库权限、客户端工具和存储目标状态"
+	case errorContextRemoteStorage:
+		return "远端存储操作失败，请确认 Endpoint、访问凭证、Bucket 权限和网络状态"
 	case errorContextInvalidJSON:
 		return "请求参数格式不正确，请刷新页面后重试"
 	default:

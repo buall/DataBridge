@@ -3,6 +3,8 @@ import type {
   AuditLogEntry,
   BackupConfig,
   BackupJob,
+  BatchImportPreview,
+  BatchImportResult,
   DatabaseConnection,
   DatabaseInfo,
   DuplicateConnectionInput,
@@ -95,6 +97,31 @@ async function requestBlob(path: string): Promise<{ blob: Blob; fileName: string
   }
 }
 
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(body?.message ?? `请求失败（${response.status}）`);
+      Object.assign(error, { status: response.status, code: body?.code });
+      throw error;
+    }
+    return body as T;
+  } catch (error) {
+    throw formatClientError(error);
+  }
+}
+
+function importForm(file: File) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return form;
+}
+
 function downloadFileName(disposition: string | null) {
   const matched = disposition?.match(/filename="([^"]+)"/i);
   return matched?.[1] ? decodeURIComponent(matched[1]) : "databridge-backup.tar.gz";
@@ -118,6 +145,10 @@ export const api = {
     request<DatabaseConnection>(`/connections/${connectionId}/refresh`, { method: "POST" }),
   testConnection: (input: ConnectionInput) =>
     request<{ ok: boolean; latency: number }>("/connections/test", { method: "POST", body: JSON.stringify(input) }),
+  previewExcelImport: (file: File) =>
+    requestForm<BatchImportPreview>("/imports/excel/preview", importForm(file)),
+  executeExcelImport: (file: File) =>
+    requestForm<BatchImportResult>("/imports/excel", importForm(file)),
   databases: (connectionId: string) =>
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`),
   createDatabase: (connectionId: string, name: string) =>

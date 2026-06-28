@@ -125,6 +125,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .page-heading, .runtime-heading, .section-title { display: flex; justify-content: space-between; align-items: center; }
 .page-heading h2, .runtime-heading h2 { font-size: 22px; letter-spacing: -.35px; }
 .page-heading p, .runtime-heading p, .section-title p, .card-heading p { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.page-heading-actions { display: flex; align-items: center; gap: 10px; }
 .runtime-heading > div:first-child > div { display: flex; align-items: center; gap: 14px; }
 .runtime-heading > div:last-child { display: flex; gap: 10px; }
 .runtime-actions { flex-wrap: wrap; justify-content: flex-end; }
@@ -477,6 +478,65 @@ h1, h2, h3, h4, p { margin: 0; }
 .create-database-modal { width: min(460px, calc(100vw - 48px)); }
 .seed-data-modal { width: min(480px, calc(100vw - 48px)); }
 .delete-connection-modal { width: min(460px, calc(100vw - 48px)); }
+.batch-import-backdrop { place-items: center; }
+.batch-import-modal { width: min(980px, calc(100vw - 48px)); }
+.batch-import-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.batch-import-steps > div { min-height: 46px; border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; background: #f8fafc; color: var(--muted); display: flex; align-items: center; gap: 9px; }
+.batch-import-steps > div span { width: 24px; height: 24px; flex: 0 0 24px; border-radius: 50%; background: #e8edf4; display: grid; place-items: center; font-size: 10px; font-weight: 800; }
+.batch-import-steps > div strong { font-size: 11px; }
+.batch-import-steps > div.active { border-color: #a9c5ff; color: #1d4ed8; background: var(--blue-50); }
+.batch-import-steps > div.active span { color: #fff; background: var(--blue); }
+.batch-import-steps > div.done { color: var(--green); background: #f2fbf5; border-color: #bfe9cc; }
+.batch-import-steps > div.done span { color: #fff; background: var(--green); }
+.batch-import-upload-stage, .batch-import-preview-stage { display: grid; gap: 14px; }
+.template-download-card { min-height: 76px; border: 1px solid #cfe0ff; border-radius: 11px; padding: 14px 16px; background: linear-gradient(135deg, #f8fbff 0%, #eef5ff 100%); display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 13px; }
+.template-download-card > span { width: 40px; height: 40px; border-radius: 10px; color: var(--blue); background: #fff; display: grid; place-items: center; box-shadow: 0 4px 12px rgba(37,99,235,.1); }
+.template-download-card strong, .template-download-card p { display: block; }
+.template-download-card strong { font-size: 13px; }
+.template-download-card p { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.template-download-card .button { text-decoration: none; white-space: nowrap; }
+.batch-import-dropzone { min-height: 220px; border: 2px dashed #c9d5e5; border-radius: 12px; padding: 26px; background: #fbfcfe; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
+.batch-import-dropzone.dragging { border-color: var(--blue); background: var(--blue-50); transform: scale(.995); }
+.batch-import-dropzone.selected { border-style: solid; border-color: #a9c5ff; background: #f7faff; }
+.batch-import-dropzone input { display: none; }
+.batch-import-dropzone .dropzone-icon { width: 58px; height: 58px; border-radius: 50%; color: var(--blue); background: #eaf2ff; display: grid; place-items: center; }
+.batch-import-dropzone strong { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.batch-import-dropzone p { color: var(--muted); font-size: 11px; }
+.batch-import-dropzone .button { min-height: 34px; margin-top: 5px; }
+.batch-import-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.batch-import-summary > div { min-height: 70px; border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; background: #f8fafc; display: grid; gap: 4px; }
+.batch-import-summary strong { font-size: 21px; }
+.batch-import-summary span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.batch-import-summary .ok { border-color: #bfe9cc; background: #f2fbf5; }
+.batch-import-summary .ok strong { color: var(--green); }
+.batch-import-summary .has-errors { border-color: #f4b4b4; background: #fff7f7; }
+.batch-import-summary .has-errors strong { color: var(--red); }
+.batch-import-status { min-height: 58px; border: 1px solid; border-radius: 10px; padding: 12px 14px; display: flex; align-items: center; gap: 11px; }
+.batch-import-status.valid { color: #15803d; border-color: #bfe9cc; background: #f2fbf5; }
+.batch-import-status.invalid { color: #b42318; border-color: #f4b4b4; background: #fff7f7; }
+.batch-import-status div { min-width: 0; display: grid; gap: 4px; }
+.batch-import-status strong { font-size: 12px; }
+.batch-import-status span { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-import-issues { max-height: 150px; overflow-y: auto; border: 1px solid #f4b4b4; border-radius: 10px; background: #fffafa; padding: 5px 12px; }
+.batch-import-issues > div { min-height: 40px; border-top: 1px solid #f9dada; display: flex; align-items: center; gap: 10px; }
+.batch-import-issues > div:first-child { border-top: 0; }
+.batch-import-issues > div > span:last-child { min-width: 0; color: #8f2525; font-size: 11px; line-height: 1.5; }
+.batch-import-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.batch-import-table > div:first-child { min-height: 43px; padding: 0 14px; background: #f8fafc; display: flex; align-items: center; justify-content: space-between; }
+.batch-import-table h4 { font-size: 12px; }
+.batch-import-table > div:first-child span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.batch-import-table-scroll { max-height: 210px; overflow: auto; }
+.batch-import-table table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.batch-import-table th { position: sticky; top: 0; z-index: 1; padding: 9px 11px; background: #eef3fa; color: #607086; text-align: left; white-space: nowrap; }
+.batch-import-table td { max-width: 220px; border-top: 1px solid #edf0f4; padding: 9px 11px; color: #283447; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-import-table tr.invalid-row td { background: #fffafa; }
+.batch-import-actions { border-top: 1px solid #edf0f4; padding-top: 16px; }
+.batch-import-success { min-height: 310px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.batch-import-success > span { width: 70px; height: 70px; border-radius: 50%; color: var(--green); background: #eaf8ef; display: grid; place-items: center; }
+.batch-import-success h4 { margin-top: 16px; font-size: 19px; }
+.batch-import-success > p { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.batch-import-success .batch-import-summary { width: min(520px, 100%); margin-top: 24px; text-align: left; }
+.success-summary strong { color: var(--green); }
 .modal-head-actions { display: flex; align-items: center; gap: 10px; }
 .modal-head-actions .button { min-height: 34px; padding: 0 12px; font-size: 12px; }
 .confirm-dialog { width: min(500px, calc(100vw - 48px)); }
@@ -919,6 +979,10 @@ h1, h2, h3, h4, p { margin: 0; }
   .time-picker-menu { width: min(318px, calc(100vw - 56px)); }
   .modal-backdrop { padding: 12px; }
   .modal { width: min(100vw - 24px, 680px); padding: 20px; max-height: calc(100dvh - 24px); }
+  .batch-import-modal { width: calc(100vw - 24px); }
+  .template-download-card { grid-template-columns: 42px minmax(0, 1fr); }
+  .template-download-card .button { grid-column: 1 / -1; width: 100%; }
+  .batch-import-table-scroll { max-height: 180px; }
   .empty-state { min-height: 420px; padding: 24px; text-align: center; }
 }
 
@@ -1133,6 +1197,14 @@ h1, h2, h3, h4, p { margin: 0; }
   .page-heading .button,
   .toolbar .button,
   .modal-head-actions .button { width: 100%; }
+  .page-heading-actions { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+  .batch-import-steps { gap: 6px; }
+  .batch-import-steps > div { padding: 8px; justify-content: center; }
+  .batch-import-steps > div strong { display: none; }
+  .batch-import-summary > div { padding: 11px; }
+  .batch-import-summary strong { font-size: 18px; }
+  .batch-import-dropzone { min-height: 190px; padding: 20px 14px; }
+  .batch-import-issues > div { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 0; }
   .field.port { width: 100%; }
   .modal,
   .wizard-card,

@@ -4,6 +4,7 @@ bin/
 .gocache/
 data/
 backups/
+outputs/
 *.tsbuildinfo
 .DS_Store
 scripts/compatibility/reports/*

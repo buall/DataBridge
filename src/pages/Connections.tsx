@@ -1,8 +1,9 @@
-import { AlertTriangle, Check, Copy, Database, Edit3, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Database, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
+import type { BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { BatchImportModal } from "../components/BatchImportModal";
 
 type ConnectionFormState = {
   type: DatabaseType;
@@ -30,17 +31,20 @@ export function Connections({
   onUpdate,
   onDelete,
   onCreateMigration,
+  onBatchImported,
 }: {
   connections: DatabaseConnection[];
   onAdd: (connection: DatabaseConnection) => void;
   onUpdate: (connection: DatabaseConnection) => void;
   onDelete: (connectionId: string) => void;
   onCreateMigration: (sourceId?: string) => void;
+  onBatchImported: (result: BatchImportResult) => void;
 }) {
   const supportsMigration = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
   const supportsDirectDatabaseCreate = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
   const supportsSeedData = (type: DatabaseType) => type === "PostgreSQL" || type === "MySQL" || type === "MongoDB" || type === "Neo4j";
   const [showForm, setShowForm] = useState(false);
+  const [showBatchImport, setShowBatchImport] = useState(false);
   const [editModal, setEditModal] = useState<{ connection: DatabaseConnection; form: EditConnectionFormState; submitting: boolean; error: string } | null>(null);
   const [duplicateModal, setDuplicateModal] = useState<{ connection: DatabaseConnection; form: DuplicateConnectionFormState; submitting: boolean; error: string } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
@@ -364,7 +368,7 @@ export function Connections({
     <div className="page-stack">
       <div className="page-heading">
         <div><h2>数据连接</h2><p>统一管理迁移源端和目标端。</p></div>
-        <Button onClick={openNewConnection}><Plus size={17} />新建连接</Button>
+        <div className="page-heading-actions"><Button variant="secondary" onClick={() => setShowBatchImport(true)}><FileSpreadsheet size={17} />批量导入</Button><Button onClick={openNewConnection}><Plus size={17} />新建连接</Button></div>
       </div>
       <div className="toolbar">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接名称、地址或类型" /></label>
@@ -423,6 +427,8 @@ export function Connections({
           </Card>
         ))}
       </div>
+
+      {showBatchImport && <BatchImportModal onClose={() => setShowBatchImport(false)} onImported={onBatchImported} />}
 
       {databaseModal && (
         <div className="modal-backdrop" onMouseDown={() => setDatabaseModal(null)}>
