@@ -32,6 +32,74 @@ func TestNextBackupRunUsesAppTimezone(t *testing.T) {
 	}
 }
 
+func TestNormalizeBackupScheduleKeepsRecipientSelection(t *testing.T) {
+	request := model.BackupRequest{
+		ScheduleMode:             "scheduled",
+		ScheduleFrequency:        "daily",
+		ScheduleTime:             "02:00:00",
+		NotificationEnabled:      true,
+		NotificationRecipientIDs: []string{"recipient-a", "recipient-b"},
+	}
+	normalizeBackupSchedule(&request)
+	if !request.Notification.Enabled {
+		t.Fatal("notification should remain enabled")
+	}
+	if got := request.Notification.RecipientIDs; len(got) != 2 || got[0] != "recipient-a" || got[1] != "recipient-b" {
+		t.Fatalf("recipient ids = %#v", got)
+	}
+	if request.Notification.Target != "" {
+		t.Fatalf("legacy target should stay empty, got %q", request.Notification.Target)
+	}
+}
+
+func TestNotificationRecipientInputCanBeTestedBeforeSave(t *testing.T) {
+	_, server, _ := newTestServer(t)
+	received := make(chan struct{}, 1)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhook.Close()
+
+	body := bytes.NewBufferString(`{"name":"运维群","type":"webhook","target":"` + webhook.URL + `","enabled":true}`)
+	response := httptest.NewRecorder()
+	server.testNotificationRecipientInput(response, httptest.NewRequest(http.MethodPost, "/api/settings/notification-recipients/test", body))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("test webhook did not receive a notification")
+	}
+}
+
+func TestNotificationRecipientInputUsesSavedTargetWhenEditing(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	received := make(chan struct{}, 1)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhook.Close()
+	recipient, err := appStore.AddNotificationRecipient(model.NotificationRecipientInput{Name: "运维群", Type: "webhook", Target: webhook.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := bytes.NewBufferString(`{"id":"` + recipient.ID + `","name":"运维群","type":"webhook","enabled":true}`)
+	response := httptest.NewRecorder()
+	server.testNotificationRecipientInput(response, httptest.NewRequest(http.MethodPost, "/api/settings/notification-recipients/test", body))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("saved webhook did not receive a notification")
+	}
+}
+
 func TestNextBackupRunRollsToNextDay(t *testing.T) {
 	request := model.BackupRequest{
 		ScheduleMode:      "scheduled",
@@ -128,6 +196,88 @@ func TestBackupNotificationTextIncludesFinishedAtAndArtifacts(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("notification text missing %q\n%s", want, text)
 		}
+	}
+}
+
+func TestDingTalkMarkdownUsesParagraphBreaks(t *testing.T) {
+	markdown := "**DataBridge 备份成功**\n任务名称：通知测试\n备份时间：2026-06-27 22:27:37"
+	payload := webhookPayloadForTarget("oapi.dingtalk.com", nil, "DataBridge 备份成功", markdown, true)
+	content, ok := payload["markdown"].(map[string]string)
+	if !ok {
+		t.Fatalf("unexpected DingTalk payload: %#v", payload)
+	}
+	for _, want := range []string{"### 🟢 DataBridge 备份成功", "**任务名称：** 通知测试", "**备份时间：** 2026-06-27 22:27:37"} {
+		if !strings.Contains(content["text"], want) {
+			t.Fatalf("DingTalk markdown missing %q: %q", want, content["text"])
+		}
+	}
+}
+
+func TestFeishuNotificationCardUsesStatusTemplate(t *testing.T) {
+	markdown := "**DataBridge 备份失败**\n任务名称：通知测试\n源数据库：system"
+	payload := webhookPayloadForTarget("open.feishu.cn", nil, "DataBridge 备份失败", markdown, false)
+	card, ok := payload["card"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected Feishu payload: %#v", payload)
+	}
+	header, ok := card["header"].(map[string]any)
+	if !ok || header["template"] != "red" {
+		t.Fatalf("unexpected Feishu header: %#v", header)
+	}
+	if _, exists := header["subtitle"]; exists {
+		t.Fatalf("Feishu header should not contain subtitle: %#v", header)
+	}
+	if card["schema"] != "2.0" {
+		t.Fatalf("schema = %#v", card["schema"])
+	}
+}
+
+func TestSendTelegramMessage(t *testing.T) {
+	var requestPath string
+	var payload map[string]string
+	telegramAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}))
+	defer telegramAPI.Close()
+
+	target := `{"botToken":"123456:secret","chatId":"-100987654321"}`
+	if err := sendTelegramMessage(telegramAPI.Client(), telegramAPI.URL, target, "DataBridge 测试通知"); err != nil {
+		t.Fatal(err)
+	}
+	if requestPath != "/bot123456:secret/sendMessage" {
+		t.Fatalf("path = %q", requestPath)
+	}
+	if payload["chat_id"] != "-100987654321" || payload["text"] != "DataBridge 测试通知" || payload["parse_mode"] != "HTML" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestBackupNotificationHTMLUsesStatusAndEscapesValues(t *testing.T) {
+	job := model.BackupJob{Name: "通知 <测试>", SourceDatabase: "system", Destination: "MinIO & S3"}
+	message := backupNotificationHTML(job, false)
+	for _, want := range []string{"<b>🔴 DataBridge 备份失败</b>", "通知 &lt;测试&gt;", "MinIO &amp; S3"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("Telegram HTML missing %q: %s", want, message)
+		}
+	}
+}
+
+func TestPrepareTelegramRecipientKeepsSavedCredentials(t *testing.T) {
+	saved := `{"botToken":"saved-token","chatId":"-1001234"}`
+	input, message := prepareNotificationRecipientInput(model.NotificationRecipientInput{Name: "Telegram", Type: "telegram", Enabled: true}, saved, true)
+	if message != "" {
+		t.Fatal(message)
+	}
+	var config telegramRecipientConfig
+	if err := json.Unmarshal([]byte(input.Target), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.BotToken != "saved-token" || config.ChatID != "-1001234" {
+		t.Fatalf("config = %#v", config)
 	}
 }
 

@@ -173,6 +173,132 @@ func (s *Store) UpdateSMTPSettings(input model.SMTPSettings) (model.SMTPSettings
 	return settings, nil
 }
 
+func (s *Store) NotificationRecipients() ([]model.NotificationRecipient, error) {
+	rows, err := s.db.Query(`SELECT id, name, type, target_encrypted, enabled, created_at, updated_at FROM notification_recipients ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list notification recipients: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.NotificationRecipient, 0)
+	for rows.Next() {
+		item, err := s.scanNotificationRecipient(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) NotificationRecipient(id string) (model.NotificationRecipient, error) {
+	return s.scanNotificationRecipient(s.db.QueryRow(`SELECT id, name, type, target_encrypted, enabled, created_at, updated_at FROM notification_recipients WHERE id = ?`, id))
+}
+
+func (s *Store) AddNotificationRecipient(input model.NotificationRecipientInput) (model.NotificationRecipient, error) {
+	now := time.Now().UTC()
+	target, err := s.encrypt(strings.TrimSpace(input.Target))
+	if err != nil {
+		return model.NotificationRecipient{}, fmt.Errorf("encrypt notification recipient: %w", err)
+	}
+	item := model.NotificationRecipient{ID: newID(), Name: strings.TrimSpace(input.Name), Type: input.Type, Target: strings.TrimSpace(input.Target), Enabled: input.Enabled, CreatedAt: now, UpdatedAt: now}
+	if _, err := s.db.Exec(`INSERT INTO notification_recipients (id, name, type, target_encrypted, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Name, item.Type, target, item.Enabled, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		return model.NotificationRecipient{}, fmt.Errorf("add notification recipient: %w", err)
+	}
+	setNotificationRecipientTargetSummary(&item)
+	return item, nil
+}
+
+func (s *Store) UpdateNotificationRecipient(id string, input model.NotificationRecipientInput) (model.NotificationRecipient, error) {
+	current, err := s.NotificationRecipient(id)
+	if err != nil {
+		return model.NotificationRecipient{}, err
+	}
+	targetValue := strings.TrimSpace(input.Target)
+	if targetValue == "" {
+		targetValue = current.Target
+	}
+	target, err := s.encrypt(targetValue)
+	if err != nil {
+		return model.NotificationRecipient{}, fmt.Errorf("encrypt notification recipient: %w", err)
+	}
+	now := time.Now().UTC()
+	result, err := s.db.Exec(`UPDATE notification_recipients SET name = ?, type = ?, target_encrypted = ?, enabled = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(input.Name), input.Type, target, input.Enabled, now.Format(time.RFC3339Nano), id)
+	if err != nil {
+		return model.NotificationRecipient{}, fmt.Errorf("update notification recipient: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return model.NotificationRecipient{}, ErrNotFound
+	}
+	return s.NotificationRecipient(id)
+}
+
+func (s *Store) DeleteNotificationRecipient(id string) error {
+	result, err := s.db.Exec(`DELETE FROM notification_recipients WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete notification recipient: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) scanNotificationRecipient(row scanner) (model.NotificationRecipient, error) {
+	var item model.NotificationRecipient
+	var targetEncrypted []byte
+	var enabled bool
+	var createdAt, updatedAt string
+	if err := row.Scan(&item.ID, &item.Name, &item.Type, &targetEncrypted, &enabled, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.NotificationRecipient{}, ErrNotFound
+		}
+		return model.NotificationRecipient{}, fmt.Errorf("scan notification recipient: %w", err)
+	}
+	target, err := s.decrypt(targetEncrypted)
+	if err != nil {
+		return model.NotificationRecipient{}, fmt.Errorf("decrypt notification recipient: %w", err)
+	}
+	item.Target = target
+	item.Enabled = enabled
+	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	setNotificationRecipientTargetSummary(&item)
+	return item, nil
+}
+
+func setNotificationRecipientTargetSummary(item *model.NotificationRecipient) {
+	item.TargetSet = strings.TrimSpace(item.Target) != ""
+	if item.Type == "telegram" {
+		var config struct {
+			ChatID string `json:"chatId"`
+		}
+		if json.Unmarshal([]byte(item.Target), &config) == nil && strings.TrimSpace(config.ChatID) != "" {
+			chatID := []rune(strings.TrimSpace(config.ChatID))
+			if len(chatID) > 4 {
+				item.TargetMasked = "Chat ID: ••••" + string(chatID[len(chatID)-4:])
+			} else {
+				item.TargetMasked = "Chat ID: ••••"
+			}
+			return
+		}
+	}
+	if item.Type == "email" {
+		parts := strings.SplitN(item.Target, "@", 2)
+		if len(parts) == 2 && parts[0] != "" {
+			item.TargetMasked = string([]rune(parts[0])[0]) + "***@" + parts[1]
+			return
+		}
+	}
+	if parsed := strings.SplitN(item.Target, "://", 2); len(parsed) == 2 {
+		host := strings.SplitN(parsed[1], "/", 2)[0]
+		item.TargetMasked = parsed[0] + "://" + host + "/••••••"
+		return
+	}
+	if item.TargetSet {
+		item.TargetMasked = "••••••"
+	}
+}
+
 func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration, version string) (model.Connection, error) {
 	connection := model.Connection{
 		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
@@ -770,6 +896,15 @@ func (s *Store) initialize() error {
 		CREATE TABLE IF NOT EXISTS app_settings (
 			key TEXT PRIMARY KEY,
 			data BLOB NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS notification_recipients (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			target_encrypted BLOB NOT NULL,
+			enabled INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);
 	`); err != nil {

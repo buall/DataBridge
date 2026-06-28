@@ -1,7 +1,9 @@
 import {
   Activity,
   Archive,
+  Bell,
   Cable,
+  ChevronDown,
   Cloud,
   Database,
   LayoutDashboard,
@@ -13,18 +15,21 @@ import {
   ScrollText,
   Settings,
   SlidersHorizontal,
+  type LucideIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AppView } from "../types";
 
-const mainNav = [
+type NavItem = { id: AppView; label: string; icon: LucideIcon; children?: Array<{ label: string; icon: LucideIcon }> };
+
+const mainNav: NavItem[] = [
   { id: "overview" as const, label: "总览", icon: LayoutDashboard },
   { id: "connections" as const, label: "数据连接", icon: Cable },
   { id: "backups" as const, label: "备份任务", icon: Archive },
   { id: "migrations" as const, label: "迁移任务", icon: Activity },
   { id: "storages" as const, label: "远端存储", icon: Cloud },
   { id: "logs" as const, label: "运行日志", icon: ScrollText },
-  { id: "settings" as const, label: "系统设置", icon: SlidersHorizontal },
+  { id: "settings" as const, label: "系统设置", icon: SlidersHorizontal, children: [{ label: "通知管理", icon: Bell }] },
 ];
 
 interface LayoutProps {
@@ -50,6 +55,8 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
     }
   });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [expandedNav, setExpandedNav] = useState<AppView | null>(null);
+  const [selectedNavChild, setSelectedNavChild] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -119,23 +126,35 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
 
         <div className="sidebar-scroll">
           <nav className="primary-nav" aria-label="主导航">
-            {mainNav.map(({ id, label, icon: Icon }) => (
-              <a
-                className={activeView === id ? "nav-item active" : "nav-item"}
-                href={paths[id]}
-                key={id}
-                data-label={label}
-                data-path={paths[id]}
-                title={label}
-                aria-current={activeView === id ? "page" : undefined}
-                onClick={(event) => {
-                  event.preventDefault();
-                  onNavigate(id);
-                }}
-              >
-                <Icon size={18} />
-                <span>{label}</span>
-              </a>
+            {mainNav.map(({ id, label, icon: Icon, ...item }) => (
+              <div className={`nav-group ${expandedNav === id ? "open" : ""}`} key={id}>
+                <a
+                  className={activeView === id ? "nav-item active" : "nav-item"}
+                  href={paths[id]}
+                  data-label={label}
+                  data-path={paths[id]}
+                  title={label}
+                  aria-current={activeView === id ? "page" : undefined}
+                  aria-expanded={item.children ? expandedNav === id : undefined}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    if (item.children) {
+                      setExpandedNav((current) => current === id ? null : id);
+                      return;
+                    }
+                    setExpandedNav(null);
+                    setSelectedNavChild(null);
+                    onNavigate(id);
+                  }}
+                >
+                  <Icon size={18} />
+                  <span>{label}</span>
+                  {item.children ? <ChevronDown className="nav-expand-icon" size={15} /> : null}
+                </a>
+                {item.children && expandedNav === id ? item.children.map(({ label: childLabel, icon: ChildIcon }) => (
+                  <a className={selectedNavChild === childLabel ? "nav-child active" : "nav-child"} href={paths[id]} key={childLabel} aria-current={selectedNavChild === childLabel ? "page" : undefined} onClick={(event) => { event.preventDefault(); setSelectedNavChild(childLabel); onNavigate(id); }}><ChildIcon size={14} /><span>{childLabel}</span></a>
+                )) : null}
+              </div>
             ))}
           </nav>
 

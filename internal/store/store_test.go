@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,56 @@ func TestStoreMarksRunningMigrationFailedAfterRestart(t *testing.T) {
 	}
 	if !strings.Contains(loaded.Error, "服务重启") {
 		t.Fatalf("error = %q", loaded.Error)
+	}
+}
+
+func TestStoreNotificationRecipientCRUDAndEncryption(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "databridge.db")
+	appStore, err := New(databasePath, filepath.Join(directory, "databridge.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appStore.Close()
+
+	const target = "https://oapi.dingtalk.com/robot/send?access_token=secret-token"
+	created, err := appStore.AddNotificationRecipient(model.NotificationRecipientInput{Name: "运维群", Type: "dingtalk", Target: target, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Target != target || created.TargetMasked == target || !created.TargetSet {
+		t.Fatalf("unexpected created recipient: %#v", created)
+	}
+	databaseBytes, err := os.ReadFile(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(databaseBytes), "secret-token") {
+		t.Fatal("database contains plaintext notification target")
+	}
+	updated, err := appStore.UpdateNotificationRecipient(created.ID, model.NotificationRecipientInput{Name: "值班群", Type: "dingtalk", Enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "值班群" || updated.Enabled || updated.Target != target {
+		t.Fatalf("unexpected updated recipient: %#v", updated)
+	}
+	if err := appStore.DeleteNotificationRecipient(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.NotificationRecipient(created.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestTelegramRecipientTargetSummary(t *testing.T) {
+	item := model.NotificationRecipient{Type: "telegram", Target: `{"botToken":"secret","chatId":"-1001234567890"}`}
+	setNotificationRecipientTargetSummary(&item)
+	if got, want := item.TargetMasked, "Chat ID: ••••7890"; got != want {
+		t.Fatalf("target masked = %q, want %q", got, want)
+	}
+	if !item.TargetSet {
+		t.Fatal("target should be set")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
@@ -118,6 +119,12 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
 	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
 	protected.HandleFunc("PUT /api/settings/smtp", server.updateSMTPSettings)
+	protected.HandleFunc("GET /api/settings/notification-recipients", server.listNotificationRecipients)
+	protected.HandleFunc("POST /api/settings/notification-recipients", server.createNotificationRecipient)
+	protected.HandleFunc("POST /api/settings/notification-recipients/test", server.testNotificationRecipientInput)
+	protected.HandleFunc("PUT /api/settings/notification-recipients/{id}", server.updateNotificationRecipient)
+	protected.HandleFunc("DELETE /api/settings/notification-recipients/{id}", server.deleteNotificationRecipient)
+	protected.HandleFunc("POST /api/settings/notification-recipients/{id}/test", server.testNotificationRecipient)
 	protected.HandleFunc("POST /api/backups", server.createBackup)
 	protected.HandleFunc("POST /api/backups/notification-test", server.testBackupNotification)
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
@@ -1150,8 +1157,9 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		RetentionMonths: request.RetentionMonths,
 		Notification:    request.Notification, NotificationEnabled: request.Notification.Enabled,
 		NotificationMethod: request.Notification.Method, NotificationTarget: request.Notification.Target,
-		NextRunAt: nextRunAt,
-		Events:    []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
+		NotificationRecipientIDs: request.Notification.RecipientIDs,
+		NextRunAt:                nextRunAt,
+		Events:                   []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
 	}
 	if request.ScheduleMode == "scheduled" {
 		appendJobEvent(&value.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已保存，等待下一次执行"})
@@ -1966,6 +1974,9 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 			request.Notification.Target = item.NotificationTarget
 		}
 	}
+	if len(request.Notification.RecipientIDs) == 0 && len(item.NotificationRecipientIDs) > 0 {
+		request.Notification.RecipientIDs = append([]string(nil), item.NotificationRecipientIDs...)
+	}
 	if request.Name == "" {
 		request.Name = item.Name
 	}
@@ -1991,6 +2002,7 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 		request.NotificationEnabled = false
 		request.NotificationMethod = ""
 		request.NotificationTarget = ""
+		request.NotificationRecipientIDs = nil
 		return
 	}
 	if request.ScheduleFrequency == "" {
@@ -2012,20 +2024,27 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 	request.RetentionMonths = retentionMonthsForCompatibility(request.RetentionDays)
 	normalizeBackupNotification(request)
 	if request.Notification.Enabled {
-		if request.Notification.Method != "webhook" && request.Notification.Method != "email" {
+		if len(request.Notification.RecipientIDs) == 0 && request.Notification.Method != "webhook" && request.Notification.Method != "email" {
 			request.Notification.Method = "webhook"
 		}
 		request.Notification.Target = strings.TrimSpace(request.Notification.Target)
-		if request.Notification.Target == "" {
+		if request.Notification.Target == "" && len(request.Notification.RecipientIDs) == 0 {
 			request.Notification.Enabled = false
 		}
 	}
 	request.NotificationEnabled = request.Notification.Enabled
 	request.NotificationMethod = request.Notification.Method
 	request.NotificationTarget = request.Notification.Target
+	request.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
 }
 
 func normalizeBackupNotification(request *model.BackupRequest) {
+	if len(request.Notification.RecipientIDs) == 0 && len(request.NotificationRecipientIDs) > 0 {
+		request.Notification.RecipientIDs = append([]string(nil), request.NotificationRecipientIDs...)
+	}
+	if len(request.Notification.RecipientIDs) > 0 {
+		request.Notification.Enabled = true
+	}
 	if request.Notification.Enabled || request.Notification.Method != "" || request.Notification.Target != "" {
 		if request.Notification.Method == "" {
 			request.Notification.Method = request.NotificationMethod
@@ -2047,10 +2066,31 @@ func normalizeBackupNotification(request *model.BackupRequest) {
 	request.NotificationEnabled = request.Notification.Enabled
 	request.NotificationMethod = request.Notification.Method
 	request.NotificationTarget = request.Notification.Target
+	request.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
 }
 
 func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error {
 	if !job.Notification.Enabled {
+		return nil
+	}
+	if len(job.Notification.RecipientIDs) > 0 {
+		errors := make([]string, 0)
+		for _, id := range job.Notification.RecipientIDs {
+			recipient, err := s.store.NotificationRecipient(id)
+			if err != nil {
+				errors = append(errors, id+": 接收者不存在")
+				continue
+			}
+			if !recipient.Enabled {
+				continue
+			}
+			if err := s.sendBackupNotificationToRecipient(job, success, recipient); err != nil {
+				errors = append(errors, recipient.Name+": "+err.Error())
+			}
+		}
+		if len(errors) > 0 {
+			return fmt.Errorf("%s", strings.Join(errors, "；"))
+		}
 		return nil
 	}
 	switch job.Notification.Method {
@@ -2061,6 +2101,63 @@ func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error
 	default:
 		return fmt.Errorf("不支持的通知方式")
 	}
+}
+
+func (s *Server) sendBackupNotificationToRecipient(job model.BackupJob, success bool, recipient model.NotificationRecipient) error {
+	if recipient.Type == "telegram" {
+		return sendTelegramMessage(&http.Client{Timeout: 10 * time.Second}, "https://api.telegram.org", recipient.Target, backupNotificationHTML(job, success))
+	}
+	copy := job
+	copy.Notification.RecipientIDs = nil
+	copy.Notification.Target = recipient.Target
+	if recipient.Type == "email" {
+		copy.Notification.Method = "email"
+		return s.sendBackupEmail(copy, success)
+	}
+	copy.Notification.Method = "webhook"
+	return s.sendBackupWebhook(copy, success)
+}
+
+type telegramRecipientConfig struct {
+	BotToken string `json:"botToken"`
+	ChatID   string `json:"chatId"`
+}
+
+func sendTelegramMessage(client *http.Client, apiBaseURL string, target string, message string) error {
+	var config telegramRecipientConfig
+	if err := json.Unmarshal([]byte(target), &config); err != nil || strings.TrimSpace(config.BotToken) == "" || strings.TrimSpace(config.ChatID) == "" {
+		return fmt.Errorf("Telegram 配置无效")
+	}
+	body, err := json.Marshal(map[string]string{"chat_id": strings.TrimSpace(config.ChatID), "text": message, "parse_mode": "HTML"})
+	if err != nil {
+		return fmt.Errorf("构造 Telegram 通知失败")
+	}
+	endpoint := strings.TrimRight(apiBaseURL, "/") + "/bot" + strings.TrimSpace(config.BotToken) + "/sendMessage"
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("创建 Telegram 请求失败")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("发送 Telegram 通知失败: %w", err)
+	}
+	defer resp.Body.Close()
+	var result struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !result.OK {
+		if result.Description != "" {
+			return fmt.Errorf("Telegram 返回错误: %s", result.Description)
+		}
+		return fmt.Errorf("Telegram 返回 %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *Server) sendBackupWebhook(job model.BackupJob, success bool) error {
@@ -2083,7 +2180,7 @@ func (s *Server) sendBackupWebhook(job model.BackupJob, success bool) error {
 		"destination":    job.Destination,
 		"finishedAt":     time.Now().Format(time.RFC3339),
 	}
-	payload = webhookPayloadForTarget(target.Host, payload, message, markdownMessage)
+	payload = webhookPayloadForTarget(target.Host, payload, message, markdownMessage, success)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("构造 webhook 通知失败")
@@ -2105,14 +2202,31 @@ func (s *Server) sendBackupWebhook(job model.BackupJob, success bool) error {
 	return nil
 }
 
-func webhookPayloadForTarget(host string, payload map[string]any, message string, markdownMessage string) map[string]any {
+func webhookPayloadForTarget(host string, payload map[string]any, message string, markdownMessage string, success bool) map[string]any {
 	lowerHost := strings.ToLower(host)
 	switch {
 	case strings.Contains(lowerHost, "dingtalk.com"):
 		title := strings.SplitN(message, "\n", 2)[0]
-		return map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": title, "text": markdownMessage}}
+		content := fmt.Sprintf("### %s %s\n%s", notificationStatusIcon(success), title, notificationDetailsMarkdown(markdownMessage))
+		return map[string]any{"msgtype": "markdown", "markdown": map[string]string{"title": title, "text": dingtalkMarkdown(content)}}
 	case strings.Contains(lowerHost, "feishu.cn"), strings.Contains(lowerHost, "larksuite.com"):
-		return map[string]any{"msg_type": "interactive", "card": map[string]any{"elements": []map[string]any{{"tag": "markdown", "content": markdownMessage}}}}
+		title := strings.SplitN(message, "\n", 2)[0]
+		return map[string]any{"msg_type": "interactive", "card": map[string]any{
+			"schema": "2.0",
+			"header": map[string]any{
+				"title":    map[string]string{"tag": "plain_text", "content": title},
+				"template": notificationCardTemplate(success),
+				"padding":  "12px 12px 12px 12px",
+			},
+			"body": map[string]any{
+				"direction": "vertical",
+				"padding":   "12px 12px 12px 12px",
+				"elements": []map[string]any{{
+					"tag": "markdown", "content": notificationDetailsMarkdown(markdownMessage),
+					"text_align": "left", "margin": "0px 0px 0px 0px",
+				}},
+			},
+		}}
 	case strings.Contains(lowerHost, "qyapi.weixin.qq.com"):
 		return map[string]any{"msgtype": "markdown", "markdown": map[string]string{"content": markdownMessage}}
 	case strings.Contains(lowerHost, "hooks.slack.com"):
@@ -2120,6 +2234,52 @@ func webhookPayloadForTarget(host string, payload map[string]any, message string
 	default:
 		return payload
 	}
+}
+
+func notificationStatusIcon(success bool) string {
+	if success {
+		return "🟢"
+	}
+	return "🔴"
+}
+
+func notificationCardTemplate(success bool) string {
+	if success {
+		return "green"
+	}
+	return "red"
+}
+
+func notificationDetailsMarkdown(message string) string {
+	lines := strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n")
+	if len(lines) > 0 {
+		lines = lines[1:]
+	}
+	formatted := make([]string, 0, len(lines)+2)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "备份文件：" {
+			formatted = append(formatted, "---", "**备份文件**")
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			formatted = append(formatted, line)
+			continue
+		}
+		if parts := strings.SplitN(line, "：", 2); len(parts) == 2 {
+			formatted = append(formatted, fmt.Sprintf("**%s：** %s", parts[0], parts[1]))
+			continue
+		}
+		formatted = append(formatted, line)
+	}
+	return strings.Join(formatted, "\n")
+}
+
+func dingtalkMarkdown(message string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(message, "\r\n", "\n"), "\n", "\n\n")
 }
 
 func (s *Server) sendBackupEmail(job model.BackupJob, success bool) error {
@@ -2169,6 +2329,33 @@ func backupNotificationMarkdown(job model.BackupJob, success bool) string {
 		lines[0] = fmt.Sprintf("**%s**", lines[0])
 	}
 	return strings.Join(lines, "\n")
+}
+
+func backupNotificationHTML(job model.BackupJob, success bool) string {
+	lines := backupNotificationLines(job, success)
+	if len(lines) == 0 {
+		return ""
+	}
+	formatted := []string{fmt.Sprintf("<b>%s %s</b>", notificationStatusIcon(success), html.EscapeString(lines[0]))}
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			continue
+		case line == "备份文件：":
+			formatted = append(formatted, "", "<b>备份文件</b>")
+		case strings.HasPrefix(line, "- "):
+			formatted = append(formatted, "• "+html.EscapeString(strings.TrimPrefix(line, "- ")))
+		default:
+			parts := strings.SplitN(line, "：", 2)
+			if len(parts) == 2 {
+				formatted = append(formatted, fmt.Sprintf("<b>%s：</b> %s", html.EscapeString(parts[0]), html.EscapeString(parts[1])))
+			} else {
+				formatted = append(formatted, html.EscapeString(line))
+			}
+		}
+	}
+	return strings.Join(formatted, "\n")
 }
 
 func backupNotificationLines(job model.BackupJob, success bool) []string {
@@ -2479,6 +2666,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.NotificationEnabled = input.NotificationEnabled
 	request.NotificationMethod = input.NotificationMethod
 	request.NotificationTarget = input.NotificationTarget
+	request.NotificationRecipientIDs = append([]string(nil), input.NotificationRecipientIDs...)
 	request.Notification = input.Notification
 	normalizeBackupSchedule(&request)
 	now := time.Now().In(appLocation)
@@ -2501,6 +2689,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.NotificationEnabled = request.Notification.Enabled
 		item.NotificationMethod = request.Notification.Method
 		item.NotificationTarget = request.Notification.Target
+		item.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
 		item.NextRunAt = &next
 		appendJobEvent(&item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
 	}); err != nil {
@@ -3431,6 +3620,192 @@ func (s *Server) updateSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	settings.Password = ""
 	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) listNotificationRecipients(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.store.NotificationRecipients()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "读取通知接收者失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createNotificationRecipient(w http.ResponseWriter, r *http.Request) {
+	var input model.NotificationRecipientInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input, message := prepareNotificationRecipientInput(input, "", false)
+	if message != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", message)
+		return
+	}
+	item, err := s.store.AddNotificationRecipient(input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "保存通知接收者失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) updateNotificationRecipient(w http.ResponseWriter, r *http.Request) {
+	var input model.NotificationRecipientInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	current, err := s.store.NotificationRecipient(r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "通知接收者不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "读取通知接收者失败")
+		return
+	}
+	input, message := prepareNotificationRecipientInput(input, current.Target, current.Type == input.Type)
+	if message != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", message)
+		return
+	}
+	item, err := s.store.UpdateNotificationRecipient(r.PathValue("id"), input)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "通知接收者不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "更新通知接收者失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) deleteNotificationRecipient(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteNotificationRecipient(r.PathValue("id")); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "通知接收者不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", "删除通知接收者失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) testNotificationRecipient(w http.ResponseWriter, r *http.Request) {
+	recipient, err := s.store.NotificationRecipient(r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "通知接收者不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "读取通知接收者失败")
+		return
+	}
+	if err := s.sendNotificationRecipientTest(recipient); err != nil {
+		writeError(w, http.StatusBadRequest, "notification_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "测试通知已发送"})
+}
+
+func (s *Server) testNotificationRecipientInput(w http.ResponseWriter, r *http.Request) {
+	var input model.NotificationRecipientTestInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	currentTarget := ""
+	allowSavedTarget := false
+	if strings.TrimSpace(input.ID) != "" {
+		current, err := s.store.NotificationRecipient(strings.TrimSpace(input.ID))
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "通知接收者不存在")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "storage_error", "读取通知接收者失败")
+			return
+		}
+		if current.Type == input.Type {
+			currentTarget = current.Target
+			allowSavedTarget = true
+		}
+	}
+	recipientInput, message := prepareNotificationRecipientInput(model.NotificationRecipientInput{Name: input.Name, Type: input.Type, Target: input.Target, BotToken: input.BotToken, ChatID: input.ChatID, Enabled: true}, currentTarget, allowSavedTarget)
+	if message != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", message)
+		return
+	}
+	recipient := model.NotificationRecipient{Name: strings.TrimSpace(input.Name), Type: input.Type, Target: recipientInput.Target, Enabled: true}
+	if err := s.sendNotificationRecipientTest(recipient); err != nil {
+		writeError(w, http.StatusBadRequest, "notification_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "测试通知已发送"})
+}
+
+func (s *Server) sendNotificationRecipientTest(recipient model.NotificationRecipient) error {
+	now := time.Now()
+	job := model.BackupJob{ID: "notification-test", Name: "通知测试", SourceName: "DataBridge", SourceType: "System", SourceDatabase: "system", Destination: "notification-test", FinishedAt: &now}
+	return s.sendBackupNotificationToRecipient(job, true, recipient)
+}
+
+func prepareNotificationRecipientInput(input model.NotificationRecipientInput, currentTarget string, allowSavedTarget bool) (model.NotificationRecipientInput, string) {
+	if strings.TrimSpace(input.Name) == "" {
+		return input, "请填写接收者名称"
+	}
+	switch input.Type {
+	case "feishu", "dingtalk", "wechat_work", "telegram", "webhook", "email":
+	default:
+		return input, "不支持的接收者类型"
+	}
+	if input.Type == "telegram" {
+		config := telegramRecipientConfig{BotToken: strings.TrimSpace(input.BotToken), ChatID: strings.TrimSpace(input.ChatID)}
+		if allowSavedTarget && (config.BotToken == "" || config.ChatID == "") {
+			var saved telegramRecipientConfig
+			if json.Unmarshal([]byte(currentTarget), &saved) == nil {
+				if config.BotToken == "" {
+					config.BotToken = saved.BotToken
+				}
+				if config.ChatID == "" {
+					config.ChatID = saved.ChatID
+				}
+			}
+		}
+		if config.BotToken == "" {
+			return input, "请填写 Bot Token"
+		}
+		if config.ChatID == "" {
+			return input, "请填写 Chat ID"
+		}
+		encoded, err := json.Marshal(config)
+		if err != nil {
+			return input, "Telegram 配置无效"
+		}
+		input.Target = string(encoded)
+		input.BotToken = ""
+		input.ChatID = ""
+		return input, ""
+	}
+	target := strings.TrimSpace(input.Target)
+	if target == "" && allowSavedTarget {
+		target = strings.TrimSpace(currentTarget)
+		input.Target = target
+	}
+	if target == "" {
+		return input, "请填写通知目标"
+	}
+	if input.Type == "email" {
+		if !strings.Contains(target, "@") {
+			return input, "邮箱地址格式不正确"
+		}
+		return input, ""
+	}
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return input, "Webhook 地址格式不正确"
+	}
+	return input, ""
 }
 
 func calculateProgress(progress migrate.Progress, tableTotal int) int {

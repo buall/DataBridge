@@ -1,8 +1,9 @@
 import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { BackupConfig, DatabaseConnection, DatabaseInfo, RemoteStorage } from "../types";
+import type { BackupConfig, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
 import { Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 const steps = ["源数据库", "备份目标", "确认执行"];
 
@@ -23,8 +24,7 @@ export function BackupWizard({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
-  const [testingNotification, setTestingNotification] = useState(false);
-  const [notificationTestResult, setNotificationTestResult] = useState("");
+  const { recipients, loadingRecipients } = useNotificationRecipients();
   const [config, setConfig] = useState<BackupConfig>({
     name: "",
     sourceId: backupableConnections[0]?.id ?? "",
@@ -39,8 +39,7 @@ export function BackupWizard({
     scheduleMonthDay: 1,
     retentionDays: 30,
     notificationEnabled: false,
-    notificationMethod: "webhook",
-    notificationTarget: "",
+    notificationRecipientIds: [],
   });
 
   useEffect(() => {
@@ -98,6 +97,10 @@ export function BackupWizard({
       setError("请等待当前源端数据库列表加载完成，并选择要备份的数据库");
       return;
     }
+    if (config.scheduleMode === "scheduled" && config.notificationEnabled && !(config.notificationRecipientIds?.length)) {
+      setError("请至少选择一个通知接收者，或关闭备份通知");
+      return;
+    }
     setStarting(true);
     setError("");
     try {
@@ -105,8 +108,7 @@ export function BackupWizard({
       await onStart({
         ...config,
         notificationEnabled: scheduled ? config.notificationEnabled : false,
-        notificationMethod: scheduled ? config.notificationMethod : undefined,
-        notificationTarget: scheduled ? config.notificationTarget?.trim() : "",
+        notificationRecipientIds: scheduled ? config.notificationRecipientIds : [],
         sourceDatabase: sourceDatabases.join(", "),
         sourceDatabases,
         name: config.name || `${source?.name ?? databaseLabel} / ${databaseLabel} 备份`,
@@ -114,20 +116,6 @@ export function BackupWizard({
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建备份任务失败");
       setStarting(false);
-    }
-  }
-
-  async function testNotification() {
-    setTestingNotification(true);
-    setNotificationTestResult("");
-    setError("");
-    try {
-      const result = await api.testBackupNotification(config.notificationMethod ?? "webhook", config.notificationTarget?.trim() ?? "");
-      setNotificationTestResult(result.message);
-    } catch (reason) {
-      setNotificationTestResult(reason instanceof Error ? reason.message : "测试通知发送失败");
-    } finally {
-      setTestingNotification(false);
     }
   }
 
@@ -167,7 +155,7 @@ export function BackupWizard({
           <div className="schedule-panel">
             <span>执行方式</span>
             <div className="segmented-control">
-              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationTarget: "" })}>一次性</button>
+              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationRecipientIds: [] })}>一次性</button>
               <button type="button" className={config.scheduleMode === "scheduled" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "scheduled" })}>定时</button>
             </div>
             {config.scheduleMode === "scheduled" && (
@@ -182,12 +170,8 @@ export function BackupWizard({
                 <div className="notification-panel">
                   <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
                   {config.notificationEnabled && (
-                    <div className="notification-grid">
-                      <SelectField label="通知方式" value={config.notificationMethod ?? "webhook"} onChange={(notificationMethod) => { setNotificationTestResult(""); setConfig({ ...config, notificationMethod: notificationMethod as BackupConfig["notificationMethod"], notificationTarget: "" }); }}><option value="webhook">Webhook</option><option value="email">Email</option></SelectField>
-                      <div className="notification-target-row"><label className="field"><span>{config.notificationMethod === "email" ? "收件邮箱" : "Webhook URL"}</span><input value={config.notificationTarget ?? ""} onChange={(event) => { setNotificationTestResult(""); setConfig({ ...config, notificationTarget: event.target.value }); }} placeholder={config.notificationMethod === "email" ? "ops@databridge.local" : "https://example.com/webhook"} /></label><Button type="button" variant="secondary" disabled={testingNotification || !config.notificationTarget?.trim()} onClick={testNotification}>{testingNotification ? "测试中..." : "测试"}</Button></div>
-                    </div>
+                    <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={config.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setConfig({ ...config, notificationRecipientIds })} /></div>
                   )}
-                  {notificationTestResult && <p className="notification-test-result">{notificationTestResult}</p>}
                 </div>
               </div>
             )}
@@ -199,7 +183,7 @@ export function BackupWizard({
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
           <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-          <div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config)}</strong></div><div><span>文件格式</span><strong>{backupFormatLabel(source?.type)}</strong></div></div>
+<div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config, recipients)}</strong></div><div><span>文件格式</span><strong>{backupFormatLabel(source?.type)}</strong></div></div>
         </Card>
       )}
 
@@ -221,9 +205,10 @@ function scheduleLabel(config: BackupConfig) {
   return `每天 ${config.scheduleTime}`;
 }
 
-function notificationLabel(config: BackupConfig) {
+function notificationLabel(config: BackupConfig, recipients?: NotificationRecipient[]) {
   if (config.scheduleMode !== "scheduled" || !config.notificationEnabled) return "未开启";
-  return config.notificationMethod === "email" ? `Email · ${config.notificationTarget || "未填写"}` : `Webhook · ${config.notificationTarget || "未填写"}`;
+  const names = (config.notificationRecipientIds ?? []).map((id) => recipients?.find((item) => item.id === id)?.name).filter(Boolean);
+  return names.length ? names.join("、") : "未选择接收者";
 }
 
 function retentionPolicyLabel(config: BackupConfig) {

@@ -33,7 +33,7 @@ const routes: Record<AppView, string> = {
   migrations: "/migrations",
   backups: "/backups",
   logs: "/logs",
-  settings: "/settings",
+  settings: "/settings/recipients",
 };
 
 const viewMeta: Record<AppView, [string, string]> = {
@@ -53,7 +53,7 @@ function routeFromPath(input: string): AppRoute {
   if (path === "/connections") return { view: "connections", stage: "list", jobId: null, sourceId: null };
   if (path === "/storages") return { view: "storages", stage: "list", jobId: null, sourceId: null };
   if (path === "/logs") return { view: "logs", stage: "list", jobId: null, sourceId: null };
-  if (path === "/settings") return { view: "settings", stage: "list", jobId: null, sourceId: null };
+  if (path === "/settings" || path === "/settings/recipients") return { view: "settings", stage: "list", jobId: null, sourceId: null };
   if (path === "/backups/new") return { view: "backups", stage: "wizard", jobId: null, sourceId };
   if (path.startsWith("/backups/")) {
     const rest = path.slice("/backups/".length);

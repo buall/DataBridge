@@ -5,6 +5,7 @@ import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupConfig, BackupJob, DatabaseConnection } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import { RetentionDaysField, TimeSelect } from "./BackupWizard";
+import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
 export type BackupArtifactVersionOption = { id: string; label: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; artifacts: BackupArtifactItem[]; current?: boolean };
@@ -454,8 +455,7 @@ const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "�
 function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () => void; onSave: (config: BackupConfig) => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [testingNotification, setTestingNotification] = useState(false);
-  const [notificationTestResult, setNotificationTestResult] = useState("");
+  const { recipients, loadingRecipients } = useNotificationRecipients();
   const [form, setForm] = useState<BackupConfig>({
     name: job.name,
     sourceId: "",
@@ -470,12 +470,15 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     scheduleMonthDay: job.scheduleMonthDay ?? 1,
     retentionDays: retentionDaysFromJob(job),
     notificationEnabled: job.notificationEnabled ?? false,
-    notificationMethod: job.notificationMethod ?? "webhook",
-    notificationTarget: job.notificationTarget ?? "",
+    notificationRecipientIds: job.notificationRecipientIds ?? [],
   });
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (form.notificationEnabled && !(form.notificationRecipientIds?.length)) {
+      setError("请至少选择一个通知接收者，或关闭备份通知");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -483,20 +486,6 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存计划失败");
       setSaving(false);
-    }
-  }
-
-  async function testNotification() {
-    setTestingNotification(true);
-    setNotificationTestResult("");
-    setError("");
-    try {
-      const result = await api.testBackupNotification(form.notificationMethod ?? "webhook", form.notificationTarget?.trim() ?? "");
-      setNotificationTestResult(result.message);
-    } catch (reason) {
-      setNotificationTestResult(reason instanceof Error ? reason.message : "测试通知发送失败");
-    } finally {
-      setTestingNotification(false);
     }
   }
 
@@ -516,12 +505,8 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
         <div className="notification-panel modal-notification-panel">
           <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
           {form.notificationEnabled && (
-            <div className="notification-grid">
-              <SelectField label="通知方式" value={form.notificationMethod ?? "webhook"} onChange={(notificationMethod) => { setNotificationTestResult(""); setForm({ ...form, notificationMethod: notificationMethod as BackupConfig["notificationMethod"], notificationTarget: "" }); }}><option value="webhook">Webhook</option><option value="email">Email</option></SelectField>
-              <div className="notification-target-row"><label className="field"><span>{form.notificationMethod === "email" ? "收件邮箱" : "Webhook URL"}</span><input value={form.notificationTarget ?? ""} onChange={(event) => { setNotificationTestResult(""); setForm({ ...form, notificationTarget: event.target.value }); }} placeholder={form.notificationMethod === "email" ? "ops@databridge.local" : "https://example.com/webhook"} /></label><Button type="button" variant="secondary" disabled={testingNotification || !form.notificationTarget?.trim()} onClick={testNotification}>{testingNotification ? "测试中..." : "测试"}</Button></div>
-            </div>
+            <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={form.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setForm({ ...form, notificationRecipientIds })} /></div>
           )}
-          {notificationTestResult && <p className="notification-test-result">{notificationTestResult}</p>}
         </div>
         <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>取消</Button><Button disabled={saving} type="submit">{saving ? "保存中..." : "保存计划"}</Button></div>
       </form>

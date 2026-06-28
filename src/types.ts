@@ -141,6 +141,33 @@ export interface BackupConfig {
   notificationEnabled?: boolean;
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
+  notificationRecipientIds?: string[];
+}
+
+export type NotificationRecipientType = "feishu" | "dingtalk" | "wechat_work" | "telegram" | "webhook" | "email";
+
+export interface NotificationRecipient {
+  id: string;
+  name: string;
+  type: NotificationRecipientType;
+  targetMasked: string;
+  targetSet: boolean;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationRecipientInput {
+  name: string;
+  type: NotificationRecipientType;
+  target?: string;
+  botToken?: string;
+  chatId?: string;
+  enabled: boolean;
+}
+
+export interface NotificationRecipientTestInput extends NotificationRecipientInput {
+  id?: string;
 }
 
 export interface RestoreBackupConfig {
@@ -254,6 +281,7 @@ export interface BackupJob {
   notificationEnabled?: boolean;
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
+  notificationRecipientIds?: string[];
   nextRunAt?: string;
   lastRunAt?: string;
   artifactName?: string;

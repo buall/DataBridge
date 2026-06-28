@@ -8,6 +8,9 @@ import type {
   DuplicateConnectionInput,
   MigrationConfig,
   MigrationJob,
+  NotificationRecipient,
+  NotificationRecipientInput,
+  NotificationRecipientTestInput,
   RemoteStorage,
   RemoteStorageInput,
   RestoreBackupConfig,
@@ -179,4 +182,15 @@ export const api = {
   smtpSettings: () => request<SMTPSettings>("/settings/smtp"),
   updateSMTPSettings: (input: SMTPSettings) =>
     request<SMTPSettings>("/settings/smtp", { method: "PUT", body: JSON.stringify(input) }),
+  notificationRecipients: () => request<NotificationRecipient[]>("/settings/notification-recipients"),
+  createNotificationRecipient: (input: NotificationRecipientInput) =>
+    request<NotificationRecipient>("/settings/notification-recipients", { method: "POST", body: JSON.stringify(input) }),
+  updateNotificationRecipient: (id: string, input: NotificationRecipientInput) =>
+    request<NotificationRecipient>(`/settings/notification-recipients/${id}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteNotificationRecipient: (id: string) =>
+    request<{ ok: boolean }>(`/settings/notification-recipients/${id}`, { method: "DELETE" }),
+  testNotificationRecipient: (id: string) =>
+    request<{ message: string }>(`/settings/notification-recipients/${id}/test`, { method: "POST" }),
+  testNotificationRecipientInput: (input: NotificationRecipientTestInput) =>
+    request<{ message: string }>("/settings/notification-recipients/test", { method: "POST", body: JSON.stringify(input) }),
 };
