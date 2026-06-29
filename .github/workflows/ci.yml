@@ -14,7 +14,8 @@ permissions:
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  GHCR_IMAGE_NAME: ghcr.io/${{ github.repository }}
+  TENCENT_IMAGE_NAME: hkccr.ccs.tencentyun.com/${{ github.repository }}
   PG_MAJOR: "18"
   MONGO_TOOLS_VERSION: "100.17.0"
   MONGO_TOOLS_DISTRO: ubuntu2204
@@ -70,11 +71,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Tencent Cloud Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: hkccr.ccs.tencentyun.com
+          username: ${{ secrets.TENCENT_REGISTRY_USERNAME }}
+          password: ${{ secrets.TENCENT_REGISTRY_PASSWORD }}
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: |
+            ${{ env.GHCR_IMAGE_NAME }}
+            ${{ env.TENCENT_IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
