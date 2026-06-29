@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/smtp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +142,84 @@ func TestNotificationRecipientInputUsesSavedTargetWhenEditing(t *testing.T) {
 	case <-received:
 	case <-time.After(time.Second):
 		t.Fatal("saved webhook did not receive a notification")
+	}
+}
+
+func TestSendSMTPMailUsesImplicitTLSForPort465(t *testing.T) {
+	t.Cleanup(resetSMTPTestHooks)
+	sendMailCalled := false
+	smtpSendMail = func(string, smtp.Auth, string, []string, []byte) error {
+		sendMailCalled = true
+		return nil
+	}
+	dialedNetwork := ""
+	dialedAddress := ""
+	var tlsConfig *tls.Config
+	smtpTLSDial = func(network, addr string, config *tls.Config) (*tls.Conn, error) {
+		dialedNetwork = network
+		dialedAddress = addr
+		tlsConfig = config
+		return nil, errors.New("stop after TLS dial")
+	}
+
+	err := sendSMTPMail("smtp.resend.com:465", nil, "DataBridge <no-reply@wideclaw.space>", []string{"to@example.com"}, []byte("Subject: test\r\n\r\nbody"))
+	if err == nil || !strings.Contains(err.Error(), "连接 SMTP TLS 服务失败") {
+		t.Fatalf("error = %v", err)
+	}
+	if sendMailCalled {
+		t.Fatal("smtp.SendMail must not be used for implicit TLS port 465")
+	}
+	if dialedNetwork != "tcp" || dialedAddress != "smtp.resend.com:465" {
+		t.Fatalf("dial = %s %s", dialedNetwork, dialedAddress)
+	}
+	if tlsConfig == nil || tlsConfig.ServerName != "smtp.resend.com" || tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("unexpected tls config: %#v", tlsConfig)
+	}
+}
+
+func TestSendSMTPMailUsesEnvelopeAddressForStandardPorts(t *testing.T) {
+	t.Cleanup(resetSMTPTestHooks)
+	var gotAddress, gotFrom string
+	var gotTo []string
+	var gotMessage string
+	smtpSendMail = func(addr string, _ smtp.Auth, from string, to []string, msg []byte) error {
+		gotAddress = addr
+		gotFrom = from
+		gotTo = append([]string(nil), to...)
+		gotMessage = string(msg)
+		return nil
+	}
+	smtpTLSDial = func(string, string, *tls.Config) (*tls.Conn, error) {
+		t.Fatal("TLS dial should not be used for port 587")
+		return nil, nil
+	}
+
+	err := sendSMTPMail("smtp.resend.com:587", nil, "DataBridge <no-reply@wideclaw.space>", []string{"to@example.com"}, []byte("Subject: test\r\n\r\nbody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAddress != "smtp.resend.com:587" || gotFrom != "no-reply@wideclaw.space" {
+		t.Fatalf("addr/from = %q/%q", gotAddress, gotFrom)
+	}
+	if len(gotTo) != 1 || gotTo[0] != "to@example.com" {
+		t.Fatalf("to = %#v", gotTo)
+	}
+	if gotMessage == "" {
+		t.Fatal("message should be passed through")
+	}
+}
+
+func TestSMTPEnvelopeAddressRejectsInvalidSender(t *testing.T) {
+	if _, err := smtpEnvelopeAddress("DataBridge no-reply@wideclaw.space"); err == nil {
+		t.Fatal("expected invalid sender error")
+	}
+}
+
+func resetSMTPTestHooks() {
+	smtpSendMail = smtp.SendMail
+	smtpTLSDial = tls.Dial
+	smtpTLSConfig = func(host string) *tls.Config {
+		return &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 	}
 }
 

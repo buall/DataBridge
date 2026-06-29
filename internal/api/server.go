@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/netip"
 	"net/smtp"
 	"net/url"
@@ -2328,8 +2330,80 @@ func (s *Server) sendBackupEmail(job model.BackupJob, success bool) error {
 	if settings.Username != "" {
 		auth = smtp.PlainAuth("", settings.Username, settings.Password, settings.Host)
 	}
-	return smtp.SendMail(addr, auth, settings.From, []string{to}, []byte(msg))
+	return sendSMTPMail(addr, auth, settings.From, []string{to}, []byte(msg))
 }
+
+func sendSMTPMail(addr string, auth smtp.Auth, from string, to []string, msg []byte) error {
+	envelopeFrom, err := smtpEnvelopeAddress(from)
+	if err != nil {
+		return err
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("解析 SMTP 地址失败: %w", err)
+	}
+	if port != "465" {
+		return smtpSendMail(addr, auth, envelopeFrom, to, msg)
+	}
+	conn, err := smtpTLSDial("tcp", addr, smtpTLSConfig(host))
+	if err != nil {
+		return fmt.Errorf("连接 SMTP TLS 服务失败: %w", err)
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("初始化 SMTP 客户端失败: %w", err)
+	}
+	defer client.Close()
+	if auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP 认证失败: %w", err)
+		}
+	}
+	if err := client.Mail(envelopeFrom); err != nil {
+		return fmt.Errorf("设置发件人失败: %w", err)
+	}
+	for _, recipient := range to {
+		if err := client.Rcpt(recipient); err != nil {
+			return fmt.Errorf("设置收件人失败: %w", err)
+		}
+	}
+	writer, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("创建邮件内容失败: %w", err)
+	}
+	if _, err := writer.Write(msg); err != nil {
+		_ = writer.Close()
+		return fmt.Errorf("写入邮件内容失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("提交邮件内容失败: %w", err)
+	}
+	if err := client.Quit(); err != nil {
+		return fmt.Errorf("结束 SMTP 会话失败: %w", err)
+	}
+	return nil
+}
+
+func smtpEnvelopeAddress(from string) (string, error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return "", fmt.Errorf("邮件发件人不能为空")
+	}
+	address, err := mail.ParseAddress(from)
+	if err != nil {
+		return "", fmt.Errorf("邮件发件人格式无效: %w", err)
+	}
+	return address.Address, nil
+}
+
+var (
+	smtpSendMail  = smtp.SendMail
+	smtpTLSDial   = tls.Dial
+	smtpTLSConfig = func(host string) *tls.Config {
+		return &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	}
+)
 
 func backupNotificationStatus(success bool) string {
 	if success {
