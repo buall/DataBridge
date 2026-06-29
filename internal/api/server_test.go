@@ -97,6 +97,88 @@ func TestNormalizeBackupScheduleKeepsRecipientSelection(t *testing.T) {
 	}
 }
 
+func TestHydrateBackupTargetsMarksPrimaryAndSecondaries(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	primary, err := appStore.AddStorage(model.StorageInput{Type: "object", Name: "primary", Provider: "MinIO", Endpoint: "https://s3.example.com", Bucket: "main", AccessKey: "ak", SecretKey: "sk", Verified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary, err := appStore.AddStorage(model.StorageInput{Type: "local", Name: "secondary", Provider: "Local", Path: t.TempDir(), Verified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := model.BackupRequest{
+		DestinationType:      "multi",
+		Destination:          primary.ID,
+		PrimaryDestinationID: primary.ID,
+		BackupTargets: []model.BackupTarget{
+			{StorageID: secondary.ID, Role: "secondary", Order: 2},
+			{StorageID: primary.ID, Role: "primary", Order: 0},
+		},
+	}
+
+	storages, err := server.hydrateBackupTargets(&request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.DestinationType != "multi" || request.Destination != primary.ID || request.PrimaryDestinationID != primary.ID {
+		t.Fatalf("request destination not normalized: %#v", request)
+	}
+	if len(storages) != 2 || storages[0].ID != primary.ID || storages[1].ID != secondary.ID {
+		t.Fatalf("storages order = %#v", storages)
+	}
+	if len(request.BackupTargets) != 2 || request.BackupTargets[0].Role != "primary" || request.BackupTargets[1].Role != "secondary" {
+		t.Fatalf("targets = %#v", request.BackupTargets)
+	}
+}
+
+func TestMergeBackupArtifactKeepsCopiesInPrimaryOrder(t *testing.T) {
+	current := model.BackupArtifact{Database: "app", Name: "old.tar.gz"}
+	next := model.BackupArtifact{Database: "app", Name: "new.tar.gz", Copies: []model.BackupArtifactCopy{
+		{StorageID: "secondary", StorageName: "secondary", Role: "secondary", Order: 2, Type: "local", Name: "new.tar.gz", Path: "/backup/new.tar.gz", Status: "completed"},
+	}}
+	merged := mergeBackupArtifact(current, next)
+	merged = mergeBackupArtifact(merged, model.BackupArtifact{Database: "app", Copies: []model.BackupArtifactCopy{
+		{StorageID: "primary", StorageName: "primary", Role: "primary", Order: 0, Type: "object", Name: "new.tar.gz", Status: "completed"},
+	}})
+
+	if merged.Name != "new.tar.gz" {
+		t.Fatalf("name = %q", merged.Name)
+	}
+	if len(merged.Copies) != 2 || merged.Copies[0].StorageID != "primary" || merged.Copies[1].StorageID != "secondary" {
+		t.Fatalf("copies = %#v", merged.Copies)
+	}
+}
+
+func TestRestoreCopiesPreferPrimaryAndSkipFailedCopies(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	primary, err := appStore.AddStorage(model.StorageInput{Type: "object", Name: "primary", Provider: "MinIO", Endpoint: "https://s3.example.com", Bucket: "main", AccessKey: "ak", SecretKey: "sk", Verified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary, err := appStore.AddStorage(model.StorageInput{Type: "object", Name: "secondary", Provider: "MinIO", Endpoint: "https://s3.backup.example.com", Bucket: "backup", AccessKey: "ak", SecretKey: "sk", Verified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := model.BackupJob{DestinationType: "multi"}
+	artifact := model.BackupArtifact{Database: "app", Copies: []model.BackupArtifactCopy{
+		{StorageID: secondary.ID, StorageName: secondary.Name, Role: "secondary", Order: 2, Type: "object", Name: "app.tar.gz", Status: "completed"},
+		{StorageID: primary.ID, StorageName: primary.Name, Role: "primary", Order: 0, Type: "object", Name: "app.tar.gz", Status: "completed"},
+		{StorageID: "failed", Role: "secondary", Order: 3, Type: "object", Name: "app.tar.gz", Status: "failed"},
+	}}
+
+	copies := server.restoreCopiesForArtifact(job, artifact)
+	if len(copies) != 2 {
+		t.Fatalf("copies = %#v", copies)
+	}
+	if copies[0].Storage == nil || copies[0].Storage.ID != primary.ID {
+		t.Fatalf("primary copy should be first: %#v", copies[0])
+	}
+	if copies[1].Storage == nil || copies[1].Storage.ID != secondary.ID {
+		t.Fatalf("secondary copy should be second: %#v", copies[1])
+	}
+}
+
 func TestNotificationRecipientInputCanBeTestedBeforeSave(t *testing.T) {
 	_, server, _ := newTestServer(t)
 	received := make(chan struct{}, 1)

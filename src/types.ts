@@ -180,8 +180,10 @@ export interface BackupConfig {
   sourceId: string;
   sourceDatabase: string;
   sourceDatabases: string[];
-  destinationType: "storage" | "local" | "object";
+  destinationType: "storage" | "local" | "object" | "multi";
   destination: string;
+  backupTargets?: BackupTarget[];
+  primaryDestinationId?: string;
   scheduleMode: "once" | "scheduled";
   scheduleFrequency?: "daily" | "weekly" | "monthly";
   scheduleTime?: string;
@@ -193,6 +195,33 @@ export interface BackupConfig {
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
   notificationRecipientIds?: string[];
+}
+
+export interface BackupTarget {
+  storageId: string;
+  role?: "primary" | "secondary";
+  order?: number;
+}
+
+export interface BackupArtifactCopy {
+  storageId?: string;
+  storageName?: string;
+  role?: "primary" | "secondary";
+  order?: number;
+  type?: string;
+  name: string;
+  size?: number;
+  path?: string;
+  status?: "completed" | "failed" | string;
+  error?: string;
+}
+
+export interface BackupArtifact {
+  database: string;
+  name: string;
+  size?: number;
+  path?: string;
+  copies?: BackupArtifactCopy[];
 }
 
 export type NotificationRecipientType = "feishu" | "dingtalk" | "wechat_work" | "telegram" | "webhook" | "email";
@@ -322,6 +351,8 @@ export interface BackupJob {
   sourceDatabase: string;
   destinationType: string;
   destination: string;
+  backupTargets?: BackupTarget[];
+  primaryDestinationId?: string;
   scheduleMode?: "once" | "scheduled";
   scheduleFrequency?: "daily" | "weekly" | "monthly";
   scheduleTime?: string;
@@ -338,7 +369,7 @@ export interface BackupJob {
   artifactName?: string;
   artifactSize?: number;
   artifactPath?: string;
-  artifacts?: Array<{ database: string; name: string; size?: number; path?: string }>;
-  artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: Array<{ database: string; name: string; size?: number; path?: string }>; error?: string }>;
+  artifacts?: BackupArtifact[];
+  artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: BackupArtifact[]; error?: string }>;
   events: MigrationEvent[];
 }

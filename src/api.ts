@@ -36,8 +36,15 @@ export type MigrationsResponse = {
 };
 
 function normalizeBackup(job: BackupJob): BackupJob {
+  const backupTargets = job.backupTargets?.length
+    ? job.backupTargets
+    : job.destination
+      ? [{ storageId: job.primaryDestinationId || job.destination, role: "primary" as const, order: 0 }]
+      : [];
   return {
     ...job,
+    backupTargets,
+    primaryDestinationId: job.primaryDestinationId || backupTargets.find((target) => target.role === "primary")?.storageId || backupTargets[0]?.storageId,
     events: job.events ?? [],
   };
 }

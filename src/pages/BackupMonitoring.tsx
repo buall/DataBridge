@@ -2,9 +2,9 @@ import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Cloc
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { BackupConfig, BackupJob, DatabaseConnection } from "../types";
+import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, RemoteStorage } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
-import { RetentionDaysField, TimeSelect } from "./BackupWizard";
+import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
@@ -28,11 +28,15 @@ const restoreStages = [
 
 export function BackupMonitoring({
   jobId,
+  connections,
+  storages,
   onComplete,
   onOpenRestore,
   onOpenArtifacts,
 }: {
   jobId: string;
+  connections: DatabaseConnection[];
+  storages: RemoteStorage[];
   onComplete: (job: BackupJob) => void;
   onOpenRestore: (job: BackupJob) => void;
   onOpenArtifacts: (job: BackupJob) => void;
@@ -166,7 +170,7 @@ export function BackupMonitoring({
         const runTitle = runKindLabel ? run.title.replace(`${runKindLabel} · `, "") : run.title;
         return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => toggleRun(run, collapsed)}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{runKindLabel && <span className={`run-kind-tag ${run.kind}`}>{runKindLabel}</span>}<span>{runTitle}</span></strong><small>{run.subtitle}</small></div><Badge tone={run.failed ? "red" : run.completed ? "green" : "blue"}>{run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && loadingThisRun && <div className="event-row event-loading"><time>--:--:--</time><Archive size={15}/><span>正在加载本次备份日志...</span><Badge tone="blue">加载中</Badge></div>}{!collapsed && !loadingThisRun && detailEvents.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
       })}</Card>
-      {editing && <ScheduleEditor job={job} onClose={() => setEditing(false)} onSave={saveSchedule} />}
+      {editing && <ScheduleEditor job={job} connections={connections} storages={storages} onClose={() => setEditing(false)} onSave={saveSchedule} />}
       {cancelConfirmOpen && <ConfirmDialog title="停止备份任务" description="这是中危操作，任务会被取消，当前执行进度不会继续推进。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]} />}
     </div>
   );
@@ -191,15 +195,19 @@ function latestErrorEvent(job: BackupJob) {
 }
 
 export function canShowRestorePanel(job: BackupJob) {
-  return (job.destinationType === "local" || job.destinationType === "object") && (hasBackupArtifact(job) || job.status === "scheduled" || job.status === "completed");
+  return backupDestinationSupportsArtifacts(job) && (hasBackupArtifact(job) || job.status === "scheduled" || job.status === "completed");
 }
 
 export function canRestoreFromJob(job: BackupJob) {
-  return (job.destinationType === "local" || job.destinationType === "object") && hasBackupArtifact(job) && job.status !== "running" && job.status !== "pending";
+  return backupDestinationSupportsArtifacts(job) && hasBackupArtifact(job) && job.status !== "running" && job.status !== "pending";
 }
 
 export function hasBackupArtifact(job: BackupJob) {
-  return Boolean(job.artifactName || job.artifacts?.some((artifact) => artifact.name));
+  return Boolean(job.artifactName || job.artifacts?.some((artifact) => artifact.name || artifact.copies?.some((copy) => copy.name)));
+}
+
+function backupDestinationSupportsArtifacts(job: BackupJob) {
+  return job.destinationType === "local" || job.destinationType === "object" || job.destinationType === "multi";
 }
 
 function restoreUnavailableHint(job: BackupJob) {
@@ -209,12 +217,17 @@ function restoreUnavailableHint(job: BackupJob) {
 
 export function backupArtifacts(job: BackupJob): BackupArtifactItem[] {
   if (job.artifacts?.length) {
-    return job.artifacts.filter((artifact) => artifact.name).map((artifact) => ({
-      database: artifact.database || job.sourceDatabase || "default",
-      name: artifact.name,
-      size: artifact.size,
-      path: artifact.path,
-    }));
+    return job.artifacts
+      .map((artifact) => {
+        const primaryCopy = artifact.copies?.find((copy) => copy.role === "primary" && copy.name) ?? artifact.copies?.find((copy) => copy.name);
+        return {
+          database: artifact.database || job.sourceDatabase || "default",
+          name: artifact.name || primaryCopy?.name || "",
+          size: artifact.size || primaryCopy?.size,
+          path: artifact.path || primaryCopy?.path,
+        };
+      })
+      .filter((artifact) => artifact.name);
   }
   if (!job.artifactName) return [];
   return [{
@@ -227,19 +240,22 @@ export function backupArtifacts(job: BackupJob): BackupArtifactItem[] {
 
 export function artifactVersionsForRestore(job: BackupJob): BackupArtifactVersionOption[] {
   const versions = (job.artifactVersions ?? [])
-    .filter((version) => version.artifacts?.some((artifact) => artifact.name))
+    .filter((version) => version.artifacts?.some((artifact) => artifact.name || artifact.copies?.some((copy) => copy.name)))
     .map((version): BackupArtifactVersionOption => ({
       id: version.id,
       label: formatDateTime(version.finishedAt ?? version.startedAt),
       startedAt: version.startedAt,
       finishedAt: version.finishedAt,
       status: version.status,
-      artifacts: (version.artifacts ?? []).filter((artifact) => artifact.name).map((artifact) => ({
-        database: artifact.database || job.sourceDatabase || "default",
-        name: artifact.name,
-        size: artifact.size,
-        path: artifact.path,
-      })),
+      artifacts: (version.artifacts ?? []).map((artifact) => {
+        const primaryCopy = artifact.copies?.find((copy) => copy.role === "primary" && copy.name) ?? artifact.copies?.find((copy) => copy.name);
+        return {
+          database: artifact.database || job.sourceDatabase || "default",
+          name: artifact.name || primaryCopy?.name || "",
+          size: artifact.size || primaryCopy?.size,
+          path: artifact.path || primaryCopy?.path,
+        };
+      }).filter((artifact) => artifact.name),
       current: false,
     }))
     .sort((left, right) => new Date(right.finishedAt ?? right.startedAt).getTime() - new Date(left.finishedAt ?? left.startedAt).getTime());
@@ -453,17 +469,37 @@ function stageLabel(stage: string) {
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () => void; onSave: (config: BackupConfig) => Promise<void> }) {
+function ScheduleEditor({
+  job,
+  connections,
+  storages,
+  onClose,
+  onSave,
+}: {
+  job: BackupJob;
+  connections: DatabaseConnection[];
+  storages: RemoteStorage[];
+  onClose: () => void;
+  onSave: (config: BackupConfig) => Promise<void>;
+}) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const { recipients, loadingRecipients } = useNotificationRecipients();
+  const writableStorages = storages.filter((item) => item.type === "object" || item.type === "local");
+  const initialSource = connections.find((item) => item.name === job.sourceName && item.type === job.sourceType) ?? connections.find((item) => item.name === job.sourceName) ?? connections[0];
+  const initialTargets = initialBackupTargets(job, writableStorages);
+  const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
+  const [databaseConnectionId, setDatabaseConnectionId] = useState("");
+  const [loadingDatabases, setLoadingDatabases] = useState(false);
   const [form, setForm] = useState<BackupConfig>({
     name: job.name,
-    sourceId: "",
+    sourceId: initialSource?.id ?? "",
     sourceDatabase: job.sourceDatabase,
     sourceDatabases: job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean),
-    destinationType: "storage",
-    destination: "",
+    destinationType: initialTargets.length > 1 ? "multi" : "storage",
+    destination: initialTargets.find((target) => target.role === "primary")?.storageId ?? initialTargets[0]?.storageId ?? "",
+    primaryDestinationId: initialTargets.find((target) => target.role === "primary")?.storageId ?? initialTargets[0]?.storageId ?? "",
+    backupTargets: initialTargets,
     scheduleMode: "scheduled",
     scheduleFrequency: job.scheduleFrequency ?? "daily",
     scheduleTime: job.scheduleTime ?? "02:00:00",
@@ -473,9 +509,48 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     notificationEnabled: job.notificationEnabled ?? false,
     notificationRecipientIds: job.notificationRecipientIds ?? [],
   });
+  const source = connections.find((item) => item.id === form.sourceId);
+  const selectedTargetIds = selectedBackupTargetIds(form, writableStorages);
+  const primaryDestinationId = selectedTargetIds.includes(form.primaryDestinationId ?? "") ? form.primaryDestinationId ?? "" : selectedTargetIds[0] ?? "";
+
+  useEffect(() => {
+    if (!form.sourceId) return;
+    let cancelled = false;
+    setLoadingDatabases(true);
+    setError("");
+    api.databases(form.sourceId)
+      .then((items) => {
+        if (cancelled) return;
+        setDatabases(items);
+        setDatabaseConnectionId(form.sourceId);
+        setForm((current) => {
+          if (current.sourceId !== form.sourceId) return current;
+          const valid = new Set(items.map((item) => item.name));
+          const kept = current.sourceDatabases.filter((name) => valid.has(name));
+          const nextDatabases = kept.length ? kept : (items[0]?.name ? [items[0].name] : []);
+          return { ...current, sourceDatabases: nextDatabases, sourceDatabase: nextDatabases.join(", ") };
+        });
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "加载数据库列表失败");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDatabases(false);
+      });
+    return () => { cancelled = true; };
+  }, [form.sourceId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const sourceDatabases = form.sourceDatabases.filter(Boolean);
+    if (!sourceDatabases.length || databaseConnectionId !== form.sourceId) {
+      setError("请等待数据库列表加载完成，并选择要备份的数据库");
+      return;
+    }
+    if (!primaryDestinationId) {
+      setError("请至少选择一个备份目标");
+      return;
+    }
     if (form.notificationEnabled && !(form.notificationRecipientIds?.length)) {
       setError("请至少选择一个通知接收者，或关闭备份通知");
       return;
@@ -483,7 +558,16 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
     setSaving(true);
     setError("");
     try {
-      await onSave(form);
+      const targets = buildBackupTargets(selectedTargetIds, primaryDestinationId);
+      await onSave({
+        ...form,
+        sourceDatabase: sourceDatabases.join(", "),
+        sourceDatabases,
+        destinationType: targets.length > 1 ? "multi" : "storage",
+        destination: primaryDestinationId,
+        primaryDestinationId,
+        backupTargets: targets,
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "保存计划失败");
       setSaving(false);
@@ -493,15 +577,38 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
   return (
     <div className="modal-backdrop">
       <form className="modal schedule-editor-modal" onSubmit={submit}>
-        <div className="modal-title"><div><h3>编辑备份计划</h3><p>{job.sourceName} / {job.sourceDatabase}</p></div></div>
+        <div className="modal-title"><div><h3>编辑备份任务</h3><p>{job.sourceName} / {job.sourceDatabase}</p></div></div>
         {error && <div className="error-banner">{error}</div>}
-        <label className="field"><span>任务名称</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+        <div className="schedule-editor-section">
+          <label className="field"><span>任务名称</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+          <div className="schedule-editor-source-grid">
+            <SelectField label="源端连接" value={form.sourceId} onChange={(sourceId) => setForm({ ...form, sourceId, sourceDatabase: "", sourceDatabases: [] })}>
+              {connections.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}
+            </SelectField>
+            <DatabaseMultiSelect type={source?.type} databases={databases} loading={loadingDatabases} selected={form.sourceDatabases} onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
+          </div>
+        </div>
+        <div className="schedule-editor-section">
+          <div className="section-title compact"><div><h3>备份目标</h3><p>选择一个或多个远端存储，并指定恢复和下载优先使用的主节点。</p></div></div>
+          <BackupTargetSelector
+            storages={writableStorages}
+            selectedIds={selectedTargetIds}
+            primaryId={primaryDestinationId}
+            onChange={(nextIds, nextPrimaryId) => {
+              const targets = buildBackupTargets(nextIds, nextPrimaryId);
+              setForm({ ...form, destination: nextPrimaryId, primaryDestinationId: nextPrimaryId, backupTargets: targets, destinationType: targets.length > 1 ? "multi" : "storage" });
+            }}
+          />
+        </div>
+        <div className="schedule-editor-section">
+          <div className="section-title compact"><div><h3>执行计划</h3><p>调整定时频率、执行时间和备份保留期限。</p></div></div>
         <div className="schedule-grid compact">
           <SelectField label="频率" value={form.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
           <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
           {form.scheduleFrequency === "weekly" && <SelectField label="每周" value={form.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
           {form.scheduleFrequency === "monthly" && <SelectField label="每月" value={form.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
           <RetentionDaysField value={form.retentionDays ?? 30} onChange={(retentionDays) => setForm({ ...form, retentionDays })} />
+        </div>
         </div>
         <div className="notification-panel modal-notification-panel">
           <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
@@ -513,6 +620,25 @@ function ScheduleEditor({ job, onClose, onSave }: { job: BackupJob; onClose: () 
       </form>
     </div>
   );
+}
+
+function initialBackupTargets(job: BackupJob, storages: RemoteStorage[]) {
+  const fallbackStorage = storages.find((storage) => {
+    const destination = job.destination || "";
+    return destination.includes(storage.id) || destination.includes(storage.name) || (storage.bucket && destination.includes(storage.bucket)) || (storage.path && destination.includes(storage.path));
+  });
+  const normalized = normalizeTargetSelection({
+    name: job.name,
+    sourceId: "",
+    sourceDatabase: job.sourceDatabase,
+    sourceDatabases: job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean),
+    destinationType: job.destinationType === "multi" ? "multi" : "storage",
+    destination: job.primaryDestinationId ?? fallbackStorage?.id ?? "",
+    primaryDestinationId: job.primaryDestinationId,
+    backupTargets: job.backupTargets?.length ? job.backupTargets : (fallbackStorage ? [{ storageId: fallbackStorage.id, role: "primary", order: 0 }] : undefined),
+    scheduleMode: "scheduled",
+  }, storages);
+  return normalized.backupTargets ?? [];
 }
 
 function scheduleLabel(job: BackupJob) {

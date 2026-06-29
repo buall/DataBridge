@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database } from "lucide-react";
+import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { BackupConfig, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
@@ -32,6 +32,8 @@ export function BackupWizard({
     sourceDatabases: [],
     destinationType: "storage",
     destination: writableStorages[0]?.id ?? "",
+    primaryDestinationId: writableStorages[0]?.id ?? "",
+    backupTargets: writableStorages[0]?.id ? [{ storageId: writableStorages[0].id, role: "primary", order: 0 }] : [],
     scheduleMode: "once",
     scheduleFrequency: "daily",
     scheduleTime: "02:00:00",
@@ -46,7 +48,7 @@ export function BackupWizard({
     setConfig((current) => ({
       ...current,
       sourceId: backupableConnections.some((item) => item.id === current.sourceId) ? current.sourceId : (backupableConnections[0]?.id ?? ""),
-      destination: writableStorages.some((item) => item.id === current.destination) ? current.destination : (writableStorages[0]?.id ?? ""),
+      ...normalizeTargetSelection(current, writableStorages),
     }));
   }, [backupableConnections, writableStorages]);
 
@@ -85,7 +87,10 @@ export function BackupWizard({
   }, [config.sourceId]);
 
   const source = backupableConnections.find((item) => item.id === config.sourceId);
-  const destination = writableStorages.find((item) => item.id === config.destination);
+  const selectedTargetIds = selectedBackupTargetIds(config, writableStorages);
+  const primaryDestinationId = selectedTargetIds.includes(config.primaryDestinationId ?? "") ? config.primaryDestinationId ?? "" : selectedTargetIds[0] ?? "";
+  const selectedTargets = selectedTargetIds.map((id) => writableStorages.find((item) => item.id === id)).filter(Boolean) as RemoteStorage[];
+  const primaryDestination = writableStorages.find((item) => item.id === primaryDestinationId);
   const activeDatabases = databaseConnectionId === config.sourceId ? databases : [];
   const selectedDatabases = activeDatabases.filter((item) => config.sourceDatabases.includes(item.name));
   const databaseLabel = selectedDatabases.length === 1 ? selectedDatabases[0].name : `${selectedDatabases.length} 个数据库`;
@@ -105,8 +110,13 @@ export function BackupWizard({
     setError("");
     try {
       const scheduled = config.scheduleMode === "scheduled";
+      const targets = buildBackupTargets(selectedTargetIds, primaryDestinationId);
       await onStart({
         ...config,
+        destinationType: targets.length > 1 ? "multi" : "storage",
+        destination: primaryDestinationId,
+        primaryDestinationId,
+        backupTargets: targets,
         notificationEnabled: scheduled ? config.notificationEnabled : false,
         notificationRecipientIds: scheduled ? config.notificationRecipientIds : [],
         sourceDatabase: sourceDatabases.join(", "),
@@ -147,11 +157,16 @@ export function BackupWizard({
 
       {step === 1 && (
         <Card className="wizard-card config-step">
-          <div className="card-heading"><h3>选择备份目标</h3><p>对象存储会上传到配置的 Bucket 和默认目录。</p></div>
-          <div className="config-grid">
-            <SelectField label="备份目标" value={config.destination} onChange={(destination) => setConfig({ ...config, destination })}>{writableStorages.map((item) => <option key={item.id} value={item.id}>{item.name} · {storageTypeLabel(item)}</option>)}</SelectField>
-            <div className="endpoint-summary"><Archive size={22} /><div><span>目标位置</span><strong>{destination?.bucket || destination?.path || "未设置"}</strong><small>{destination?.endpoint || destination?.provider}</small></div></div>
-          </div>
+          <div className="card-heading"><h3>选择备份目标</h3><p>备份产物会同步到选中的所有目标，恢复和下载优先使用主备份节点。</p></div>
+          <BackupTargetSelector
+            storages={writableStorages}
+            selectedIds={selectedTargetIds}
+            primaryId={primaryDestinationId}
+            onChange={(nextIds, nextPrimaryId) => {
+              const targets = buildBackupTargets(nextIds, nextPrimaryId);
+              setConfig({ ...config, destination: nextPrimaryId, primaryDestinationId: nextPrimaryId, backupTargets: targets, destinationType: targets.length > 1 ? "multi" : "storage" });
+            }}
+          />
           <div className="schedule-panel">
             <span>执行方式</span>
             <div className="segmented-control">
@@ -182,14 +197,14 @@ export function BackupWizard({
       {step === 2 && (
         <Card className="wizard-card confirm-step">
           <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行备份</h3><p>任务启动后会导出源数据库并写入目标存储。</p></div>
-          <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>备份目标</span><strong>{destination?.name}</strong><small>{destination?.bucket || destination?.path}</small></div></div></div>
-<div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>目标类型</span><strong>{storageTypeLabel(destination)}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config, recipients)}</strong></div><div><span>文件格式</span><strong>{backupFormatLabel(source?.type)}</strong></div></div>
+          <div className="route-summary"><Endpoint connection={source} database={databaseLabel} /><div className="route-line"><ArrowRight /></div><div className="endpoint-summary"><Archive size={22} /><div><span>主备份节点</span><strong>{primaryDestination?.name}</strong><small>{primaryDestination?.bucket || primaryDestination?.path}</small></div></div></div>
+<div className="confirmation-grid"><div><span>数据库类型</span><strong>{source?.type}</strong></div><div><span>源数据库</span><strong>{config.sourceDatabases.join(", ")}</strong></div><div><span>同步目标</span><strong>{selectedTargets.length} 个</strong></div><div><span>主备份节点</span><strong>{primaryDestination?.name}</strong></div><div><span>执行方式</span><strong>{scheduleLabel(config)}</strong></div><div><span>保留策略</span><strong>{retentionPolicyLabel(config)}</strong></div><div><span>备份通知</span><strong>{notificationLabel(config, recipients)}</strong></div><div><span>文件格式</span><strong>{backupFormatLabel(source?.type)}</strong></div></div>
         </Card>
       )}
 
       <div className="wizard-actions">
         <span>备份文件会写入本地任务记录，密钥仍仅在后端加密保存</span>
-        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || databaseConnectionId !== config.sourceId || !config.sourceDatabases.length || !config.destination} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
+        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || databaseConnectionId !== config.sourceId || !config.sourceDatabases.length || !primaryDestinationId} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
     </div>
   );
@@ -197,6 +212,79 @@ export function BackupWizard({
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 export const retentionDayOptions = [30, 60, 90, 180, 365, 730, 1095];
+
+export function selectedBackupTargetIds(config: BackupConfig, storages: RemoteStorage[]) {
+  const validIds = new Set(storages.map((item) => item.id));
+  const ids = (config.backupTargets?.length ? config.backupTargets.map((target) => target.storageId) : [config.destination]).filter((id): id is string => Boolean(id && validIds.has(id)));
+  if (!ids.length && storages[0]?.id) return [storages[0].id];
+  return Array.from(new Set(ids));
+}
+
+export function normalizeTargetSelection(config: BackupConfig, storages: RemoteStorage[]) {
+  const selectedIds = selectedBackupTargetIds(config, storages);
+  const primaryId = selectedIds.includes(config.primaryDestinationId ?? "") ? config.primaryDestinationId ?? "" : selectedIds[0] ?? "";
+  const targets = buildBackupTargets(selectedIds, primaryId);
+  return {
+    destination: primaryId,
+    primaryDestinationId: primaryId,
+    backupTargets: targets,
+    destinationType: targets.length > 1 ? "multi" as const : "storage" as const,
+  };
+}
+
+export function buildBackupTargets(selectedIds: string[], primaryId: string) {
+  const ids = Array.from(new Set(selectedIds.filter(Boolean)));
+  const resolvedPrimary = ids.includes(primaryId) ? primaryId : ids[0] ?? "";
+  return ids.map((storageId, index) => ({
+    storageId,
+    role: storageId === resolvedPrimary ? "primary" as const : "secondary" as const,
+    order: storageId === resolvedPrimary ? 0 : index + 1,
+  })).sort((left, right) => {
+    if (left.role === "primary") return -1;
+    if (right.role === "primary") return 1;
+    return left.order - right.order;
+  });
+}
+
+export function BackupTargetSelector({
+  storages,
+  selectedIds,
+  primaryId,
+  onChange,
+}: {
+  storages: RemoteStorage[];
+  selectedIds: string[];
+  primaryId: string;
+  onChange: (selectedIds: string[], primaryId: string) => void;
+}) {
+  function toggleStorage(storageId: string) {
+    const selected = selectedIds.includes(storageId);
+    const nextIds = selected ? selectedIds.filter((id) => id !== storageId) : [...selectedIds, storageId];
+    const nextPrimary = nextIds.includes(primaryId) ? primaryId : nextIds[0] ?? "";
+    onChange(nextIds, nextPrimary);
+  }
+
+  return (
+    <div className="backup-target-selector">
+      {storages.map((storage) => {
+        const selected = selectedIds.includes(storage.id);
+        const primary = selected && primaryId === storage.id;
+        return (
+          <div className={`backup-target-option ${selected ? "selected" : ""} ${primary ? "primary" : ""}`} key={storage.id}>
+            <button type="button" className="backup-target-toggle" onClick={() => toggleStorage(storage.id)}>
+              <span className={`checkbox ${selected ? "checked" : ""}`}>{selected && <Check size={13} />}</span>
+              <Archive size={20} />
+              <span><strong>{storage.name}</strong><small>{storage.bucket || storage.path || storage.provider}</small></span>
+            </button>
+            <button type="button" className="backup-target-primary" disabled={!selected || primary} onClick={() => onChange(selectedIds, storage.id)}>
+              <ShieldCheck size={15} />{primary ? "主节点" : "设为主节点"}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function scheduleLabel(config: BackupConfig) {
   if (config.scheduleMode !== "scheduled") return "一次性立即执行";
@@ -426,7 +514,7 @@ function SourceConnectionSelect({ connectionId, connections, onChange }: { conne
   );
 }
 
-function DatabaseMultiSelect({ type, databases, loading, selected, onChange }: { type?: DatabaseConnection["type"]; databases: DatabaseInfo[]; loading: boolean; selected: string[]; onChange: (value: string[]) => void }) {
+export function DatabaseMultiSelect({ type, databases, loading, selected, onChange }: { type?: DatabaseConnection["type"]; databases: DatabaseInfo[]; loading: boolean; selected: string[]; onChange: (value: string[]) => void }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedSet = new Set(selected);

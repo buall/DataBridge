@@ -53,3 +53,32 @@ func TestNormalizeNeo4jDumpForTargetLeavesNeo4j4Unchanged(t *testing.T) {
 		t.Fatalf("neo4j 4 dump changed unexpectedly\n%s", string(data))
 	}
 }
+
+func TestToolPathCandidatesIncludeVersionedPostgresInstallDirectories(t *testing.T) {
+	candidates := strings.Join(toolPathCandidates("pg_dump-18"), "\n")
+	for _, want := range []string{
+		"/usr/lib/postgresql/18/bin/pg_dump",
+		"/opt/homebrew/opt/postgresql@18/bin/pg_dump",
+		"/usr/local/opt/postgresql@18/bin/pg_dump",
+		"/Applications/Postgres.app/Contents/Versions/18/bin/pg_dump",
+		"/Library/PostgreSQL/18/bin/pg_dump",
+	} {
+		if !strings.Contains(candidates, want) {
+			t.Fatalf("missing candidate %q\n%s", want, candidates)
+		}
+	}
+}
+
+func TestParsePostgresToolMajor(t *testing.T) {
+	tests := map[string]int{
+		"pg_dump (PostgreSQL) 18.4":          18,
+		"psql (PostgreSQL) 14.13 (Homebrew)": 14,
+		"pg_restore (PostgreSQL) 17beta1":    17,
+		"not postgres":                       0,
+	}
+	for input, want := range tests {
+		if got := parsePostgresToolMajor(input); got != want {
+			t.Fatalf("parsePostgresToolMajor(%q) = %d, want %d", input, got, want)
+		}
+	}
+}

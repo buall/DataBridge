@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1099,12 +1100,12 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizeBackupSchedule(&request)
-	if request.SourceID == "" || request.SourceDatabase == "" || request.Destination == "" {
-		if request.SourceID != "" && len(request.SourceDatabases) > 0 && request.Destination != "" {
+	if request.SourceID == "" || request.SourceDatabase == "" || !backupRequestHasDestination(request) {
+		if request.SourceID != "" && len(request.SourceDatabases) > 0 && backupRequestHasDestination(request) {
 			request.SourceDatabase = strings.Join(request.SourceDatabases, ", ")
 		}
 	}
-	if request.SourceID == "" || request.SourceDatabase == "" || request.Destination == "" {
+	if request.SourceID == "" || request.SourceDatabase == "" || !backupRequestHasDestination(request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "请完整选择源端数据库和备份目标")
 		return
 	}
@@ -1114,24 +1115,13 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destinationLabel := request.Destination
-	if request.DestinationType == "" || request.DestinationType == "storage" {
-		storage, err := s.store.Storage(request.Destination)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_destination", "未找到备份目标存储，请重新选择")
-			return
-		}
-		if storage.Type == "object" {
-			request.DestinationType = "object"
-			request.Storage = &storage
-			destinationLabel = storage.Name + " / " + storage.Bucket
-		} else if storage.Type == "local" {
-			request.DestinationType = "local"
-			request.Destination = storage.Path
-			destinationLabel = storage.Name + " / " + storage.Path
-		} else {
-			writeError(w, http.StatusBadRequest, "invalid_destination", "该存储类型暂不支持备份写入")
-			return
-		}
+	targets, err := s.hydrateBackupTargets(&request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_destination", err.Error())
+		return
+	}
+	if len(targets) > 0 {
+		destinationLabel = backupTargetsLabel(targets)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now().In(appLocation)
@@ -1154,7 +1144,8 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		ID: store.NewID(), Name: request.Name, Status: status, Stage: stage, Progress: progress,
 		StartedAt: now, SourceName: source.Name, SourceType: source.Type,
 		SourceDatabase: request.SourceDatabase, DestinationType: request.DestinationType,
-		Destination: destinationLabel, Request: request, ScheduleMode: request.ScheduleMode,
+		Destination: destinationLabel, BackupTargets: append([]model.BackupTarget(nil), request.BackupTargets...), PrimaryDestinationID: request.PrimaryDestinationID,
+		Request: request, ScheduleMode: request.ScheduleMode,
 		ScheduleFrequency: request.ScheduleFrequency, ScheduleTime: request.ScheduleTime,
 		ScheduleWeekday: request.ScheduleWeekday, ScheduleMonthDay: request.ScheduleMonthDay,
 		RetentionDays:   request.RetentionDays,
@@ -1393,6 +1384,21 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 }
 
 func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.BackupJob, artifact model.BackupArtifact, objectStorage *model.RemoteStorage) error {
+	if len(artifact.Copies) > 0 {
+		var failures []string
+		for _, copy := range artifact.Copies {
+			if copy.Status != "" && copy.Status != "completed" {
+				continue
+			}
+			if err := s.deleteExpiredBackupArtifactCopy(ctx, job, artifact, copy, objectStorage); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+		if len(failures) > 0 {
+			return errors.New(strings.Join(failures, "；"))
+		}
+		return nil
+	}
 	switch job.DestinationType {
 	case "local":
 		path := backupArtifactLocalPath(job, artifact)
@@ -1410,6 +1416,42 @@ func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.Back
 		return remotestorage.DeleteObject(ctx, *objectStorage, artifact.Name)
 	default:
 		return fmt.Errorf("该备份目标暂不支持清理备份文件")
+	}
+}
+
+func (s *Server) deleteExpiredBackupArtifactCopy(ctx context.Context, job model.BackupJob, artifact model.BackupArtifact, copy model.BackupArtifactCopy, fallbackObjectStorage *model.RemoteStorage) error {
+	switch copy.Type {
+	case "local":
+		path := copy.Path
+		if path == "" {
+			path = backupArtifactLocalPath(job, artifact)
+		}
+		if path == "" {
+			return fmt.Errorf("%s：未找到本地备份文件路径", backupCopyLabel(copy))
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s：%w", backupCopyLabel(copy), err)
+		}
+		return nil
+	case "object":
+		storage := fallbackObjectStorage
+		if strings.TrimSpace(copy.StorageID) != "" {
+			loaded, err := s.store.Storage(copy.StorageID)
+			if err != nil {
+				return fmt.Errorf("%s：未找到备份目标对象存储", backupCopyLabel(copy))
+			}
+			storage = &loaded
+		}
+		if storage == nil {
+			return fmt.Errorf("%s：未找到备份目标对象存储", backupCopyLabel(copy))
+		}
+		name := copy.Name
+		if name == "" {
+			name = artifact.Name
+		}
+		return remotestorage.DeleteObject(ctx, *storage, name)
+	default:
+		return fmt.Errorf("%s：该备份目标暂不支持清理备份文件", backupCopyLabel(copy))
 	}
 }
 
@@ -1523,10 +1565,13 @@ func (s *Server) recordBackupArtifact(id, versionID, database string, progress b
 			Size:     progress.ArtifactSize,
 			Path:     progress.ArtifactPath,
 		}
+		if progress.ArtifactCopy != nil {
+			artifact.Copies = []model.BackupArtifactCopy{*progress.ArtifactCopy}
+		}
 		recordArtifactInVersion(item, versionID, artifact)
 		for index := range item.Artifacts {
 			if item.Artifacts[index].Database == database {
-				item.Artifacts[index] = artifact
+				item.Artifacts[index] = mergeBackupArtifact(item.Artifacts[index], artifact)
 				return
 			}
 		}
@@ -1541,13 +1586,60 @@ func recordArtifactInVersion(item *model.BackupJob, versionID string, artifact m
 		}
 		for artifactIndex := range item.ArtifactVersions[versionIndex].Artifacts {
 			if item.ArtifactVersions[versionIndex].Artifacts[artifactIndex].Database == artifact.Database {
-				item.ArtifactVersions[versionIndex].Artifacts[artifactIndex] = artifact
+				item.ArtifactVersions[versionIndex].Artifacts[artifactIndex] = mergeBackupArtifact(item.ArtifactVersions[versionIndex].Artifacts[artifactIndex], artifact)
 				return
 			}
 		}
 		item.ArtifactVersions[versionIndex].Artifacts = append(item.ArtifactVersions[versionIndex].Artifacts, artifact)
 		return
 	}
+}
+
+func mergeBackupArtifact(current, next model.BackupArtifact) model.BackupArtifact {
+	if strings.TrimSpace(next.Name) != "" {
+		current.Name = next.Name
+	}
+	if next.Size > 0 {
+		current.Size = next.Size
+	}
+	if strings.TrimSpace(next.Path) != "" {
+		current.Path = next.Path
+	}
+	if strings.TrimSpace(current.Database) == "" {
+		current.Database = next.Database
+	}
+	for _, copy := range next.Copies {
+		current = mergeBackupArtifactCopy(current, copy)
+	}
+	return current
+}
+
+func mergeBackupArtifactCopy(artifact model.BackupArtifact, copy model.BackupArtifactCopy) model.BackupArtifact {
+	for index := range artifact.Copies {
+		if artifact.Copies[index].StorageID != "" && artifact.Copies[index].StorageID == copy.StorageID {
+			artifact.Copies[index] = copy
+			return artifact
+		}
+		if artifact.Copies[index].StorageID == "" && artifact.Copies[index].Path == copy.Path && artifact.Copies[index].Name == copy.Name {
+			artifact.Copies[index] = copy
+			return artifact
+		}
+	}
+	artifact.Copies = append(artifact.Copies, copy)
+	sortBackupArtifactCopies(artifact.Copies)
+	return artifact
+}
+
+func sortBackupArtifactCopies(copies []model.BackupArtifactCopy) {
+	sort.SliceStable(copies, func(i, j int) bool {
+		if copies[i].Role == "primary" && copies[j].Role != "primary" {
+			return true
+		}
+		if copies[j].Role == "primary" && copies[i].Role != "primary" {
+			return false
+		}
+		return copies[i].Order < copies[j].Order
+	})
 }
 
 func finishBackupArtifactVersion(item *model.BackupJob, versionID string, status model.MigrationStatus, stage string, finished time.Time, message string) {
@@ -1915,14 +2007,161 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 }
 
 func (s *Server) hydrateBackupRequest(request model.BackupRequest) (model.BackupRequest, error) {
-	if request.DestinationType == "object" {
-		storage, err := s.store.Storage(request.Destination)
-		if err != nil {
-			return request, fmt.Errorf("未找到备份目标存储，请重新选择")
-		}
-		request.Storage = &storage
+	if _, err := s.hydrateBackupTargets(&request); err != nil {
+		return request, err
 	}
 	return request, nil
+}
+
+func backupRequestHasDestination(request model.BackupRequest) bool {
+	if strings.TrimSpace(request.Destination) != "" {
+		return true
+	}
+	for _, target := range request.BackupTargets {
+		if strings.TrimSpace(target.StorageID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.RemoteStorage, error) {
+	targets := normalizeBackupTargets(*request)
+	if len(targets) == 0 && strings.TrimSpace(request.Destination) != "" {
+		if request.DestinationType == "local" && strings.TrimSpace(request.PrimaryDestinationID) == "" {
+			request.TargetStorages = nil
+			return nil, nil
+		}
+		targets = []model.BackupTarget{{StorageID: strings.TrimSpace(request.Destination), Role: "primary", Order: 0}}
+	}
+	if len(targets) == 1 && request.DestinationType == "local" && strings.TrimSpace(request.PrimaryDestinationID) == "" {
+		if storage, err := s.store.Storage(targets[0].StorageID); err == nil {
+			request.BackupTargets = []model.BackupTarget{{StorageID: storage.ID, Role: "primary", Order: 0}}
+			request.PrimaryDestinationID = storage.ID
+			request.Destination = storage.ID
+			request.TargetStorages = []model.RemoteStorage{storage}
+			return request.TargetStorages, nil
+		}
+		request.TargetStorages = nil
+		return nil, nil
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("未找到备份目标存储，请重新选择")
+	}
+	storages := make([]model.RemoteStorage, 0, len(targets))
+	for index := range targets {
+		storage, err := s.store.Storage(targets[index].StorageID)
+		if err != nil {
+			return nil, fmt.Errorf("未找到备份目标存储，请重新选择")
+		}
+		if storage.Type != "object" && storage.Type != "local" {
+			return nil, fmt.Errorf("存储 %q 暂不支持备份写入", storage.Name)
+		}
+		targets[index].StorageID = storage.ID
+		storages = append(storages, storage)
+	}
+	request.BackupTargets = targets
+	request.TargetStorages = storages
+	request.PrimaryDestinationID = primaryBackupTargetID(targets)
+	request.Destination = request.PrimaryDestinationID
+	request.Storage = nil
+	if len(storages) == 1 {
+		storage := storages[0]
+		request.DestinationType = storage.Type
+		if storage.Type == "object" {
+			request.Storage = &storage
+		}
+		return storages, nil
+	}
+	request.DestinationType = "multi"
+	return storages, nil
+}
+
+func normalizeBackupTargets(request model.BackupRequest) []model.BackupTarget {
+	seen := map[string]bool{}
+	targets := make([]model.BackupTarget, 0, len(request.BackupTargets)+1)
+	for _, target := range request.BackupTargets {
+		id := strings.TrimSpace(target.StorageID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		target.StorageID = id
+		target.Role = strings.TrimSpace(strings.ToLower(target.Role))
+		targets = append(targets, target)
+	}
+	if len(targets) == 0 && strings.TrimSpace(request.Destination) != "" {
+		targets = append(targets, model.BackupTarget{StorageID: strings.TrimSpace(request.Destination)})
+	}
+	primary := strings.TrimSpace(request.PrimaryDestinationID)
+	if primary == "" {
+		for _, target := range targets {
+			if target.Role == "primary" {
+				primary = target.StorageID
+				break
+			}
+		}
+	}
+	if primary == "" && len(targets) > 0 {
+		primary = targets[0].StorageID
+	}
+	for index := range targets {
+		if targets[index].StorageID == primary {
+			targets[index].Role = "primary"
+			targets[index].Order = 0
+			continue
+		}
+		targets[index].Role = "secondary"
+		if targets[index].Order <= 0 {
+			targets[index].Order = index + 1
+		}
+	}
+	sortBackupTargets(targets)
+	return targets
+}
+
+func sortBackupTargets(targets []model.BackupTarget) {
+	sort.SliceStable(targets, func(i, j int) bool {
+		if targets[i].Role == "primary" && targets[j].Role != "primary" {
+			return true
+		}
+		if targets[j].Role == "primary" && targets[i].Role != "primary" {
+			return false
+		}
+		return targets[i].Order < targets[j].Order
+	})
+}
+
+func primaryBackupTargetID(targets []model.BackupTarget) string {
+	for _, target := range targets {
+		if target.Role == "primary" {
+			return target.StorageID
+		}
+	}
+	if len(targets) > 0 {
+		return targets[0].StorageID
+	}
+	return ""
+}
+
+func backupTargetsLabel(storages []model.RemoteStorage) string {
+	if len(storages) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(storages))
+	for index, storage := range storages {
+		label := storage.Name
+		if storage.Type == "object" && storage.Bucket != "" {
+			label += " / " + storage.Bucket
+		} else if storage.Type == "local" && storage.Path != "" {
+			label += " / " + storage.Path
+		}
+		if index == 0 {
+			label += "（主）"
+		}
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, "、")
 }
 
 func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupRequest, error) {
@@ -1959,6 +2198,12 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 				break
 			}
 		}
+	}
+	if len(request.BackupTargets) == 0 && strings.TrimSpace(request.Destination) != "" {
+		request.BackupTargets = []model.BackupTarget{{StorageID: strings.TrimSpace(request.Destination), Role: "primary", Order: 0}}
+	}
+	if request.PrimaryDestinationID == "" && len(request.BackupTargets) > 0 {
+		request.PrimaryDestinationID = primaryBackupTargetID(normalizeBackupTargets(request))
 	}
 	if request.ScheduleMode == "" {
 		request.ScheduleMode = item.ScheduleMode
@@ -2002,6 +2247,9 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 	}
 	if request.Destination == "" {
 		return request, fmt.Errorf("未找到备份目标存储，请重新配置定时备份")
+	}
+	if _, err := s.hydrateBackupTargets(&request); err != nil {
+		return request, err
 	}
 	return request, nil
 }
@@ -2749,6 +2997,33 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(input.Name) != "" {
 		request.Name = strings.TrimSpace(input.Name)
 	}
+	if strings.TrimSpace(input.SourceID) != "" {
+		source, err := s.store.Connection(input.SourceID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_source", "未找到源端连接，请重新选择")
+			return
+		}
+		request.SourceID = source.ID
+	}
+	if len(input.SourceDatabases) > 0 {
+		request.SourceDatabases = append([]string(nil), input.SourceDatabases...)
+		request.SourceDatabase = strings.Join(backupDatabases(request), ", ")
+	} else if strings.TrimSpace(input.SourceDatabase) != "" {
+		request.SourceDatabase = strings.TrimSpace(input.SourceDatabase)
+		request.SourceDatabases = splitDatabaseList(input.SourceDatabase)
+	}
+	if len(input.BackupTargets) > 0 || strings.TrimSpace(input.Destination) != "" {
+		request.DestinationType = input.DestinationType
+		request.Destination = input.Destination
+		request.PrimaryDestinationID = input.PrimaryDestinationID
+		request.BackupTargets = append([]model.BackupTarget(nil), input.BackupTargets...)
+		request.Storage = nil
+		request.TargetStorages = nil
+		if _, err := s.hydrateBackupTargets(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_destination", err.Error())
+			return
+		}
+	}
 	request.ScheduleMode = "scheduled"
 	request.ScheduleFrequency = input.ScheduleFrequency
 	request.ScheduleTime = input.ScheduleTime
@@ -2768,8 +3043,22 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_schedule", err.Error())
 		return
 	}
+	source, err := s.store.Connection(request.SourceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_source", "未找到源端连接，请重新选择")
+		return
+	}
 	if err := s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Name = request.Name
+		item.SourceName = source.Name
+		item.SourceType = source.Type
+		item.SourceDatabase = request.SourceDatabase
+		item.DestinationType = request.DestinationType
+		item.BackupTargets = append([]model.BackupTarget(nil), request.BackupTargets...)
+		item.PrimaryDestinationID = request.PrimaryDestinationID
+		if len(request.TargetStorages) > 0 {
+			item.Destination = backupTargetsLabel(request.TargetStorages)
+		}
 		item.Request = request
 		item.ScheduleMode = request.ScheduleMode
 		item.ScheduleFrequency = request.ScheduleFrequency
@@ -3293,6 +3582,15 @@ type restoreSource struct {
 	Object    string
 	Storage   *model.RemoteStorage
 	Artifacts map[string]model.BackupArtifact
+	Copies    map[string][]restoreArtifactCopy
+}
+
+type restoreArtifactCopy struct {
+	Type    string
+	Path    string
+	Object  string
+	Storage *model.RemoteStorage
+	Label   string
 }
 
 func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
@@ -3305,7 +3603,7 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 		if stat, err := os.Stat(artifactPath); err != nil || stat.IsDir() {
 			return restoreSource{}, fmt.Errorf("本地备份文件不存在，请检查备份目录")
 		}
-		return restoreSource{Type: "local", Path: artifactPath, Artifacts: backupArtifactMap(job)}, nil
+		return restoreSource{Type: "local", Path: artifactPath, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
 	case "object":
 		request, err := s.backfillBackupRequest(job)
 		if err != nil {
@@ -3319,10 +3617,92 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 		if err != nil {
 			return restoreSource{}, fmt.Errorf("未找到备份目标对象存储")
 		}
-		return restoreSource{Type: "object", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job)}, nil
+		return restoreSource{Type: "object", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
+	case "multi":
+		copies := s.restoreCopyMap(job)
+		if len(copies) == 0 {
+			return restoreSource{}, fmt.Errorf("未找到可用备份副本")
+		}
+		return restoreSource{Type: "multi", Artifacts: backupArtifactMap(job), Copies: copies}, nil
 	default:
 		return restoreSource{}, fmt.Errorf("该备份目标暂不支持恢复")
 	}
+}
+
+func (s *Server) restoreCopyMap(job model.BackupJob) map[string][]restoreArtifactCopy {
+	items := map[string][]restoreArtifactCopy{}
+	for _, artifact := range job.Artifacts {
+		candidates := s.restoreCopiesForArtifact(job, artifact)
+		if len(candidates) > 0 && strings.TrimSpace(artifact.Database) != "" {
+			items[artifact.Database] = candidates
+		}
+	}
+	return items
+}
+
+func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.BackupArtifact) []restoreArtifactCopy {
+	copies := make([]model.BackupArtifactCopy, 0, len(artifact.Copies)+1)
+	for _, copy := range artifact.Copies {
+		if copy.Status != "" && copy.Status != "completed" {
+			continue
+		}
+		copies = append(copies, copy)
+	}
+	if len(copies) == 0 && (strings.TrimSpace(artifact.Name) != "" || strings.TrimSpace(artifact.Path) != "") {
+		copies = append(copies, model.BackupArtifactCopy{Name: artifact.Name, Size: artifact.Size, Path: artifact.Path, Type: job.DestinationType, Role: "primary"})
+	}
+	sortBackupArtifactCopies(copies)
+	result := make([]restoreArtifactCopy, 0, len(copies))
+	for _, copy := range copies {
+		switch copy.Type {
+		case "local":
+			path := copy.Path
+			if path == "" && job.Request.Destination != "" && copy.Name != "" {
+				path = filepath.Join(job.Request.Destination, filepath.FromSlash(copy.Name))
+			}
+			if path != "" {
+				result = append(result, restoreArtifactCopy{Type: "local", Path: path, Label: backupCopyLabel(copy)})
+			}
+		case "object":
+			if strings.TrimSpace(copy.Name) == "" {
+				continue
+			}
+			storage, err := s.store.Storage(copy.StorageID)
+			if err != nil {
+				continue
+			}
+			result = append(result, restoreArtifactCopy{Type: "object", Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
+		default:
+			if job.DestinationType == "object" && strings.TrimSpace(copy.Name) != "" {
+				storage, err := s.backupArtifactStorage(job)
+				if err == nil {
+					result = append(result, restoreArtifactCopy{Type: "object", Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
+				}
+			} else if job.DestinationType == "local" {
+				path := copy.Path
+				if path == "" && job.Request.Destination != "" && copy.Name != "" {
+					path = filepath.Join(job.Request.Destination, filepath.FromSlash(copy.Name))
+				}
+				if path != "" {
+					result = append(result, restoreArtifactCopy{Type: "local", Path: path, Label: backupCopyLabel(copy)})
+				}
+			}
+		}
+	}
+	return result
+}
+
+func backupCopyLabel(copy model.BackupArtifactCopy) string {
+	if strings.TrimSpace(copy.StorageName) != "" {
+		if copy.Role == "primary" {
+			return copy.StorageName + "（主）"
+		}
+		return copy.StorageName
+	}
+	if copy.Role == "primary" {
+		return "主备份节点"
+	}
+	return "备用备份节点"
 }
 
 func restoreArtifactObject(job model.BackupJob) string {
@@ -3478,6 +3858,9 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 }
 
 func restoreSourceLabel(source restoreSource) string {
+	if source.Type == "multi" {
+		return "multi-destination"
+	}
 	if source.Type == "object" {
 		return "object/" + source.Object
 	}
@@ -3487,9 +3870,18 @@ func restoreSourceLabel(source restoreSource) string {
 func restoreArtifactForDatabase(source restoreSource, database string) restoreSource {
 	artifact, ok := source.Artifacts[database]
 	if !ok {
+		if copies := source.Copies[database]; len(copies) > 0 {
+			next := source
+			next.Copies = map[string][]restoreArtifactCopy{database: copies}
+			return next
+		}
 		return source
 	}
 	next := source
+	if copies := source.Copies[database]; len(copies) > 0 {
+		next.Copies = map[string][]restoreArtifactCopy{database: copies}
+		next.Type = "multi"
+	}
 	if source.Type == "object" && artifact.Name != "" {
 		next.Object = artifact.Name
 	}
@@ -3500,6 +3892,14 @@ func restoreArtifactForDatabase(source restoreSource, database string) restoreSo
 }
 
 func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSource, reporter func(backup.Progress)) (string, func(), error) {
+	if len(source.Copies) > 0 {
+		for _, copies := range source.Copies {
+			if len(copies) == 0 {
+				continue
+			}
+			return s.prepareRestoreArtifactFromCopies(ctx, copies, reporter)
+		}
+	}
 	if source.Type == "local" {
 		return source.Path, nil, nil
 	}
@@ -3522,6 +3922,50 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	return targetPath, cleanup, nil
 }
 
+func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []restoreArtifactCopy, reporter func(backup.Progress)) (string, func(), error) {
+	var failures []string
+	for index, copy := range copies {
+		if index > 0 {
+			reporter(backup.Progress{Stage: "download", EventLevel: "WARN", EventMessage: "主备份节点不可用，正在尝试备用节点：" + copy.Label})
+		}
+		switch copy.Type {
+		case "local":
+			if stat, err := os.Stat(copy.Path); err == nil && !stat.IsDir() {
+				reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "已选择备份副本：" + copy.Label})
+				return copy.Path, nil, nil
+			} else {
+				failures = append(failures, fmt.Sprintf("%s：本地备份文件不可用", copy.Label))
+			}
+		case "object":
+			if copy.Storage == nil || copy.Object == "" {
+				failures = append(failures, fmt.Sprintf("%s：对象存储配置不完整", copy.Label))
+				continue
+			}
+			tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
+			if err != nil {
+				return "", nil, err
+			}
+			cleanup := func() { _ = os.RemoveAll(tempDir) }
+			targetPath := filepath.Join(tempDir, filepath.Base(copy.Object))
+			reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "正在从备份节点下载：" + copy.Label})
+			size, err := remotestorage.DownloadObject(ctx, *copy.Storage, copy.Object, targetPath)
+			if err != nil {
+				cleanup()
+				failures = append(failures, fmt.Sprintf("%s：%v", copy.Label, err))
+				continue
+			}
+			reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: fmt.Sprintf("备份文件已从 %s 下载，大小 %s", copy.Label, formatBytes(size)), Progress: 20})
+			return targetPath, cleanup, nil
+		default:
+			failures = append(failures, fmt.Sprintf("%s：不支持的备份副本类型", copy.Label))
+		}
+	}
+	if len(failures) == 0 {
+		return "", nil, fmt.Errorf("未找到可用备份副本")
+	}
+	return "", nil, fmt.Errorf("所有备份副本均不可用：%s", strings.Join(failures, "；"))
+}
+
 func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) {
 	item, artifact, err := s.backupArtifactForRequest(r)
 	if err != nil {
@@ -3531,6 +3975,11 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 	fileName := filepath.Base(artifact.Name)
 	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
 		fileName = "databridge-backup.tar.gz"
+	}
+	copies := s.restoreCopiesForArtifact(item, artifact)
+	if len(copies) > 0 {
+		s.downloadBackupArtifactFromCopies(w, r, fileName, copies)
+		return
 	}
 	switch item.DestinationType {
 	case "local":
@@ -3577,6 +4026,55 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 	default:
 		writeError(w, http.StatusBadRequest, "invalid_artifact", "该备份目标暂不支持下载")
 	}
+}
+
+func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http.Request, fileName string, copies []restoreArtifactCopy) {
+	var failures []string
+	for _, copy := range copies {
+		switch copy.Type {
+		case "local":
+			file, err := os.Open(copy.Path)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s：本地备份文件不存在", copy.Label))
+				continue
+			}
+			defer file.Close()
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeDownloadFileName(fileName)))
+			w.Header().Set("X-DataBridge-Backup-Node", copy.Label)
+			if stat, err := file.Stat(); err == nil && !stat.IsDir() {
+				w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+			}
+			if _, err := io.Copy(w, file); err != nil {
+				log.Printf("backup artifact download failed: %v", err)
+			}
+			return
+		case "object":
+			if copy.Storage == nil || copy.Object == "" {
+				failures = append(failures, fmt.Sprintf("%s：对象存储配置不完整", copy.Label))
+				continue
+			}
+			tempDir, err := os.MkdirTemp("", "databridge-artifact-download-*")
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "download_failed", "准备下载备份文件失败")
+				return
+			}
+			defer os.RemoveAll(tempDir)
+			tempPath := filepath.Join(tempDir, filepath.Base(copy.Object))
+			size, err := remotestorage.DownloadObject(r.Context(), *copy.Storage, copy.Object, tempPath)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s：%v", copy.Label, err))
+				continue
+			}
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeDownloadFileName(fileName)))
+			w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+			w.Header().Set("X-DataBridge-Backup-Node", copy.Label)
+			http.ServeFile(w, r, tempPath)
+			return
+		}
+	}
+	writeError(w, http.StatusBadRequest, "download_failed", "所有备份副本均不可用："+strings.Join(failures, "；"))
 }
 
 func (s *Server) deleteBackupArtifact(w http.ResponseWriter, r *http.Request) {

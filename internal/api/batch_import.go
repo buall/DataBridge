@@ -292,11 +292,14 @@ func (s *Server) addImportedSchedule(connection model.Connection, schedule batch
 		request.Storage = &schedule.Storage
 		destinationLabel += " / " + schedule.Storage.Bucket
 	} else if schedule.Storage.Type == "local" {
-		request.Destination = schedule.Storage.Path
+		request.Destination = schedule.Storage.ID
 		destinationLabel += " / " + schedule.Storage.Path
 	} else {
 		return model.BackupJob{}, fmt.Errorf("存储 %q 暂不支持备份写入", schedule.Storage.Name)
 	}
+	request.PrimaryDestinationID = schedule.Storage.ID
+	request.BackupTargets = []model.BackupTarget{{StorageID: schedule.Storage.ID, Role: "primary", Order: 0}}
+	request.TargetStorages = []model.RemoteStorage{schedule.Storage}
 	normalizeBackupSchedule(&request)
 	now := time.Now().In(appLocation)
 	next, err := nextBackupRun(request, now)
@@ -308,7 +311,8 @@ func (s *Server) addImportedSchedule(connection model.Connection, schedule batch
 		ID: store.NewID(), Name: request.Name, Status: model.StatusScheduled, Stage: "scheduled", Progress: 0,
 		StartedAt: now, SourceName: connection.Name, SourceType: connection.Type,
 		SourceDatabase: request.SourceDatabase, DestinationType: request.DestinationType,
-		Destination: destinationLabel, Request: request, ScheduleMode: request.ScheduleMode,
+		Destination: destinationLabel, BackupTargets: append([]model.BackupTarget(nil), request.BackupTargets...), PrimaryDestinationID: request.PrimaryDestinationID,
+		Request: request, ScheduleMode: request.ScheduleMode,
 		ScheduleFrequency: request.ScheduleFrequency, ScheduleTime: request.ScheduleTime,
 		ScheduleWeekday: request.ScheduleWeekday, ScheduleMonthDay: request.ScheduleMonthDay,
 		RetentionDays: request.RetentionDays, RetentionMonths: request.RetentionMonths,

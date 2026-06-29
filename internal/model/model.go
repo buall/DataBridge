@@ -167,6 +167,8 @@ type BackupRequest struct {
 	SourceDatabases          []string           `json:"sourceDatabases,omitempty"`
 	DestinationType          string             `json:"destinationType"`
 	Destination              string             `json:"destination"`
+	BackupTargets            []BackupTarget     `json:"backupTargets,omitempty"`
+	PrimaryDestinationID     string             `json:"primaryDestinationId,omitempty"`
 	ScheduleMode             string             `json:"scheduleMode,omitempty"`
 	ScheduleFrequency        string             `json:"scheduleFrequency,omitempty"`
 	ScheduleTime             string             `json:"scheduleTime,omitempty"`
@@ -180,6 +182,7 @@ type BackupRequest struct {
 	NotificationTarget       string             `json:"notificationTarget,omitempty"`
 	NotificationRecipientIDs []string           `json:"notificationRecipientIds,omitempty"`
 	Storage                  *RemoteStorage     `json:"-"`
+	TargetStorages           []RemoteStorage    `json:"-"`
 }
 
 type RestoreBackupRequest struct {
@@ -255,10 +258,30 @@ type BackupNotificationTestRequest struct {
 }
 
 type BackupArtifact struct {
-	Database string `json:"database"`
-	Name     string `json:"name"`
-	Size     int64  `json:"size,omitempty"`
-	Path     string `json:"path,omitempty"`
+	Database string               `json:"database"`
+	Name     string               `json:"name"`
+	Size     int64                `json:"size,omitempty"`
+	Path     string               `json:"path,omitempty"`
+	Copies   []BackupArtifactCopy `json:"copies,omitempty"`
+}
+
+type BackupTarget struct {
+	StorageID string `json:"storageId"`
+	Role      string `json:"role,omitempty"`
+	Order     int    `json:"order,omitempty"`
+}
+
+type BackupArtifactCopy struct {
+	StorageID   string `json:"storageId,omitempty"`
+	StorageName string `json:"storageName,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Order       int    `json:"order,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Name        string `json:"name"`
+	Size        int64  `json:"size,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type BackupArtifactVersion struct {
@@ -386,6 +409,8 @@ type BackupJob struct {
 	SourceDatabase           string                  `json:"sourceDatabase"`
 	DestinationType          string                  `json:"destinationType"`
 	Destination              string                  `json:"destination"`
+	BackupTargets            []BackupTarget          `json:"backupTargets,omitempty"`
+	PrimaryDestinationID     string                  `json:"primaryDestinationId,omitempty"`
 	ScheduleMode             string                  `json:"scheduleMode,omitempty"`
 	ScheduleFrequency        string                  `json:"scheduleFrequency,omitempty"`
 	ScheduleTime             string                  `json:"scheduleTime,omitempty"`

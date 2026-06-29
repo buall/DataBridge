@@ -34,6 +34,7 @@ type Progress struct {
 	ArtifactName string
 	ArtifactSize int64
 	ArtifactPath string
+	ArtifactCopy *model.BackupArtifactCopy
 }
 
 type Reporter func(Progress)
@@ -246,6 +247,18 @@ type destination interface {
 }
 
 func newDestination(request model.BackupRequest) (destination, error) {
+	if len(request.TargetStorages) > 0 {
+		items := make([]destination, 0, len(request.TargetStorages))
+		for index, storage := range request.TargetStorages {
+			target := backupTargetForStorage(request, storage, index)
+			dest, err := destinationForStorage(storage, target)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, dest)
+		}
+		return multiDestination{items: items}, nil
+	}
 	switch strings.ToLower(strings.TrimSpace(request.DestinationType)) {
 	case "local":
 		return localDestination{directory: request.Destination}, nil
@@ -263,8 +276,58 @@ func newDestination(request model.BackupRequest) (destination, error) {
 	}
 }
 
+func backupTargetForStorage(request model.BackupRequest, storage model.RemoteStorage, fallbackOrder int) model.BackupTarget {
+	for _, target := range request.BackupTargets {
+		if strings.TrimSpace(target.StorageID) == storage.ID {
+			return target
+		}
+	}
+	role := "secondary"
+	if fallbackOrder == 0 || strings.TrimSpace(request.PrimaryDestinationID) == storage.ID || strings.TrimSpace(request.Destination) == storage.ID {
+		role = "primary"
+	}
+	return model.BackupTarget{StorageID: storage.ID, Role: role, Order: fallbackOrder}
+}
+
+func destinationForStorage(storage model.RemoteStorage, target model.BackupTarget) (destination, error) {
+	switch storage.Type {
+	case "object":
+		return objectDestination{storage: storage, target: target}, nil
+	case "local":
+		return localDestination{directory: storage.Path, storage: storage, target: target}, nil
+	default:
+		return nil, fmt.Errorf("storage %q does not support backup writes", storage.Name)
+	}
+}
+
+type multiDestination struct {
+	items []destination
+}
+
+func (d multiDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	var failed []string
+	success := 0
+	for _, item := range d.items {
+		if err := item.upload(ctx, filePath, objectKey, report); err != nil {
+			failed = append(failed, err.Error())
+			report(Progress{Stage: "upload", EventLevel: "WARN", EventMessage: "备份目标同步失败：" + err.Error()})
+			continue
+		}
+		success++
+	}
+	if success == 0 && len(failed) > 0 {
+		return fmt.Errorf("all backup destinations failed: %s", strings.Join(failed, "; "))
+	}
+	if len(failed) > 0 {
+		report(Progress{Stage: "upload", EventLevel: "WARN", EventMessage: fmt.Sprintf("%d 个备份目标同步失败，已保留成功副本", len(failed))})
+	}
+	return nil
+}
+
 type localDestination struct {
 	directory string
+	storage   model.RemoteStorage
+	target    model.BackupTarget
 }
 
 func (d localDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
@@ -286,15 +349,16 @@ func (d localDestination) upload(ctx context.Context, filePath, objectKey string
 		return err
 	}
 	if info, err := output.Stat(); err == nil {
-		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey, ArtifactSize: info.Size(), ArtifactPath: dst})
+		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已保存到本地目录", d.storage), ArtifactName: objectKey, ArtifactSize: info.Size(), ArtifactPath: dst, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, info.Size(), dst, "")})
 	} else {
-		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已保存到本地目录", ArtifactName: objectKey, ArtifactPath: dst})
+		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已保存到本地目录", d.storage), ArtifactName: objectKey, ArtifactPath: dst, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, 0, dst, "")})
 	}
 	return nil
 }
 
 type objectDestination struct {
 	storage model.RemoteStorage
+	target  model.BackupTarget
 }
 
 func (d objectDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
@@ -302,8 +366,41 @@ func (d objectDestination) upload(ctx context.Context, filePath, objectKey strin
 	if err != nil {
 		return err
 	}
-	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: "备份已上传到对象存储", ArtifactName: objectKey, ArtifactSize: size})
+	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到对象存储", d.storage), ArtifactName: objectKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, size, "", "")})
 	return nil
+}
+
+func artifactCopyForDestination(storage model.RemoteStorage, target model.BackupTarget, name string, size int64, artifactPath, errText string) *model.BackupArtifactCopy {
+	if strings.TrimSpace(storage.ID) == "" {
+		return nil
+	}
+	status := "completed"
+	if errText != "" {
+		status = "failed"
+	}
+	role := target.Role
+	if role == "" {
+		role = "secondary"
+	}
+	return &model.BackupArtifactCopy{
+		StorageID:   storage.ID,
+		StorageName: storage.Name,
+		Role:        role,
+		Order:       target.Order,
+		Type:        storage.Type,
+		Name:        name,
+		Size:        size,
+		Path:        artifactPath,
+		Status:      status,
+		Error:       errText,
+	}
+}
+
+func uploadEventMessage(prefix string, storage model.RemoteStorage) string {
+	if strings.TrimSpace(storage.Name) == "" {
+		return prefix
+	}
+	return prefix + "：" + storage.Name
 }
 
 type s3Destination struct {
@@ -569,25 +666,87 @@ func toolPath(name string) (string, error) {
 	if path, err := exec.LookPath(name); err == nil {
 		return path, nil
 	}
-	if postgresMajor, postgresTool, ok := splitPostgresVersionedTool(name); ok {
-		candidate := filepath.Join("/usr/lib/postgresql", strconv.Itoa(postgresMajor), "bin", postgresTool)
+	postgresMajor, postgresTool, isVersionedPostgresTool := splitPostgresVersionedTool(name)
+	for _, candidate := range toolPathCandidates(name) {
 		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
 			return candidate, nil
 		}
 	}
-	for _, candidate := range []string{
+	if isVersionedPostgresTool {
+		if path, ok := matchingUnversionedPostgresTool(postgresTool, postgresMajor); ok {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in PATH", name)
+}
+
+func toolPathCandidates(name string) []string {
+	candidates := []string{}
+	if postgresMajor, postgresTool, ok := splitPostgresVersionedTool(name); ok {
+		major := strconv.Itoa(postgresMajor)
+		candidates = append(candidates,
+			filepath.Join("/usr/lib/postgresql", major, "bin", postgresTool),
+			filepath.Join("/opt/homebrew/opt/postgresql@"+major, "bin", postgresTool),
+			filepath.Join("/usr/local/opt/postgresql@"+major, "bin", postgresTool),
+			filepath.Join("/Applications/Postgres.app/Contents/Versions", major, "bin", postgresTool),
+			filepath.Join("/Library/PostgreSQL", major, "bin", postgresTool),
+		)
+	}
+	candidates = append(candidates,
 		filepath.Join("/opt/homebrew/opt/libpq/bin", name),
 		filepath.Join("/usr/local/opt/libpq/bin", name),
 		filepath.Join("/opt/homebrew/opt/mysql-client/bin", name),
 		filepath.Join("/usr/local/opt/mysql-client/bin", name),
 		filepath.Join("/opt/homebrew/bin", name),
 		filepath.Join("/usr/local/bin", name),
+	)
+	return candidates
+}
+
+func matchingUnversionedPostgresTool(base string, major int) (string, bool) {
+	candidates := []string{}
+	if path, err := exec.LookPath(base); err == nil {
+		candidates = append(candidates, path)
+	}
+	for _, candidate := range []string{
+		filepath.Join("/opt/homebrew/opt/libpq/bin", base),
+		filepath.Join("/usr/local/opt/libpq/bin", base),
+		filepath.Join("/opt/homebrew/bin", base),
+		filepath.Join("/usr/local/bin", base),
 	} {
-		if stat, err := os.Stat(candidate); err == nil && !stat.IsDir() {
-			return candidate, nil
+		candidates = append(candidates, candidate)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		if stat, err := os.Stat(candidate); err != nil || stat.IsDir() {
+			continue
+		}
+		if postgresToolMajor(candidate) == major {
+			return candidate, true
 		}
 	}
-	return "", fmt.Errorf("%s not found in PATH", name)
+	return "", false
+}
+
+func postgresToolMajor(path string) int {
+	output, err := exec.Command(path, "--version").Output()
+	if err != nil {
+		return 0
+	}
+	return parsePostgresToolMajor(string(output))
+}
+
+func parsePostgresToolMajor(output string) int {
+	match := regexp.MustCompile(`(?i)postgresql\)\s+(\d+)`).FindStringSubmatch(output)
+	if len(match) < 2 {
+		return 0
+	}
+	major, _ := strconv.Atoi(match[1])
+	return major
 }
 
 func ToolPathForPrecheck(name string) (string, error) {
