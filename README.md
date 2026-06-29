@@ -383,8 +383,11 @@ docker compose up -d
 docker run --rm \
   -p 8081:8081 \
   -v databridge-data:/data \
+  -e DATABRIDGE_AUTH_USER=admin \
+  -e DATABRIDGE_AUTH_PASSWORD="$DATABRIDGE_AUTH_PASSWORD" \
+  -e DATABRIDGE_SESSION_SECRET="$DATABRIDGE_SESSION_SECRET" \
   -e DATABRIDGE_PG_JOBS=4 \
-  ghcr.io/buall/databridge:latest
+  hkccr.ccs.tencentyun.com/buall/databridge:latest
 ```
 
 打开：
@@ -401,7 +404,7 @@ docker run --rm \
 可通过环境变量调整镜像、端口和 PostgreSQL 并行任务数：
 
 ```bash
-DATABRIDGE_IMAGE=ghcr.io/buall/databridge:latest \
+DATABRIDGE_IMAGE=hkccr.ccs.tencentyun.com/buall/databridge:latest \
 DATABRIDGE_PORT=8081 \
 DATABRIDGE_PG_JOBS=8 \
 docker compose up -d
@@ -425,6 +428,21 @@ docker build \
   --build-arg MONGO_TOOLS_VERSION=100.17.0 \
   -t databridge:local .
 ```
+
+## Kubernetes 部署
+
+基础清单见 [deploy/kubernetes](deploy/kubernetes)，包含 Namespace、Secret、PVC、Deployment、Service 和 Ingress 示例；命名空间在 `kustomization.yaml` 的 `namespace` 字段中统一配置。
+
+部署前请先替换 Secret、镜像地址、Ingress 域名和存储配置：
+
+```bash
+kubectl apply -k deploy/kubernetes
+kubectl -n databridge rollout status deployment/databridge
+```
+
+## 手动部署
+
+裸机或虚拟机部署见 [docs/manual-deployment.md](docs/manual-deployment.md)，包含构建产物、systemd 服务、反向代理、备份和升级步骤。
 
 ## 验证命令
 

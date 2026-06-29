@@ -1,6 +1,6 @@
 services:
   databridge:
-    image: ${DATABRIDGE_IMAGE:-ghcr.io/buall/databridge:latest}
+    image: ${DATABRIDGE_IMAGE:-hkccr.ccs.tencentyun.com/buall/databridge:latest}
     container_name: databridge
     restart: unless-stopped
     ports:
