@@ -462,7 +462,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .connection-card dl div { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 12px; }
 .connection-card dt { color: var(--muted); font-size: 11px; }
 .connection-card dd { margin: 0; min-width: 0; color: #172033; font-size: 12px; font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.copy-inline { min-width: 0; max-width: 100%; border: 0; padding: 0; overflow: hidden; text-align: left; text-overflow: ellipsis; background: none; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; user-select: none; -webkit-user-select: none; }
+.connection-card dd.host-address-value { display: grid; justify-items: end; overflow: hidden; }
+.copy-inline { display: block; width: fit-content; min-width: 0; max-width: 100%; border: 0; padding: 0; overflow: hidden; text-align: left; text-overflow: ellipsis; background: none; color: inherit; font: inherit; cursor: pointer; white-space: nowrap; user-select: none; -webkit-user-select: none; }
 .copy-inline:hover, .copy-inline:focus-visible { color: inherit; outline: none; }
 .copy-inline-state { color: var(--green); font-size: 11px; font-weight: 700; white-space: nowrap; }
 .region-value { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
