@@ -31,18 +31,18 @@ type Store struct {
 }
 
 type AuditLog struct {
-	ID             string
-	Time           time.Time
-	Level          string
-	Action         string
-	ResourceType   string
-	ResourceID     string
-	ResourceName   string
-	ConnectionName string
-	Database       string
-	Status         string
-	Message        string
-	Detail         string
+	ID             string    `json:"id"`
+	Time           time.Time `json:"time"`
+	Level          string    `json:"level"`
+	Action         string    `json:"action"`
+	ResourceType   string    `json:"resourceType"`
+	ResourceID     string    `json:"resourceID"`
+	ResourceName   string    `json:"resourceName"`
+	ConnectionName string    `json:"connectionName"`
+	Database       string    `json:"database"`
+	Status         string    `json:"status"`
+	Message        string    `json:"message"`
+	Detail         string    `json:"detail"`
 }
 
 const smtpSettingsKey = "smtp"

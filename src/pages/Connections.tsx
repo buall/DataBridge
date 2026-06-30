@@ -412,7 +412,7 @@ export function Connections({
               </div>
             </div>
             <dl>
-              <div><dt>主机地址</dt><dd><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
+              <div><dt>主机地址</dt><dd><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} title={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
               <div><dt>连接用户</dt><dd>{connection.username}</dd></div>
               <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>

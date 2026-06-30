@@ -77,6 +77,50 @@ func TestFailedScheduledBackupRemainsEligibleForNextRun(t *testing.T) {
 	}
 }
 
+func TestListMigrationsSerializesAuditLogsForFrontend(t *testing.T) {
+	appStore, _, handler := newTestServer(t)
+	if err := appStore.AddAuditLog(store.AuditLog{
+		Time:         time.Date(2026, 6, 30, 10, 11, 12, 0, time.UTC),
+		Level:        "INFO",
+		Action:       "create_connection",
+		ResourceType: "connection",
+		ResourceName: "postgresql-iot",
+		Status:       "完成",
+		Message:      "系统操作",
+		Detail:       "创建连接",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/migrations", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		AuditLogs []map[string]any `json:"auditLogs"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.AuditLogs) != 1 {
+		t.Fatalf("auditLogs length = %d", len(body.AuditLogs))
+	}
+	log := body.AuditLogs[0]
+	for _, key := range []string{"time", "level", "action", "resourceType", "resourceName", "status", "message", "detail"} {
+		if _, ok := log[key]; !ok {
+			t.Fatalf("audit log missing frontend key %q: %#v", key, log)
+		}
+	}
+	for _, key := range []string{"Time", "Level", "Action", "ResourceType", "ResourceName", "Status", "Message", "Detail"} {
+		if _, ok := log[key]; ok {
+			t.Fatalf("audit log exposed Go field key %q: %#v", key, log)
+		}
+	}
+}
+
 func TestNormalizeBackupScheduleKeepsRecipientSelection(t *testing.T) {
 	request := model.BackupRequest{
 		ScheduleMode:             "scheduled",
