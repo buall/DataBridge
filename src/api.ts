@@ -35,6 +35,14 @@ export type MigrationsResponse = {
   auditLogs?: AuditLogEntry[];
 };
 
+export type WebDAVEntry = {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+  modified?: string;
+};
+
 function normalizeBackup(job: BackupJob): BackupJob {
   const backupTargets = job.backupTargets?.length
     ? job.backupTargets
@@ -173,6 +181,26 @@ export const api = {
     request<{ storage: RemoteStorage; buckets: string[] }>(`/storages/${storageId}/buckets/create`, {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+  webDAVDirectories: (input: RemoteStorageInput) =>
+    request<{ path: string; entries: WebDAVEntry[] }>("/storages/webdav/directories", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  storedWebDAVDirectories: (storageId: string, input: RemoteStorageInput) =>
+    request<{ path: string; entries: WebDAVEntry[] }>(`/storages/${storageId}/webdav/directories`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  webDAVDirectory: (storageId: string, path: string) =>
+    request<{ path: string; entries: WebDAVEntry[] }>(`/storages/${storageId}/webdav/list`, {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+  createWebDAVDirectory: (storageId: string, path: string, name: string) =>
+    request<{ path: string; created: string; entries: WebDAVEntry[] }>(`/storages/${storageId}/webdav/directories/create`, {
+      method: "POST",
+      body: JSON.stringify({ path, name }),
     }),
   updateStorage: (storageId: string, input: RemoteStorageInput) =>
     request<RemoteStorage>(`/storages/${storageId}`, { method: "PUT", body: JSON.stringify(input) }),

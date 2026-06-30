@@ -18,6 +18,7 @@ import (
 	"net/smtp"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -114,6 +115,10 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/storages/object/buckets", server.listObjectBuckets)
 	protected.HandleFunc("POST /api/storages/{id}/buckets", server.listStoredObjectBuckets)
 	protected.HandleFunc("POST /api/storages/{id}/buckets/create", server.createStoredObjectBucket)
+	protected.HandleFunc("POST /api/storages/webdav/directories", server.listWebDAVDirectories)
+	protected.HandleFunc("POST /api/storages/{id}/webdav/directories", server.listStoredWebDAVDirectories)
+	protected.HandleFunc("POST /api/storages/{id}/webdav/list", server.listWebDAVDirectory)
+	protected.HandleFunc("POST /api/storages/{id}/webdav/directories/create", server.createWebDAVDirectory)
 	protected.HandleFunc("PUT /api/storages/{id}", server.updateStorage)
 	protected.HandleFunc("DELETE /api/storages/{id}", server.deleteStorage)
 	protected.HandleFunc("POST /api/storages/{id}/test", server.testStorage)
@@ -830,6 +835,131 @@ func (s *Server) createStoredObjectBucket(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, map[string]any{"storage": redactStorageSecret(updated), "buckets": buckets})
 }
 
+func (s *Server) listWebDAVDirectories(w http.ResponseWriter, r *http.Request) {
+	var input model.StorageInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if normalizeStorageType(input.Type) != "webdav" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 WebDAV 存储支持获取目录列表")
+		return
+	}
+	current := model.RemoteStorage{
+		Type:      "webdav",
+		Endpoint:  strings.TrimSpace(input.Endpoint),
+		AccessKey: strings.TrimSpace(input.AccessKey),
+		SecretKey: input.SecretKey,
+	}
+	dir := strings.TrimSpace(input.Path)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	entries, err := remotestorage.ListWebDAVDirectory(ctx, current, dir)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "webdav_list_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": dir, "entries": entries})
+}
+
+func (s *Server) listStoredWebDAVDirectories(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if current.Type != "webdav" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 WebDAV 存储支持获取目录列表")
+		return
+	}
+	var input model.StorageInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	storage := current
+	storage.Endpoint = nonEmpty(input.Endpoint, current.Endpoint)
+	storage.AccessKey = nonEmpty(input.AccessKey, current.AccessKey)
+	storage.SecretKey = nonEmpty(input.SecretKey, current.SecretKey)
+	dir := strings.TrimSpace(input.Path)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	entries, err := remotestorage.ListWebDAVDirectory(ctx, storage, dir)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "webdav_list_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": dir, "entries": entries})
+}
+
+func (s *Server) listWebDAVDirectory(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if current.Type != "webdav" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 WebDAV 存储支持查看目录")
+		return
+	}
+	var input struct {
+		Path string `json:"path"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	dir := strings.TrimSpace(input.Path)
+	if dir == "" {
+		dir = current.Path
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	entries, err := remotestorage.ListWebDAVDirectory(ctx, current, dir)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "webdav_list_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": dir, "entries": entries})
+}
+
+func (s *Server) createWebDAVDirectory(w http.ResponseWriter, r *http.Request) {
+	current, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if current.Type != "webdav" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 WebDAV 存储支持创建目录")
+		return
+	}
+	var input struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	name := strings.Trim(strings.TrimSpace(input.Name), "/")
+	if name == "" || strings.Contains(name, "..") {
+		writeError(w, http.StatusBadRequest, "invalid_directory", "请输入有效目录名称")
+		return
+	}
+	parent := strings.TrimSpace(input.Path)
+	if parent == "" {
+		parent = current.Path
+	}
+	dir := path.Join(parent, name)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	if err := remotestorage.CreateWebDAVDirectory(ctx, current, dir); err != nil {
+		writeError(w, http.StatusBadGateway, "webdav_create_failed", userFacingErrorMessage(errorContextRemoteStorage, err))
+		return
+	}
+	entries, err := remotestorage.ListWebDAVDirectory(ctx, current, parent)
+	if err != nil {
+		entries = []remotestorage.WebDAVEntry{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"path": parent, "created": dir, "entries": entries})
+}
+
 func (s *Server) updateStorage(w http.ResponseWriter, r *http.Request) {
 	current, err := s.store.Storage(r.PathValue("id"))
 	if err != nil {
@@ -878,6 +1008,16 @@ func (s *Server) testStorage(w http.ResponseWriter, r *http.Request) {
 			log.Printf("remote storage[%s] object test failed: %v", item.ID, err)
 		} else {
 			message = "对象存储测试通过"
+		}
+	case "webdav":
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		if err := remotestorage.TestWebDAV(ctx, item); err != nil {
+			status = "warning"
+			message = userFacingErrorMessage(errorContextRemoteStorage, err)
+			log.Printf("remote storage[%s] webdav test failed: %v", item.ID, err)
+		} else {
+			message = "WebDAV 存储测试通过"
 		}
 	case "google_drive", "one_drive":
 		status = "needs_auth"
@@ -1343,7 +1483,7 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 	}
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	var objectStorage *model.RemoteStorage
-	if job.DestinationType == "object" {
+	if job.DestinationType == "object" || job.DestinationType == "webdav" {
 		storage, err := s.backupArtifactStorage(*job)
 		if err != nil {
 			log.Printf("backup[%s] retention cleanup storage lookup failed: %v", job.ID, err)
@@ -1414,6 +1554,11 @@ func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.Back
 			return fmt.Errorf("未找到备份目标对象存储")
 		}
 		return remotestorage.DeleteObject(ctx, *objectStorage, artifact.Name)
+	case "webdav":
+		if objectStorage == nil {
+			return fmt.Errorf("未找到备份目标 WebDAV 存储")
+		}
+		return remotestorage.DeleteWebDAV(ctx, *objectStorage, artifact.Name)
 	default:
 		return fmt.Errorf("该备份目标暂不支持清理备份文件")
 	}
@@ -1450,6 +1595,23 @@ func (s *Server) deleteExpiredBackupArtifactCopy(ctx context.Context, job model.
 			name = artifact.Name
 		}
 		return remotestorage.DeleteObject(ctx, *storage, name)
+	case "webdav":
+		storage := fallbackObjectStorage
+		if strings.TrimSpace(copy.StorageID) != "" {
+			loaded, err := s.store.Storage(copy.StorageID)
+			if err != nil {
+				return fmt.Errorf("%s：未找到备份目标 WebDAV 存储", backupCopyLabel(copy))
+			}
+			storage = &loaded
+		}
+		if storage == nil {
+			return fmt.Errorf("%s：未找到备份目标 WebDAV 存储", backupCopyLabel(copy))
+		}
+		name := copy.Name
+		if name == "" {
+			name = artifact.Name
+		}
+		return remotestorage.DeleteWebDAV(ctx, *storage, name)
 	default:
 		return fmt.Errorf("%s：该备份目标暂不支持清理备份文件", backupCopyLabel(copy))
 	}
@@ -2054,7 +2216,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 		if err != nil {
 			return nil, fmt.Errorf("未找到备份目标存储，请重新选择")
 		}
-		if storage.Type != "object" && storage.Type != "local" {
+		if storage.Type != "object" && storage.Type != "webdav" && storage.Type != "local" {
 			return nil, fmt.Errorf("存储 %q 暂不支持备份写入", storage.Name)
 		}
 		targets[index].StorageID = storage.ID
@@ -2068,7 +2230,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 	if len(storages) == 1 {
 		storage := storages[0]
 		request.DestinationType = storage.Type
-		if storage.Type == "object" {
+		if storage.Type == "object" || storage.Type == "webdav" {
 			request.Storage = &storage
 		}
 		return storages, nil
@@ -3618,6 +3780,20 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 			return restoreSource{}, fmt.Errorf("未找到备份目标对象存储")
 		}
 		return restoreSource{Type: "object", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
+	case "webdav":
+		request, err := s.backfillBackupRequest(job)
+		if err != nil {
+			return restoreSource{}, err
+		}
+		objectName := restoreArtifactObject(job)
+		if request.Destination == "" || objectName == "" {
+			return restoreSource{}, fmt.Errorf("未找到 WebDAV 备份位置")
+		}
+		storage, err := s.store.Storage(request.Destination)
+		if err != nil {
+			return restoreSource{}, fmt.Errorf("未找到备份目标 WebDAV 存储")
+		}
+		return restoreSource{Type: "webdav", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
 	case "multi":
 		copies := s.restoreCopyMap(job)
 		if len(copies) == 0 {
@@ -3663,7 +3839,7 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			if path != "" {
 				result = append(result, restoreArtifactCopy{Type: "local", Path: path, Label: backupCopyLabel(copy)})
 			}
-		case "object":
+		case "object", "webdav":
 			if strings.TrimSpace(copy.Name) == "" {
 				continue
 			}
@@ -3671,12 +3847,12 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			if err != nil {
 				continue
 			}
-			result = append(result, restoreArtifactCopy{Type: "object", Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
+			result = append(result, restoreArtifactCopy{Type: copy.Type, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
 		default:
-			if job.DestinationType == "object" && strings.TrimSpace(copy.Name) != "" {
+			if (job.DestinationType == "object" || job.DestinationType == "webdav") && strings.TrimSpace(copy.Name) != "" {
 				storage, err := s.backupArtifactStorage(job)
 				if err == nil {
-					result = append(result, restoreArtifactCopy{Type: "object", Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
+					result = append(result, restoreArtifactCopy{Type: job.DestinationType, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
 				}
 			} else if job.DestinationType == "local" {
 				path := copy.Path
@@ -3903,7 +4079,7 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	if source.Type == "local" {
 		return source.Path, nil, nil
 	}
-	if source.Type != "object" || source.Storage == nil {
+	if (source.Type != "object" && source.Type != "webdav") || source.Storage == nil {
 		return "", nil, fmt.Errorf("unsupported restore source %q", source.Type)
 	}
 	tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
@@ -3912,8 +4088,8 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
 	targetPath := filepath.Join(tempDir, filepath.Base(source.Object))
-	reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "正在从对象存储下载备份文件"})
-	size, err := remotestorage.DownloadObject(ctx, *source.Storage, source.Object, targetPath)
+	reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "正在从" + remoteStorageTypeLabel(source.Type) + "下载备份文件"})
+	size, err := downloadRemoteBackupArtifact(ctx, source.Type, *source.Storage, source.Object, targetPath)
 	if err != nil {
 		cleanup()
 		return "", nil, err
@@ -3936,9 +4112,9 @@ func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []
 			} else {
 				failures = append(failures, fmt.Sprintf("%s：本地备份文件不可用", copy.Label))
 			}
-		case "object":
+		case "object", "webdav":
 			if copy.Storage == nil || copy.Object == "" {
-				failures = append(failures, fmt.Sprintf("%s：对象存储配置不完整", copy.Label))
+				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
 			}
 			tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
@@ -3948,7 +4124,7 @@ func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []
 			cleanup := func() { _ = os.RemoveAll(tempDir) }
 			targetPath := filepath.Join(tempDir, filepath.Base(copy.Object))
 			reporter(backup.Progress{Stage: "download", EventLevel: "INFO", EventMessage: "正在从备份节点下载：" + copy.Label})
-			size, err := remotestorage.DownloadObject(ctx, *copy.Storage, copy.Object, targetPath)
+			size, err := downloadRemoteBackupArtifact(ctx, copy.Type, *copy.Storage, copy.Object, targetPath)
 			if err != nil {
 				cleanup()
 				failures = append(failures, fmt.Sprintf("%s：%v", copy.Label, err))
@@ -4001,7 +4177,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 		if _, err := io.Copy(w, file); err != nil {
 			log.Printf("backup artifact download failed: %v", err)
 		}
-	case "object":
+	case "object", "webdav":
 		storage, err := s.backupArtifactStorage(item)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
@@ -4014,7 +4190,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 		}
 		defer os.RemoveAll(tempDir)
 		tempPath := filepath.Join(tempDir, filepath.Base(artifact.Name))
-		size, err := remotestorage.DownloadObject(r.Context(), storage, artifact.Name, tempPath)
+		size, err := downloadRemoteBackupArtifact(r.Context(), item.DestinationType, storage, artifact.Name, tempPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "download_failed", userFacingErrorMessage(errorContextBackupRuntime, err))
 			return
@@ -4049,9 +4225,9 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 				log.Printf("backup artifact download failed: %v", err)
 			}
 			return
-		case "object":
+		case "object", "webdav":
 			if copy.Storage == nil || copy.Object == "" {
-				failures = append(failures, fmt.Sprintf("%s：对象存储配置不完整", copy.Label))
+				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
 			}
 			tempDir, err := os.MkdirTemp("", "databridge-artifact-download-*")
@@ -4061,7 +4237,7 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 			}
 			defer os.RemoveAll(tempDir)
 			tempPath := filepath.Join(tempDir, filepath.Base(copy.Object))
-			size, err := remotestorage.DownloadObject(r.Context(), *copy.Storage, copy.Object, tempPath)
+			size, err := downloadRemoteBackupArtifact(r.Context(), copy.Type, *copy.Storage, copy.Object, tempPath)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("%s：%v", copy.Label, err))
 				continue
@@ -4075,6 +4251,20 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 		}
 	}
 	writeError(w, http.StatusBadRequest, "download_failed", "所有备份副本均不可用："+strings.Join(failures, "；"))
+}
+
+func downloadRemoteBackupArtifact(ctx context.Context, storageType string, storage model.RemoteStorage, objectName, targetPath string) (int64, error) {
+	if storageType == "webdav" {
+		return remotestorage.DownloadWebDAV(ctx, storage, objectName, targetPath)
+	}
+	return remotestorage.DownloadObject(ctx, storage, objectName, targetPath)
+}
+
+func remoteStorageTypeLabel(storageType string) string {
+	if storageType == "webdav" {
+		return "WebDAV"
+	}
+	return "对象存储"
 }
 
 func (s *Server) deleteBackupArtifact(w http.ResponseWriter, r *http.Request) {
@@ -4461,6 +4651,10 @@ func validateStorage(w http.ResponseWriter, input model.StorageInput) bool {
 		writeError(w, http.StatusBadRequest, "invalid_storage", "对象存储需要填写 Endpoint、Bucket、Access Key 和 Secret Key")
 		return false
 	}
+	if storageType == "webdav" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "" || input.SecretKey == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "WebDAV 需要填写 Endpoint、用户名和密码")
+		return false
+	}
 	return true
 }
 
@@ -4478,6 +4672,10 @@ func validateStorageUpdate(w http.ResponseWriter, input model.UpdateStorageInput
 		writeError(w, http.StatusBadRequest, "invalid_storage", "对象存储需要填写 Endpoint、Bucket 和 Access Key")
 		return false
 	}
+	if storageType == "webdav" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "WebDAV 需要填写 Endpoint 和用户名")
+		return false
+	}
 	return true
 }
 
@@ -4485,6 +4683,8 @@ func normalizeStorageType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "object", "object_storage", "object-storage", "s3":
 		return "object"
+	case "webdav", "web_dav", "web-dav":
+		return "webdav"
 	case "google_drive", "google-drive", "gdrive":
 		return "google_drive"
 	case "one_drive", "one-drive", "onedrive":

@@ -1066,6 +1066,8 @@ func normalizeStorageType(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "object", "object_storage", "object-storage", "s3":
 		return "object"
+	case "webdav", "web_dav", "web-dav":
+		return "webdav"
 	case "google_drive", "google-drive", "gdrive":
 		return "google_drive"
 	case "onedrive", "one_drive", "one-drive":

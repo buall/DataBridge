@@ -267,6 +267,11 @@ func newDestination(request model.BackupRequest) (destination, error) {
 			return nil, fmt.Errorf("object storage destination is not configured")
 		}
 		return objectDestination{storage: *request.Storage}, nil
+	case "webdav":
+		if request.Storage == nil {
+			return nil, fmt.Errorf("webdav destination is not configured")
+		}
+		return webDAVDestination{storage: *request.Storage}, nil
 	case "s3":
 		return s3Destination{endpoint: request.Destination}, nil
 	case "gdrive", "google-drive", "google drive":
@@ -293,6 +298,8 @@ func destinationForStorage(storage model.RemoteStorage, target model.BackupTarge
 	switch storage.Type {
 	case "object":
 		return objectDestination{storage: storage, target: target}, nil
+	case "webdav":
+		return webDAVDestination{storage: storage, target: target}, nil
 	case "local":
 		return localDestination{directory: storage.Path, storage: storage, target: target}, nil
 	default:
@@ -367,6 +374,21 @@ func (d objectDestination) upload(ctx context.Context, filePath, objectKey strin
 		return err
 	}
 	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到对象存储", d.storage), ArtifactName: objectKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, size, "", "")})
+	return nil
+}
+
+type webDAVDestination struct {
+	storage model.RemoteStorage
+	target  model.BackupTarget
+}
+
+func (d webDAVDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	remoteKey := path.Join(d.storage.Path, objectKey)
+	size, err := remotestorage.UploadWebDAV(ctx, d.storage, remoteKey, filePath)
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到 WebDAV", d.storage), ArtifactName: remoteKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, remoteKey, size, "", "")})
 	return nil
 }
 

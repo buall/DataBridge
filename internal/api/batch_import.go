@@ -287,10 +287,14 @@ func (s *Server) addImportedSchedule(connection model.Connection, schedule batch
 		},
 	}
 	destinationLabel := schedule.Storage.Name
-	if schedule.Storage.Type == "object" {
+	if schedule.Storage.Type == "object" || schedule.Storage.Type == "webdav" {
 		request.Destination = schedule.Storage.ID
 		request.Storage = &schedule.Storage
-		destinationLabel += " / " + schedule.Storage.Bucket
+		if schedule.Storage.Type == "object" {
+			destinationLabel += " / " + schedule.Storage.Bucket
+		} else {
+			destinationLabel += " / " + schedule.Storage.Path
+		}
 	} else if schedule.Storage.Type == "local" {
 		request.Destination = schedule.Storage.ID
 		destinationLabel += " / " + schedule.Storage.Path
@@ -474,7 +478,7 @@ func (s *Server) parseBatchImport(fileName string, data []byte) (parsedBatchImpo
 			addScheduleError("存储名称", "系统中未找到该存储")
 		} else if len(storages) > 1 {
 			addScheduleError("存储名称", "系统中存在多个同名存储，请先修改为唯一名称")
-		} else if storages[0].Type != "local" && storages[0].Type != "object" {
+		} else if storages[0].Type != "local" && storages[0].Type != "object" && storages[0].Type != "webdav" {
 			addScheduleError("存储名称", "该存储类型暂不支持备份写入")
 		} else {
 			schedule.Storage = storages[0]

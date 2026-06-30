@@ -99,7 +99,7 @@ export interface DuplicateConnectionInput {
   tlsConfig?: ConnectionTLSConfig;
 }
 
-export type RemoteStorageType = "object" | "google_drive" | "one_drive" | "local";
+export type RemoteStorageType = "object" | "webdav" | "google_drive" | "one_drive" | "local";
 export type RemoteStorageStatus = "connected" | "warning" | "needs_auth" | "untested";
 
 export interface RemoteStorage {

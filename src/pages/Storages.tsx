@@ -1,6 +1,6 @@
 import { Check, Cloud, Edit3, FolderOpen, HardDrive, KeyRound, MoreHorizontal, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { api, type WebDAVEntry } from "../api";
 import type { RemoteStorage, RemoteStorageInput, RemoteStorageType } from "../types";
 import { Badge, Button, Card, ConfirmDialog, SelectField } from "../components/UI";
 
@@ -46,16 +46,26 @@ export function Storages({
   const [creatingBucket, setCreatingBucket] = useState(false);
   const [viewingBuckets, setViewingBuckets] = useState(false);
   const [viewBucketOptions, setViewBucketOptions] = useState<string[]>([]);
+  const [webDAVTarget, setWebDAVTarget] = useState<RemoteStorage | null>(null);
+  const [webDAVPath, setWebDAVPath] = useState("");
+  const [webDAVEntries, setWebDAVEntries] = useState<WebDAVEntry[]>([]);
+  const [viewingWebDAV, setViewingWebDAV] = useState(false);
+  const [webDAVDirectoryName, setWebDAVDirectoryName] = useState("");
+  const [creatingWebDAVDirectory, setCreatingWebDAVDirectory] = useState(false);
   const [bucketLoading, setBucketLoading] = useState(false);
   const [bucketOptions, setBucketOptions] = useState<string[]>([]);
   const [bucketMenuOpen, setBucketMenuOpen] = useState(false);
+  const [webDAVDirectoryLoading, setWebDAVDirectoryLoading] = useState(false);
+  const [webDAVDirectoryOptions, setWebDAVDirectoryOptions] = useState<WebDAVEntry[]>([]);
+  const [webDAVDirectoryMenuOpen, setWebDAVDirectoryMenuOpen] = useState(false);
   const [pageError, setPageError] = useState("");
   const [formError, setFormError] = useState("");
   const bucketPickerRef = useRef<HTMLDivElement | null>(null);
+  const webDAVDirectoryPickerRef = useRef<HTMLDivElement | null>(null);
   const summary = useMemo(() => ({
     total: storages.length,
     object: storages.filter((item) => item.type === "object").length,
-    cloudDrive: storages.filter((item) => item.type === "google_drive" || item.type === "one_drive").length,
+    cloudDrive: storages.filter((item) => item.type === "webdav" || item.type === "google_drive" || item.type === "one_drive").length,
   }), [storages]);
   useEffect(() => {
     if (!openMenu) return;
@@ -75,11 +85,24 @@ export function Storages({
     return () => window.removeEventListener("mousedown", close);
   }, [bucketMenuOpen]);
 
+  useEffect(() => {
+    if (!webDAVDirectoryMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!webDAVDirectoryPickerRef.current?.contains(event.target as Node)) {
+        setWebDAVDirectoryMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [webDAVDirectoryMenuOpen]);
+
   function openCreate() {
     setEditTarget(null);
     setForm(emptyForm);
     setBucketOptions([]);
     setBucketMenuOpen(false);
+    setWebDAVDirectoryOptions([]);
+    setWebDAVDirectoryMenuOpen(false);
     setFormError("");
     setShowForm(true);
   }
@@ -103,6 +126,8 @@ export function Storages({
     });
     setBucketOptions(storage.bucket ? [storage.bucket] : []);
     setBucketMenuOpen(false);
+    setWebDAVDirectoryOptions(storage.type === "webdav" && storage.path ? [webDAVOptionFromPath(storage.path)] : []);
+    setWebDAVDirectoryMenuOpen(false);
     setFormError("");
     setShowForm(true);
   }
@@ -111,16 +136,32 @@ export function Storages({
     event.preventDefault();
     setSubmitting(true);
     setFormError("");
+    setPageError("");
     try {
       const input = normalizeForm(form);
+      let saved: RemoteStorage;
       if (editTarget) {
-        const updated = await api.updateStorage(editTarget.id, input);
-        onUpdate(updated);
+        saved = await api.updateStorage(editTarget.id, input);
+        onUpdate(saved);
       } else {
-        const created = await api.createStorage(input);
-        onAdd(created);
+        saved = await api.createStorage(input);
+        onAdd(saved);
       }
       setShowForm(false);
+      if (shouldAutoTestStorage(saved)) {
+        setTesting(saved.id);
+        try {
+          const result = await api.testStorage(saved.id);
+          onUpdate(result.storage);
+          if (result.storage.status === "warning") {
+            setPageError(`${saved.name}：${result.message}`);
+          }
+        } catch (testReason) {
+          setPageError(testReason instanceof Error ? `${saved.name}：${testReason.message}` : `${saved.name}：测试远端存储失败`);
+        } finally {
+          setTesting(null);
+        }
+      }
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : "保存远端存储失败");
     } finally {
@@ -221,6 +262,48 @@ export function Storages({
     }
   }
 
+  async function openWebDAVDirectory(storage: RemoteStorage) {
+    setOpenMenu(null);
+    setWebDAVTarget(storage);
+    setWebDAVPath(storage.path ?? "");
+    setWebDAVEntries([]);
+    setWebDAVDirectoryName("");
+    setPageError("");
+    await loadWebDAVDirectory(storage, storage.path ?? "");
+  }
+
+  async function loadWebDAVDirectory(storage = webDAVTarget, path = webDAVPath) {
+    if (!storage) return;
+    setViewingWebDAV(true);
+    setPageError("");
+    try {
+      const result = await api.webDAVDirectory(storage.id, path);
+      setWebDAVPath(result.path);
+      setWebDAVEntries(result.entries.filter((entry) => entry.isDirectory));
+    } catch (reason) {
+      setPageError(reason instanceof Error ? reason.message : "获取 WebDAV 目录失败");
+    } finally {
+      setViewingWebDAV(false);
+    }
+  }
+
+  async function createWebDAVDirectory(event: React.FormEvent) {
+    event.preventDefault();
+    if (!webDAVTarget) return;
+    setCreatingWebDAVDirectory(true);
+    setPageError("");
+    try {
+      const result = await api.createWebDAVDirectory(webDAVTarget.id, webDAVPath, webDAVDirectoryName);
+      setWebDAVPath(result.path);
+      setWebDAVEntries(result.entries.filter((entry) => entry.isDirectory));
+      setWebDAVDirectoryName("");
+    } catch (reason) {
+      setPageError(reason instanceof Error ? reason.message : "创建 WebDAV 目录失败");
+    } finally {
+      setCreatingWebDAVDirectory(false);
+    }
+  }
+
   function changeType(type: RemoteStorageType) {
     setForm((current) => ({
       ...current,
@@ -230,6 +313,8 @@ export function Storages({
     }));
     setBucketOptions([]);
     setBucketMenuOpen(false);
+    setWebDAVDirectoryOptions([]);
+    setWebDAVDirectoryMenuOpen(false);
     setFormError("");
   }
 
@@ -254,6 +339,27 @@ export function Storages({
     }
   }
 
+  async function loadWebDAVDirectories() {
+    setWebDAVDirectoryLoading(true);
+    setFormError("");
+    try {
+      const input = { ...normalizeForm(form), path: "" };
+      const result = editTarget
+        ? await api.storedWebDAVDirectories(editTarget.id, input)
+        : await api.webDAVDirectories(input);
+      const directories = result.entries.filter((entry) => entry.isDirectory);
+      setWebDAVDirectoryOptions(directories);
+      setWebDAVDirectoryMenuOpen(directories.length > 0);
+      if (!directories.length) {
+        setFormError("当前 WebDAV 根目录下没有可选一级目录，可继续手动填写默认目录");
+      }
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "获取 WebDAV 目录失败，可手动填写默认目录");
+    } finally {
+      setWebDAVDirectoryLoading(false);
+    }
+  }
+
   return (
     <div className="page-stack">
       <div className="page-heading">
@@ -264,7 +370,7 @@ export function Storages({
       <div className="task-summary-grid">
         <Summary title="全部存储" value={summary.total} detail="配置记录已保存" />
         <Summary title="对象存储" value={summary.object} detail="S3 兼容、云厂商 OSS" tone="blue" />
-        <Summary title="网盘授权" value={summary.cloudDrive} detail="Google Drive / OneDrive" tone="green" />
+        <Summary title="网盘存储" value={summary.cloudDrive} detail="WebDAV / 云盘授权" tone="green" />
       </div>
       <div className="storage-grid">
         {storages.map((storage) => (
@@ -282,6 +388,7 @@ export function Storages({
                     <button type="button" onClick={() => openEdit(storage)}><Edit3 size={15} /><span>编辑配置</span></button>
                     {storage.type === "object" && <button type="button" onClick={() => openBucketCreate(storage)}><Plus size={15} /><span>创建 Bucket</span></button>}
                     {storage.type === "object" && <button type="button" onClick={() => openBucketList(storage)}><FolderOpen size={15} /><span>查看 Bucket</span></button>}
+                    {storage.type === "webdav" && <button type="button" onClick={() => openWebDAVDirectory(storage)}><FolderOpen size={15} /><span>查看目录</span></button>}
                     <button type="button" onClick={() => test(storage)} disabled={testing === storage.id}>{testing === storage.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>测试配置</span></button>
                     <button type="button" className="danger-action" onClick={() => remove(storage)}><Trash2 size={15} /><span>删除存储</span></button>
                   </div>
@@ -295,7 +402,7 @@ export function Storages({
             </dl>
             <div className="storage-card-foot">
               <Badge tone={statusTone(storage.status)}>{statusLabel(storage.status)}</Badge>
-              <span>{storage.type === "object" ? "对象存储配置" : "云盘授权配置"}</span>
+              <span>{storage.type === "object" ? "对象存储配置" : storage.type === "webdav" ? "WebDAV 配置" : storage.type === "local" ? "本地目录配置" : "云盘授权配置"}</span>
             </div>
           </Card>
         ))}
@@ -330,6 +437,29 @@ export function Storages({
         </div>
       )}
 
+      {webDAVTarget && (
+        <div className="modal-backdrop" onMouseDown={() => setWebDAVTarget(null)}>
+          <div className="modal bucket-list-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-head"><div><h3>WebDAV 目录</h3><p>{webDAVTarget.name} · /{webDAVPath || webDAVTarget.path || ""}</p></div><button type="button" className="plain-icon" onClick={() => setWebDAVTarget(null)}><X /></button></div>
+            <form className="webdav-directory-toolbar" onSubmit={createWebDAVDirectory}>
+              <label className="field grow"><span>新目录名称</span><input value={webDAVDirectoryName} onChange={(event) => setWebDAVDirectoryName(event.target.value)} placeholder="例如 2026-archive" /></label>
+              <Button type="submit" disabled={creatingWebDAVDirectory || !webDAVDirectoryName.trim()}>{creatingWebDAVDirectory ? "创建中..." : "创建目录"}</Button>
+              <Button type="button" variant="secondary" disabled={viewingWebDAV} onClick={() => loadWebDAVDirectory()}>{viewingWebDAV ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}{viewingWebDAV ? "刷新中" : "刷新"}</Button>
+            </form>
+            {viewingWebDAV ? (
+              <div className="loading-copy">正在读取 WebDAV 目录...</div>
+            ) : webDAVEntries.length ? (
+              <div className="bucket-list">
+                {webDAVEntries.map((entry) => <div key={entry.path}><span>{entry.name}</span><small>文件夹{entry.modified ? ` · ${formatWebDAVTime(entry.modified)}` : ""}</small></div>)}
+              </div>
+            ) : (
+              <div className="inline-empty"><FolderOpen size={20} /><div><strong>暂无子目录</strong><span>可以创建目录，备份文件不会在这里展开显示。</span></div></div>
+            )}
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setWebDAVTarget(null)}>关闭</Button></div>
+          </div>
+        </div>
+      )}
+
       {showForm && (
         <div className="modal-backdrop" onMouseDown={() => setShowForm(false)}>
           <form className="modal storage-modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
@@ -337,6 +467,7 @@ export function Storages({
             {formError && <div className="form-error left modal-error">{formError}</div>}
             <SelectField label="存储类型" value={form.type} onChange={(value) => changeType(value as RemoteStorageType)}>
               <option value="object">对象存储</option>
+              <option value="webdav">WebDAV 网盘</option>
               <option value="google_drive">Google Drive</option>
               <option value="one_drive">OneDrive</option>
               <option value="local">本地目录</option>
@@ -388,6 +519,47 @@ export function Storages({
                 <label className="field"><span>默认目录</span><input value={form.path} onChange={(event) => setForm({ ...form, path: event.target.value })} placeholder="databridge/backups" /></label>
               </>
             )}
+            {form.type === "webdav" && (
+              <>
+                <label className="field"><span>Endpoint</span><input required value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value, verified: false })} placeholder="https://dav.jianguoyun.com/dav" /></label>
+                <label className="field"><span>用户名</span><input required value={form.accessKey} onChange={(event) => setForm({ ...form, accessKey: event.target.value, verified: false })} placeholder="WebDAV 账号或邮箱" /></label>
+                <label className="field"><span>密码 / 应用密码</span><input type="password" required={!editTarget} value={form.secretKey} onChange={(event) => setForm({ ...form, secretKey: event.target.value, verified: false })} placeholder={editTarget ? "留空则保持当前密码" : "建议使用应用专用密码"} /></label>
+                <div className="bucket-picker" ref={webDAVDirectoryPickerRef}>
+                  <label className="field grow bucket-combobox">
+                    <span>默认目录</span>
+                    <input
+                      value={form.path}
+                      onFocus={() => webDAVDirectoryOptions.length > 0 && setWebDAVDirectoryMenuOpen(true)}
+                      onClick={() => webDAVDirectoryOptions.length > 0 && setWebDAVDirectoryMenuOpen(true)}
+                      onChange={(event) => {
+                        setForm({ ...form, path: event.target.value, verified: false });
+                        setWebDAVDirectoryMenuOpen(webDAVDirectoryOptions.length > 0);
+                      }}
+                      placeholder={webDAVDirectoryOptions.length ? "输入或选择一级目录" : "DataBridge Backups"}
+                    />
+                    {webDAVDirectoryMenuOpen && webDAVDirectoryOptions.length > 0 && (
+                      <div className="bucket-menu">
+                        {webDAVDirectoryOptions.map((entry) => (
+                          <button
+                            key={entry.path}
+                            type="button"
+                            className={`bucket-option ${entry.path === form.path ? "active" : ""}`}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setForm((current) => ({ ...current, path: entry.path, verified: false }));
+                              setWebDAVDirectoryMenuOpen(false);
+                            }}
+                          >
+                            {entry.name || entry.path}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </label>
+                  <Button type="button" variant="secondary" onClick={loadWebDAVDirectories} disabled={webDAVDirectoryLoading || !form.endpoint || !form.accessKey || (!form.secretKey && !editTarget)}>{webDAVDirectoryLoading ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}{webDAVDirectoryLoading ? "获取中" : "获取目录"}</Button>
+                </div>
+              </>
+            )}
             {(form.type === "google_drive" || form.type === "one_drive") && (
               <>
                 <SelectField label="授权方式" value={form.authMode ?? "oauth"} onChange={(authMode) => setForm({ ...form, authMode })}><option value="oauth">OAuth 授权</option><option value="service_account">服务账号</option></SelectField>
@@ -411,9 +583,23 @@ function normalizeForm(form: StorageForm): RemoteStorageInput {
   return { ...form, name: form.name.trim(), provider: form.provider.trim() };
 }
 
+function webDAVOptionFromPath(value: string): WebDAVEntry {
+  const path = value.replace(/^\/+|\/+$/g, "");
+  return {
+    name: path.split("/").filter(Boolean).pop() || path,
+    path,
+    isDirectory: true,
+  };
+}
+
+function shouldAutoTestStorage(storage: RemoteStorage) {
+  return storage.type === "object" || storage.type === "webdav";
+}
+
 function StorageIcon({ type }: { type: RemoteStorageType }) {
   if (type === "local") return <HardDrive size={18} />;
   if (type === "object") return <Cloud size={18} />;
+  if (type === "webdav") return <FolderOpen size={18} />;
   return <KeyRound size={18} />;
 }
 
@@ -422,6 +608,7 @@ function Summary({ title, value, detail, tone = "gray" }: { title: string; value
 }
 
 function defaultProvider(type: RemoteStorageType) {
+  if (type === "webdav") return "WebDAV";
   if (type === "google_drive") return "Google Drive";
   if (type === "one_drive") return "Microsoft OneDrive";
   if (type === "local") return "Local Filesystem";
@@ -429,11 +616,12 @@ function defaultProvider(type: RemoteStorageType) {
 }
 
 function defaultAuthMode(type: RemoteStorageType) {
-  return type === "object" ? "access_key" : type === "local" ? "filesystem" : "oauth";
+  return type === "object" ? "access_key" : type === "webdav" ? "basic" : type === "local" ? "filesystem" : "oauth";
 }
 
 function typeLabel(type: RemoteStorageType) {
   if (type === "object") return "对象存储";
+  if (type === "webdav") return "WebDAV";
   if (type === "google_drive") return "Google Drive";
   if (type === "one_drive") return "OneDrive";
   return "本地目录";
@@ -451,4 +639,10 @@ function statusTone(status: RemoteStorage["status"]) {
   if (status === "needs_auth") return "orange";
   if (status === "warning") return "red";
   return "gray";
+}
+
+function formatWebDAVTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
