@@ -195,6 +195,7 @@ export interface BackupConfig {
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
   notificationRecipientIds?: string[];
+  notificationTrigger?: BackupNotificationTrigger;
 }
 
 export interface BackupTarget {
@@ -225,6 +226,7 @@ export interface BackupArtifact {
 }
 
 export type NotificationRecipientType = "feishu" | "dingtalk" | "wechat_work" | "telegram" | "webhook" | "email";
+export type BackupNotificationTrigger = "all" | "success" | "failure";
 
 export interface NotificationRecipient {
   id: string;
@@ -364,6 +366,7 @@ export interface BackupJob {
   notificationMethod?: "webhook" | "email";
   notificationTarget?: string;
   notificationRecipientIds?: string[];
+  notificationTrigger?: BackupNotificationTrigger;
   nextRunAt?: string;
   lastRunAt?: string;
   artifactName?: string;

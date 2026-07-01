@@ -654,6 +654,9 @@ h1, h2, h3, h4, p { margin: 0; }
 .backup-target-option.primary { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(37,99,235,.08); }
 .backup-target-toggle { min-width: 0; border: 0; padding: 0; background: transparent; color: #172033; display: grid; grid-template-columns: 18px 24px minmax(0, 1fr); align-items: center; gap: 10px; text-align: left; }
 .backup-target-toggle svg { color: var(--blue); }
+.backup-target-toggle .checkbox { border-color: #d8e1ee; background: #fff; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.backup-target-toggle .checkbox.checked { color: var(--blue); border-color: #8fb0ff; background: #edf4ff; box-shadow: 0 0 0 3px rgba(37,99,235,.08); }
+.backup-target-toggle .checkbox.checked svg { stroke-width: 3; }
 .backup-target-toggle strong, .backup-target-toggle small { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .backup-target-toggle strong { font-size: 13px; }
 .backup-target-toggle small { margin-top: 4px; color: var(--muted); font-size: 10px; }
@@ -682,6 +685,11 @@ h1, h2, h3, h4, p { margin: 0; }
 .notification-target-row .button { height: 44px; }
 .notification-test-result { margin: 8px 0 0; color: var(--muted); font-size: 11px; font-weight: 700; }
 .modal-notification-panel { max-width: none; margin-top: 16px; }
+.notification-trigger-field { display: grid; gap: 8px; margin-top: 4px; }
+.notification-trigger-field > span { color: #46556c; font-size: 11px; font-weight: 700; }
+.notification-trigger-options { width: fit-content; display: inline-grid; grid-template-columns: repeat(3, minmax(86px, 1fr)); gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: #f7f9fc; }
+.notification-trigger-options button { min-width: 0; height: 32px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.notification-trigger-options button.active { color: #fff; background: var(--blue); box-shadow: 0 6px 14px rgba(48, 111, 232, .18); }
 .notification-recipient-field { display: grid; gap: 8px; margin-top: 4px; }
 .notification-recipient-field > span { color: #46556c; font-size: 11px; font-weight: 700; }
 .recipient-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -979,6 +987,7 @@ h1, h2, h3, h4, p { margin: 0; }
   .endpoint-grid { grid-template-columns: 1fr; width: 100%; }
   .route-line,
   .route-arrow { margin: 0; }
+  .notification-trigger-options { width: 100%; grid-template-columns: 1fr; }
   .notification-target-row { grid-template-columns: 1fr; }
   .bucket-picker .button { min-width: 0; }
   .webdav-directory-toolbar { grid-template-columns: 1fr; }

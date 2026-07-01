@@ -128,6 +128,7 @@ func TestNormalizeBackupScheduleKeepsRecipientSelection(t *testing.T) {
 		ScheduleTime:             "02:00:00",
 		NotificationEnabled:      true,
 		NotificationRecipientIDs: []string{"recipient-a", "recipient-b"},
+		NotificationTrigger:      "failure",
 	}
 	normalizeBackupSchedule(&request)
 	if !request.Notification.Enabled {
@@ -138,6 +139,33 @@ func TestNormalizeBackupScheduleKeepsRecipientSelection(t *testing.T) {
 	}
 	if request.Notification.Target != "" {
 		t.Fatalf("legacy target should stay empty, got %q", request.Notification.Target)
+	}
+	if request.Notification.Trigger != "failure" || request.NotificationTrigger != "failure" {
+		t.Fatalf("notification trigger = %q / %q, want failure", request.Notification.Trigger, request.NotificationTrigger)
+	}
+}
+
+func TestBackupNotificationShouldSendByTrigger(t *testing.T) {
+	cases := []struct {
+		name         string
+		notification model.BackupNotification
+		success      bool
+		want         bool
+	}{
+		{name: "disabled", notification: model.BackupNotification{Enabled: false, Trigger: "all"}, success: true, want: false},
+		{name: "default sends success", notification: model.BackupNotification{Enabled: true}, success: true, want: true},
+		{name: "default sends failure", notification: model.BackupNotification{Enabled: true}, success: false, want: true},
+		{name: "success sends success", notification: model.BackupNotification{Enabled: true, Trigger: "success"}, success: true, want: true},
+		{name: "success skips failure", notification: model.BackupNotification{Enabled: true, Trigger: "success"}, success: false, want: false},
+		{name: "failure skips success", notification: model.BackupNotification{Enabled: true, Trigger: "failure"}, success: true, want: false},
+		{name: "failure sends failure", notification: model.BackupNotification{Enabled: true, Trigger: "failure"}, success: false, want: true},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := backupNotificationShouldSend(item.notification, item.success); got != item.want {
+				t.Fatalf("backupNotificationShouldSend() = %v, want %v", got, item.want)
+			}
+		})
 	}
 }
 

@@ -322,6 +322,7 @@ func (s *Server) addImportedSchedule(connection model.Connection, schedule batch
 		RetentionDays: request.RetentionDays, RetentionMonths: request.RetentionMonths,
 		Notification: request.Notification, NotificationEnabled: request.Notification.Enabled,
 		NotificationRecipientIDs: append([]string(nil), request.Notification.RecipientIDs...),
+		NotificationTrigger:      request.Notification.Trigger,
 		NextRunAt:                &next,
 		Events: []model.Event{
 			{Time: now, Level: "INFO", Message: "备份任务已通过 Excel 批量导入创建"},

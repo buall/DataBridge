@@ -181,6 +181,7 @@ type BackupRequest struct {
 	NotificationMethod       string             `json:"notificationMethod,omitempty"`
 	NotificationTarget       string             `json:"notificationTarget,omitempty"`
 	NotificationRecipientIDs []string           `json:"notificationRecipientIds,omitempty"`
+	NotificationTrigger      string             `json:"notificationTrigger,omitempty"`
 	Storage                  *RemoteStorage     `json:"-"`
 	TargetStorages           []RemoteStorage    `json:"-"`
 }
@@ -219,6 +220,7 @@ type BackupNotification struct {
 	Method       string   `json:"method,omitempty"`
 	Target       string   `json:"target,omitempty"`
 	RecipientIDs []string `json:"recipientIds,omitempty"`
+	Trigger      string   `json:"trigger,omitempty"`
 }
 
 type NotificationRecipient struct {
@@ -423,6 +425,7 @@ type BackupJob struct {
 	NotificationMethod       string                  `json:"notificationMethod,omitempty"`
 	NotificationTarget       string                  `json:"notificationTarget,omitempty"`
 	NotificationRecipientIDs []string                `json:"notificationRecipientIds,omitempty"`
+	NotificationTrigger      string                  `json:"notificationTrigger,omitempty"`
 	NextRunAt                *time.Time              `json:"nextRunAt,omitempty"`
 	LastRunAt                *time.Time              `json:"lastRunAt,omitempty"`
 	ArtifactName             string                  `json:"artifactName,omitempty"`

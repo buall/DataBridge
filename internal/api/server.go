@@ -1293,6 +1293,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Notification:    request.Notification, NotificationEnabled: request.Notification.Enabled,
 		NotificationMethod: request.Notification.Method, NotificationTarget: request.Notification.Target,
 		NotificationRecipientIDs: request.Notification.RecipientIDs,
+		NotificationTrigger:      request.Notification.Trigger,
 		NextRunAt:                nextRunAt,
 		Events:                   []model.Event{{Time: now, Level: "INFO", Message: "备份任务已创建"}},
 	}
@@ -1432,7 +1433,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			})
 		}
 	}
-	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && updatedJob.Notification.Enabled {
+	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && backupNotificationShouldSend(updatedJob.Notification, err == nil) {
 		if notifyErr := s.sendBackupNotification(updatedJob, err == nil); notifyErr != nil {
 			log.Printf("backup[%s] notification failed: %v", id, notifyErr)
 			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
@@ -2401,6 +2402,13 @@ func (s *Server) backfillBackupRequest(item model.BackupJob) (model.BackupReques
 	if len(request.Notification.RecipientIDs) == 0 && len(item.NotificationRecipientIDs) > 0 {
 		request.Notification.RecipientIDs = append([]string(nil), item.NotificationRecipientIDs...)
 	}
+	if request.Notification.Trigger == "" && request.NotificationTrigger == "" {
+		if item.Notification.Trigger != "" {
+			request.Notification.Trigger = item.Notification.Trigger
+		} else {
+			request.Notification.Trigger = item.NotificationTrigger
+		}
+	}
 	if request.Name == "" {
 		request.Name = item.Name
 	}
@@ -2430,6 +2438,7 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 		request.NotificationMethod = ""
 		request.NotificationTarget = ""
 		request.NotificationRecipientIDs = nil
+		request.NotificationTrigger = ""
 		return
 	}
 	if request.ScheduleFrequency == "" {
@@ -2463,6 +2472,7 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 	request.NotificationMethod = request.Notification.Method
 	request.NotificationTarget = request.Notification.Target
 	request.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
+	request.NotificationTrigger = request.Notification.Trigger
 }
 
 func normalizeBackupNotification(request *model.BackupRequest) {
@@ -2481,6 +2491,9 @@ func normalizeBackupNotification(request *model.BackupRequest) {
 		}
 		request.Notification.Enabled = request.Notification.Enabled || request.NotificationEnabled
 	}
+	if request.Notification.Trigger == "" {
+		request.Notification.Trigger = request.NotificationTrigger
+	}
 	if request.Notification.Method == "" {
 		request.Notification.Method = request.NotificationMethod
 	}
@@ -2490,10 +2503,37 @@ func normalizeBackupNotification(request *model.BackupRequest) {
 	if request.Notification.Enabled == false {
 		request.Notification.Enabled = request.NotificationEnabled
 	}
+	request.Notification.Trigger = normalizeBackupNotificationTrigger(request.Notification.Trigger)
 	request.NotificationEnabled = request.Notification.Enabled
 	request.NotificationMethod = request.Notification.Method
 	request.NotificationTarget = request.Notification.Target
 	request.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
+	request.NotificationTrigger = request.Notification.Trigger
+}
+
+func normalizeBackupNotificationTrigger(value string) string {
+	switch strings.TrimSpace(value) {
+	case "success":
+		return "success"
+	case "failure", "failed":
+		return "failure"
+	default:
+		return "all"
+	}
+}
+
+func backupNotificationShouldSend(notification model.BackupNotification, success bool) bool {
+	if !notification.Enabled {
+		return false
+	}
+	switch normalizeBackupNotificationTrigger(notification.Trigger) {
+	case "success":
+		return success
+	case "failure":
+		return !success
+	default:
+		return true
+	}
 }
 
 func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error {
@@ -3197,6 +3237,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.NotificationMethod = input.NotificationMethod
 	request.NotificationTarget = input.NotificationTarget
 	request.NotificationRecipientIDs = append([]string(nil), input.NotificationRecipientIDs...)
+	request.NotificationTrigger = input.NotificationTrigger
 	request.Notification = input.Notification
 	normalizeBackupSchedule(&request)
 	now := time.Now().In(appLocation)
@@ -3234,6 +3275,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.NotificationMethod = request.Notification.Method
 		item.NotificationTarget = request.Notification.Target
 		item.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
+		item.NotificationTrigger = request.Notification.Trigger
 		item.NextRunAt = &next
 		appendJobEvent(&item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
 	}); err != nil {

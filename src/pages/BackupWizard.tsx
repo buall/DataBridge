@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import type { BackupConfig, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
+import type { BackupConfig, BackupNotificationTrigger, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
 import { Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
@@ -42,6 +42,7 @@ export function BackupWizard({
     retentionDays: 30,
     notificationEnabled: false,
     notificationRecipientIds: [],
+    notificationTrigger: "all",
   });
 
   useEffect(() => {
@@ -119,6 +120,7 @@ export function BackupWizard({
         backupTargets: targets,
         notificationEnabled: scheduled ? config.notificationEnabled : false,
         notificationRecipientIds: scheduled ? config.notificationRecipientIds : [],
+        notificationTrigger: scheduled ? config.notificationTrigger ?? "all" : undefined,
         sourceDatabase: sourceDatabases.join(", "),
         sourceDatabases,
         name: config.name || `${source?.name ?? databaseLabel} / ${databaseLabel} 备份`,
@@ -170,7 +172,7 @@ export function BackupWizard({
           <div className="schedule-panel">
             <span>执行方式</span>
             <div className="segmented-control">
-              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationRecipientIds: [] })}>一次性</button>
+              <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationRecipientIds: [], notificationTrigger: "all" })}>一次性</button>
               <button type="button" className={config.scheduleMode === "scheduled" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "scheduled" })}>定时</button>
             </div>
             {config.scheduleMode === "scheduled" && (
@@ -183,9 +185,12 @@ export function BackupWizard({
                   <RetentionDaysField value={config.retentionDays ?? 30} onChange={(retentionDays) => setConfig({ ...config, retentionDays })} />
                 </div>
                 <div className="notification-panel">
-                  <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
+                  <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled, notificationTrigger: config.notificationTrigger ?? "all" })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>选择定时任务结束后的通知发送范围</small></div></button>
                   {config.notificationEnabled && (
-                    <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={config.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setConfig({ ...config, notificationRecipientIds })} /></div>
+                    <>
+                      <NotificationTriggerSelector value={config.notificationTrigger ?? "all"} onChange={(notificationTrigger) => setConfig({ ...config, notificationTrigger })} />
+                      <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={config.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setConfig({ ...config, notificationRecipientIds })} /></div>
+                    </>
                   )}
                 </div>
               </div>
@@ -296,7 +301,46 @@ function scheduleLabel(config: BackupConfig) {
 function notificationLabel(config: BackupConfig, recipients?: NotificationRecipient[]) {
   if (config.scheduleMode !== "scheduled" || !config.notificationEnabled) return "未开启";
   const names = (config.notificationRecipientIds ?? []).map((id) => recipients?.find((item) => item.id === id)?.name).filter(Boolean);
-  return names.length ? names.join("、") : "未选择接收者";
+  const trigger = notificationTriggerLabel(config.notificationTrigger ?? "all");
+  return names.length ? `${trigger}：${names.join("、")}` : `${trigger}：未选择接收者`;
+}
+
+const notificationTriggerOptions: Array<{ value: BackupNotificationTrigger; label: string }> = [
+  { value: "all", label: "全部发送" },
+  { value: "success", label: "成功发送" },
+  { value: "failure", label: "失败发送" },
+];
+
+export function NotificationTriggerSelector({
+  value,
+  onChange,
+}: {
+  value: BackupNotificationTrigger;
+  onChange: (value: BackupNotificationTrigger) => void;
+}) {
+  return (
+    <div className="notification-trigger-field">
+      <span>发送范围</span>
+      <div className="notification-trigger-options" role="radiogroup" aria-label="通知发送范围">
+        {notificationTriggerOptions.map((item) => (
+          <button
+            type="button"
+            key={item.value}
+            className={value === item.value ? "active" : ""}
+            role="radio"
+            aria-checked={value === item.value}
+            onClick={() => onChange(item.value)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function notificationTriggerLabel(value: BackupNotificationTrigger) {
+  return notificationTriggerOptions.find((item) => item.value === value)?.label ?? "全部发送";
 }
 
 function retentionPolicyLabel(config: BackupConfig) {

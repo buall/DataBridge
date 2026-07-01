@@ -4,7 +4,7 @@ import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, RemoteStorage } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
-import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
+import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, NotificationTriggerSelector, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
@@ -509,6 +509,7 @@ function ScheduleEditor({
     retentionDays: retentionDaysFromJob(job),
     notificationEnabled: job.notificationEnabled ?? false,
     notificationRecipientIds: job.notificationRecipientIds ?? [],
+    notificationTrigger: job.notificationTrigger ?? "all",
   });
   const source = connections.find((item) => item.id === form.sourceId);
   const selectedTargetIds = selectedBackupTargetIds(form, writableStorages);
@@ -612,9 +613,12 @@ function ScheduleEditor({
         </div>
         </div>
         <div className="notification-panel modal-notification-panel">
-          <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>定时任务执行结束后发送成功或失败结果</small></div></button>
+          <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled, notificationTrigger: form.notificationTrigger ?? "all" })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>选择定时任务结束后的通知发送范围</small></div></button>
           {form.notificationEnabled && (
-            <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={form.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setForm({ ...form, notificationRecipientIds })} /></div>
+            <>
+              <NotificationTriggerSelector value={form.notificationTrigger ?? "all"} onChange={(notificationTrigger) => setForm({ ...form, notificationTrigger })} />
+              <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={form.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setForm({ ...form, notificationRecipientIds })} /></div>
+            </>
           )}
         </div>
         <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>取消</Button><Button disabled={saving} type="submit">{saving ? "保存中..." : "保存计划"}</Button></div>
