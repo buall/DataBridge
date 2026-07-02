@@ -626,6 +626,9 @@ func TestCompactBackupJobKeepsArtifactVersions(t *testing.T) {
 	if compact.Request.SourceID != "" || compact.Request.SourceDatabase != "" || len(compact.Request.SourceDatabases) != 0 {
 		t.Fatalf("compact response should omit request: %#v", compact.Request)
 	}
+	if compact.SourceID != "source-1" {
+		t.Fatalf("compact response should keep source id: %q", compact.SourceID)
+	}
 	if len(job.ArtifactVersions) != 1 || job.Request.SourceID != "source-1" || len(job.Events) != maxCompactEvents+1 {
 		t.Fatal("compact backup job should not mutate original value")
 	}
@@ -649,6 +652,9 @@ func TestCompactBackupListJobKeepsArtifactVersions(t *testing.T) {
 	}
 	if compact.Request.SourceID != "" {
 		t.Fatalf("backup list response should omit request: %#v", compact.Request)
+	}
+	if compact.SourceID != "source-1" {
+		t.Fatalf("backup list response should keep source id: %q", compact.SourceID)
 	}
 }
 

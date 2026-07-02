@@ -407,6 +407,7 @@ type BackupJob struct {
 	FinishedAt               *time.Time              `json:"finishedAt,omitempty"`
 	Error                    string                  `json:"error,omitempty"`
 	SourceName               string                  `json:"sourceName"`
+	SourceID                 string                  `json:"sourceId,omitempty"`
 	SourceType               string                  `json:"sourceType"`
 	SourceDatabase           string                  `json:"sourceDatabase"`
 	DestinationType          string                  `json:"destinationType"`

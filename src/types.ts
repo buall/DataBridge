@@ -349,6 +349,7 @@ export interface BackupJob {
   finishedAt?: string;
   error?: string;
   sourceName: string;
+  sourceId?: string;
   sourceType: string;
   sourceDatabase: string;
   destinationType: string;

@@ -1,7 +1,7 @@
-import { AlertTriangle, Check, Copy, Database, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertTriangle, CalendarClock, Check, Copy, Database, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
+import type { BackupJob, BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import { BatchImportModal } from "../components/BatchImportModal";
 
@@ -27,6 +27,7 @@ type ConnectionFormErrors = Partial<Record<"type" | "name" | "host" | "port" | "
 
 export function Connections({
   connections,
+  backups,
   onAdd,
   onUpdate,
   onDelete,
@@ -34,6 +35,7 @@ export function Connections({
   onBatchImported,
 }: {
   connections: DatabaseConnection[];
+  backups: BackupJob[];
   onAdd: (connection: DatabaseConnection) => void;
   onUpdate: (connection: DatabaseConnection) => void;
   onDelete: (connectionId: string) => void;
@@ -63,6 +65,7 @@ export function Connections({
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const [formErrors, setFormErrors] = useState<ConnectionFormErrors>({});
+  const scheduledBackupsByConnection = useMemo(() => groupScheduledBackupsByConnection(backups), [backups]);
   const filtered = connections.filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   const formSecurityConfig = connectionSecurityConfig(form.type);
   const formCompatibilityHint = connectionCompatibilityHint(form.type);
@@ -387,13 +390,23 @@ export function Connections({
         </div>
       )}
       <div className="connections-grid">
-        {filtered.map((connection) => (
+        {filtered.map((connection) => {
+          const scheduledBackups = scheduledBackupsForConnection(connection, scheduledBackupsByConnection);
+          return (
           <Card className="connection-card" key={connection.id}>
             <div className="connection-card-head">
               <DatabaseLogo type={connection.type} name={connection.name} />
               <div>
                 <strong>{connection.name}</strong>
-                <span className="connection-version-line"><DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag">{connection.version ? `v${connection.version}` : "待刷新"}</em></span>
+                <span className="connection-version-line">
+                  <DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag">{connection.version ? `v${connection.version}` : "待刷新"}</em>
+                  {scheduledBackups.length > 0 && (
+                    <span className="connection-schedule-pill" title={scheduledBackups.map((job) => `${job.name} · ${scheduleLabel(job)}`).join("；")}>
+                      <CalendarClock size={12} />
+                      {scheduledBackups.length} 个定时任务
+                    </span>
+                  )}
+                </span>
               </div>
               <div className="connection-actions" onClick={(event) => event.stopPropagation()}>
                 <button className="plain-icon action-trigger" aria-label={`${connection.name} 更多操作`} aria-expanded={openMenu === connection.id} onClick={() => setOpenMenu(openMenu === connection.id ? null : connection.id)}><MoreHorizontal size={18} /></button>
@@ -425,7 +438,7 @@ export function Connections({
               </button>
             </div>
           </Card>
-        ))}
+        );})}
       </div>
 
       {showBatchImport && <BatchImportModal onClose={() => setShowBatchImport(false)} onImported={onBatchImported} />}
@@ -594,6 +607,63 @@ function formatDatabaseMetric(type: DatabaseType, database: DatabaseInfo) {
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
+
+type ScheduledBackupGroups = {
+  bySourceId: Map<string, BackupJob[]>;
+  bySourceName: Map<string, BackupJob[]>;
+};
+
+function groupScheduledBackupsByConnection(backups: BackupJob[]): ScheduledBackupGroups {
+  const bySourceId = new Map<string, BackupJob[]>();
+  const bySourceName = new Map<string, BackupJob[]>();
+  for (const job of backups) {
+    if (!isScheduledBackupJob(job)) continue;
+    if (job.sourceId) {
+      const items = bySourceId.get(job.sourceId) ?? [];
+      items.push(job);
+      bySourceId.set(job.sourceId, items);
+    }
+    const sourceName = job.sourceName.trim();
+    if (sourceName) {
+      const items = bySourceName.get(sourceName) ?? [];
+      items.push(job);
+      bySourceName.set(sourceName, items);
+    }
+  }
+  return { bySourceId, bySourceName };
+}
+
+function scheduledBackupsForConnection(connection: DatabaseConnection, groups: ScheduledBackupGroups) {
+  const byId = groups.bySourceId.get(connection.id) ?? [];
+  if (byId.length > 0) return sortScheduledBackups(byId);
+  return sortScheduledBackups(groups.bySourceName.get(connection.name) ?? []);
+}
+
+function isScheduledBackupJob(job: BackupJob) {
+  return job.destinationType !== "restore" && (job.scheduleMode === "scheduled" || job.status === "scheduled");
+}
+
+function sortScheduledBackups(backups: BackupJob[]) {
+  return [...backups].sort((left, right) => scheduledBackupTime(left) - scheduledBackupTime(right));
+}
+
+function scheduledBackupTime(job: BackupJob) {
+  return job.nextRunAt ? new Date(job.nextRunAt).getTime() : Number.MAX_SAFE_INTEGER;
+}
+
+function scheduleLabel(job: BackupJob) {
+  const time = normalizeScheduleClock(job.scheduleTime);
+  if (job.scheduleFrequency === "weekly") return `每周${weekdays[job.scheduleWeekday ?? 1] ?? "一"} ${time}`;
+  if (job.scheduleFrequency === "monthly") return `每月 ${job.scheduleMonthDay ?? 1} 日 ${time}`;
+  return `每天 ${time}`;
+}
+
+function normalizeScheduleClock(value?: string) {
+  if (!value) return "待设置";
+  return value.split(":").slice(0, 2).join(":");
+}
+
+const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
 
 function duplicateConnectionName(name: string, existingNames: string[]) {
   const base = `${name} 副本`;

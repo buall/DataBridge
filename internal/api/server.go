@@ -1282,7 +1282,7 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	value := model.BackupJob{
 		ID: store.NewID(), Name: request.Name, Status: status, Stage: stage, Progress: progress,
-		StartedAt: now, SourceName: source.Name, SourceType: source.Type,
+		StartedAt: now, SourceName: source.Name, SourceID: source.ID, SourceType: source.Type,
 		SourceDatabase: request.SourceDatabase, DestinationType: request.DestinationType,
 		Destination: destinationLabel, BackupTargets: append([]model.BackupTarget(nil), request.BackupTargets...), PrimaryDestinationID: request.PrimaryDestinationID,
 		Request: request, ScheduleMode: request.ScheduleMode,
@@ -3099,12 +3099,18 @@ func compactBackupResponse(r *http.Request) bool {
 }
 
 func compactBackupJob(job model.BackupJob) model.BackupJob {
+	if job.SourceID == "" {
+		job.SourceID = job.Request.SourceID
+	}
 	job.Request = model.BackupRequest{}
 	job.Events = compactBackupSummaryEvents(job.Events)
 	return job
 }
 
 func compactBackupListJob(job model.BackupJob) model.BackupJob {
+	if job.SourceID == "" {
+		job.SourceID = job.Request.SourceID
+	}
 	job.Request = model.BackupRequest{}
 	job.Events = compactEvents(job.Events)
 	return job
@@ -3254,6 +3260,7 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Name = request.Name
 		item.SourceName = source.Name
+		item.SourceID = source.ID
 		item.SourceType = source.Type
 		item.SourceDatabase = request.SourceDatabase
 		item.DestinationType = request.DestinationType
@@ -3362,7 +3369,7 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 	value := model.BackupJob{
 		ID: store.NewID(), Name: fmt.Sprintf("恢复 %s 到 %s", strings.Join(plan.SourceDatabases, ", "), plan.TargetLabel),
 		Status: model.StatusPending, Stage: "pending", Progress: 0, StartedAt: now,
-		SourceName: sourceJob.SourceName, SourceType: sourceJob.SourceType, SourceDatabase: strings.Join(plan.SourceDatabases, ", "),
+		SourceName: sourceJob.SourceName, SourceID: sourceJob.SourceID, SourceType: sourceJob.SourceType, SourceDatabase: strings.Join(plan.SourceDatabases, ", "),
 		DestinationType: "restore", Destination: target.Name + " / " + plan.TargetLabel,
 		ArtifactName: summaryArtifact.Name, ArtifactSize: summaryArtifact.Size, ArtifactPath: restoreSource.Path,
 		Events: []model.Event{{Time: now, Level: "INFO", Message: "恢复任务已创建，来源备份任务 " + sourceJob.ID}, {Time: now, Level: "INFO", Message: "恢复备份版本：" + restoreVersionLabel(restoreJob, plan.ArtifactVersionID)}, {Time: now, Level: "INFO", Message: "恢复策略：" + restoreStrategyLabel(plan.Strategy)}},

@@ -313,7 +313,7 @@ func (s *Server) addImportedSchedule(connection model.Connection, schedule batch
 	_, cancel := context.WithCancel(context.Background())
 	job := model.BackupJob{
 		ID: store.NewID(), Name: request.Name, Status: model.StatusScheduled, Stage: "scheduled", Progress: 0,
-		StartedAt: now, SourceName: connection.Name, SourceType: connection.Type,
+		StartedAt: now, SourceName: connection.Name, SourceID: connection.ID, SourceType: connection.Type,
 		SourceDatabase: request.SourceDatabase, DestinationType: request.DestinationType,
 		Destination: destinationLabel, BackupTargets: append([]model.BackupTarget(nil), request.BackupTargets...), PrimaryDestinationID: request.PrimaryDestinationID,
 		Request: request, ScheduleMode: request.ScheduleMode,

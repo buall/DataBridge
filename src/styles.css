@@ -174,7 +174,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .connection-preview-head > div strong, .connection-preview-head > div span, .connection-card-head > div strong, .connection-card-head > div span, .storage-card-head strong, .storage-card-head span { display: block; }
 .connection-preview-head > div strong, .connection-card-head > div strong, .storage-card-head strong { font-size: 14px; }
 .connection-preview-head > div span, .connection-card-head > div span, .storage-card-head span { margin-top: 4px; color: var(--muted); font-size: 11px; }
-.connection-preview-head .connection-version-line, .connection-card-head .connection-version-line, .storage-card-subtitle { display: flex; align-items: center; gap: 7px; }
+.connection-preview-head .connection-version-line, .connection-card-head .connection-version-line, .storage-card-subtitle { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .connection-note { margin-top: 6px !important; color: #7a879b !important; font-size: 11px !important; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .connection-preview-head > div span.database-type-icon, .connection-card-head > div span.database-type-icon { width: 18px; height: 18px; margin-top: 0; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; border-radius: 5px; color: inherit; background: #eef4fb; overflow: hidden; line-height: 1; }
 .database-type-icon svg, .database-type-icon img { width: 16px; height: 16px; display: block; flex: 0 0 16px; object-fit: contain; }
@@ -471,6 +471,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .region-value { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
 .region-value span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .region-flag { width: 16px; height: 12px; flex: 0 0 16px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(148,163,184,.24); }
+.connection-card-head > div span.connection-schedule-pill { width: fit-content; max-width: 100%; min-height: 20px; margin-top: 0; padding: 2px 7px; border: 1px solid #fde68a; border-radius: 999px; background: #fffbeb; color: #b45309; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 800; line-height: 1; white-space: nowrap; }
+.connection-schedule-pill svg { width: 12px; height: 12px; color: #b45309; }
 .connection-card-foot { border-top: 1px solid var(--border); padding-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
 .connection-card-foot .badge { width: fit-content; max-width: 100%; justify-self: start; }
 .connection-card-foot button { min-height: 30px; border: 1px solid transparent; border-radius: 7px; padding: 0 9px; background: #f8fafc; display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 800; justify-self: end; transition: background .15s ease, border-color .15s ease, transform .15s ease; }
