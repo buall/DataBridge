@@ -35,6 +35,7 @@ ARG MONGO_TOOLS_DISTRO=ubuntu2204
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
+    DATABRIDGE_BACKUP_WORK_DIR=/data/tmp \
     TZ=Asia/Shanghai \
     DATABRIDGE_PG_JOBS=4
 

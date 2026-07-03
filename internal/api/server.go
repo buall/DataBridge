@@ -4131,7 +4131,7 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	if (source.Type != "object" && source.Type != "webdav") || source.Storage == nil {
 		return "", nil, fmt.Errorf("unsupported restore source %q", source.Type)
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
+	tempDir, err := backup.MkdirTemp("databridge-restore-artifact-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -4166,7 +4166,7 @@ func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
 			}
-			tempDir, err := os.MkdirTemp("", "databridge-restore-artifact-*")
+			tempDir, err := backup.MkdirTemp("databridge-restore-artifact-*")
 			if err != nil {
 				return "", nil, err
 			}
@@ -4232,7 +4232,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
 			return
 		}
-		tempDir, err := os.MkdirTemp("", "databridge-artifact-download-*")
+		tempDir, err := backup.MkdirTemp("databridge-artifact-download-*")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "download_failed", "准备下载备份文件失败")
 			return
@@ -4279,7 +4279,7 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
 			}
-			tempDir, err := os.MkdirTemp("", "databridge-artifact-download-*")
+			tempDir, err := backup.MkdirTemp("databridge-artifact-download-*")
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "download_failed", "准备下载备份文件失败")
 				return

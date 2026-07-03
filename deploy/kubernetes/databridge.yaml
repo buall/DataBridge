@@ -66,6 +66,8 @@ spec:
               value: /data/databridge.db
             - name: DATABRIDGE_KEY_PATH
               value: /data/databridge.key
+            - name: DATABRIDGE_BACKUP_WORK_DIR
+              value: /data/tmp
             - name: DATABRIDGE_PG_JOBS
               value: "4"
             - name: TZ

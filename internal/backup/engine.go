@@ -43,6 +43,18 @@ type Engine struct{}
 
 func New() *Engine { return &Engine{} }
 
+const backupWorkDirEnv = "DATABRIDGE_BACKUP_WORK_DIR"
+
+func MkdirTemp(pattern string) (string, error) {
+	baseDir := strings.TrimSpace(os.Getenv(backupWorkDirEnv))
+	if baseDir != "" {
+		if err := os.MkdirAll(baseDir, 0o700); err != nil {
+			return "", err
+		}
+	}
+	return os.MkdirTemp(baseDir, pattern)
+}
+
 func (e *Engine) Run(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
 	switch source.Type {
 	case "PostgreSQL":
@@ -67,7 +79,7 @@ func (e *Engine) runPostgres(ctx context.Context, source model.Connection, reque
 	if err != nil {
 		return err
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	tempDir, err := MkdirTemp("databridge-backup-*")
 	if err != nil {
 		return err
 	}
@@ -95,7 +107,7 @@ func (e *Engine) runMySQL(ctx context.Context, source model.Connection, request 
 	if err != nil {
 		return err
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	tempDir, err := MkdirTemp("databridge-backup-*")
 	if err != nil {
 		return err
 	}
@@ -131,7 +143,7 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 	if err != nil {
 		return err
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	tempDir, err := MkdirTemp("databridge-backup-*")
 	if err != nil {
 		return err
 	}
@@ -189,7 +201,7 @@ func (e *Engine) exportNeo4jLocal(ctx context.Context, source model.Connection, 
 			return "", nil, err
 		}
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-backup-*")
+	tempDir, err := MkdirTemp("databridge-backup-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -463,7 +475,7 @@ func (e *Engine) Restore(ctx context.Context, target model.Connection, database,
 	if strings.TrimSpace(archivePath) == "" {
 		return fmt.Errorf("backup artifact path is empty")
 	}
-	tempDir, err := os.MkdirTemp("", "databridge-restore-*")
+	tempDir, err := MkdirTemp("databridge-restore-*")
 	if err != nil {
 		return err
 	}

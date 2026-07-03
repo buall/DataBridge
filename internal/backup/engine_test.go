@@ -82,3 +82,22 @@ func TestParsePostgresToolMajor(t *testing.T) {
 		}
 	}
 }
+
+func TestMkdirTempUsesConfiguredBackupWorkDir(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "backup-work")
+	t.Setenv(backupWorkDirEnv, workDir)
+
+	tempDir, err := MkdirTemp("databridge-backup-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	relative, err := filepath.Rel(workDir, tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
+		t.Fatalf("temp dir %q was not created under configured work dir %q", tempDir, workDir)
+	}
+}
