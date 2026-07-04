@@ -12,11 +12,19 @@ import (
 	"time"
 
 	"databridge/internal/api"
+	"databridge/internal/backup"
 	"databridge/internal/store"
 )
 
 func main() {
 	applyAppTimezone()
+	removed, cleanupErr := backup.CleanupStaleWorkDirs()
+	if cleanupErr != nil {
+		log.Printf("cleanup stale backup work directories failed: %v", cleanupErr)
+	}
+	if removed > 0 {
+		log.Printf("cleaned up %d stale backup work directories", removed)
+	}
 	addr := env("DATABRIDGE_ADDR", ":8081")
 	databasePath := env("DATABRIDGE_DB_PATH", "data/databridge.db")
 	keyPath := env("DATABRIDGE_KEY_PATH", "data/databridge.key")

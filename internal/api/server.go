@@ -100,6 +100,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/connections", server.listConnections)
 	protected.HandleFunc("POST /api/imports/excel/preview", server.previewBatchImport)
 	protected.HandleFunc("POST /api/imports/excel", server.executeBatchImport)
+	protected.HandleFunc("GET /api/exports/excel", server.exportExcel)
 	protected.HandleFunc("POST /api/connections/test", server.testConnection)
 	protected.HandleFunc("POST /api/connections", server.createConnection)
 	protected.HandleFunc("PUT /api/connections/{id}", server.updateConnection)

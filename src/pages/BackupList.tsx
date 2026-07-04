@@ -1,8 +1,9 @@
-import { Archive, ArrowRight, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
+import { Archive, ArrowRight, Download, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupJob } from "../types";
 import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
+import { api } from "../api";
 
 export function BackupList({
   backups,
@@ -19,6 +20,20 @@ export function BackupList({
   const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  async function exportSchedules() {
+    try {
+      setError("");
+      const { blob, fileName } = await api.exportExcel("schedules");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "导出定时备份任务失败");
+    }
+  }
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return backups;
@@ -35,7 +50,7 @@ export function BackupList({
     <div className="page-stack">
       <div className="page-heading">
         <div><h2>备份任务</h2><p>创建数据库备份并同步到本地目录或远端存储。</p></div>
-        <Button onClick={onCreate}><Plus size={17} />新建备份</Button>
+        <div className="page-heading-actions"><Button variant="secondary" onClick={exportSchedules}><Download size={17} />导出定时任务</Button><Button onClick={onCreate}><Plus size={17} />新建备份</Button></div>
       </div>
       <div className="task-summary-grid">
         <TaskSummary title="全部任务" value={backups.length} detail="任务记录已保存" />

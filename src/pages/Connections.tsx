@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarClock, Check, Copy, Database, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Copy, Database, Download, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { BackupJob, BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
@@ -367,11 +367,26 @@ export function Connections({
     onCreateMigration(connectionId);
   }
 
+  async function exportConnections() {
+    try {
+      setActionError("");
+      const { blob, fileName } = await api.exportExcel("connections");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "导出数据连接失败");
+    }
+  }
+
   return (
     <div className="page-stack">
       <div className="page-heading">
         <div><h2>数据连接</h2><p>统一管理迁移源端和目标端。</p></div>
-        <div className="page-heading-actions"><Button variant="secondary" onClick={() => setShowBatchImport(true)}><FileSpreadsheet size={17} />批量导入</Button><Button onClick={openNewConnection}><Plus size={17} />新建连接</Button></div>
+        <div className="page-heading-actions"><Button variant="secondary" onClick={exportConnections}><Download size={17} />导出连接</Button><Button variant="secondary" onClick={() => setShowBatchImport(true)}><FileSpreadsheet size={17} />批量导入</Button><Button onClick={openNewConnection}><Plus size={17} />新建连接</Button></div>
       </div>
       <div className="toolbar">
         <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索连接名称、地址或类型" /></label>

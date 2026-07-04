@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,5 +100,46 @@ func TestMkdirTempUsesConfiguredBackupWorkDir(t *testing.T) {
 	}
 	if strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
 		t.Fatalf("temp dir %q was not created under configured work dir %q", tempDir, workDir)
+	}
+}
+
+func TestCleanupStaleWorkDirsRemovesOnlyDataBridgeWorkDirectories(t *testing.T) {
+	workDir := t.TempDir()
+	t.Setenv(backupWorkDirEnv, workDir)
+
+	for _, name := range []string{
+		"databridge-backup-123",
+		"databridge-restore-456",
+		"databridge-restore-artifact-789",
+		"databridge-artifact-download-012",
+		"keep-me",
+	} {
+		if err := os.Mkdir(filepath.Join(workDir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := CleanupStaleWorkDirs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 4 {
+		t.Fatalf("removed = %d, want 4", removed)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "keep-me")); err != nil {
+		t.Fatalf("unrelated directory was removed: %v", err)
+	}
+	for _, name := range []string{"databridge-backup-123", "databridge-restore-456", "databridge-restore-artifact-789", "databridge-artifact-download-012"} {
+		if _, err := os.Stat(filepath.Join(workDir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale work directory %q still exists: %v", name, err)
+		}
+	}
+}
+
+func TestCleanupStaleWorkDirsDoesNothingWithoutConfiguredDirectory(t *testing.T) {
+	t.Setenv(backupWorkDirEnv, "")
+	removed, err := CleanupStaleWorkDirs()
+	if err != nil || removed != 0 {
+		t.Fatalf("CleanupStaleWorkDirs() = (%d, %v), want (0, nil)", removed, err)
 	}
 }

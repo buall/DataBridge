@@ -45,6 +45,53 @@ func New() *Engine { return &Engine{} }
 
 const backupWorkDirEnv = "DATABRIDGE_BACKUP_WORK_DIR"
 
+// CleanupStaleWorkDirs removes work directories left behind when the previous
+// process was terminated before its deferred cleanup could run. The configured
+// work directory is dedicated to DataBridge and the Kubernetes deployment uses
+// a single replica with the Recreate strategy, so no backup can still be using
+// these directories when a new process starts.
+func CleanupStaleWorkDirs() (int, error) {
+	baseDir := strings.TrimSpace(os.Getenv(backupWorkDirEnv))
+	if baseDir == "" {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(baseDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	var cleanupErr error
+	for _, entry := range entries {
+		if !isDataBridgeWorkDir(entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(baseDir, entry.Name())); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove stale work directory %q: %w", entry.Name(), err))
+			continue
+		}
+		removed++
+	}
+	return removed, cleanupErr
+}
+
+func isDataBridgeWorkDir(name string) bool {
+	for _, prefix := range []string{
+		"databridge-backup-",
+		"databridge-restore-",
+		"databridge-restore-artifact-",
+		"databridge-artifact-download-",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func MkdirTemp(pattern string) (string, error) {
 	baseDir := strings.TrimSpace(os.Getenv(backupWorkDirEnv))
 	if baseDir != "" {
