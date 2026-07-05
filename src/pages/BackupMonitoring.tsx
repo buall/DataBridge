@@ -195,11 +195,11 @@ function latestErrorEvent(job: BackupJob) {
 }
 
 export function canShowRestorePanel(job: BackupJob) {
-  return backupDestinationSupportsArtifacts(job) && (hasBackupArtifact(job) || job.status === "scheduled" || job.status === "completed");
+  return job.sourceType !== "etcd" && backupDestinationSupportsArtifacts(job) && (hasBackupArtifact(job) || job.status === "scheduled" || job.status === "completed");
 }
 
 export function canRestoreFromJob(job: BackupJob) {
-  return backupDestinationSupportsArtifacts(job) && hasBackupArtifact(job) && job.status !== "running" && job.status !== "pending";
+  return job.sourceType !== "etcd" && backupDestinationSupportsArtifacts(job) && hasBackupArtifact(job) && job.status !== "running" && job.status !== "pending";
 }
 
 export function hasBackupArtifact(job: BackupJob) {

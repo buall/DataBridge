@@ -1,6 +1,6 @@
 # DataBridge
 
-DataBridge 是一个面向 PostgreSQL、MySQL、MongoDB 和 Neo4j 的数据库迁移工作台，包含 React 前端控制台和 Go 编写的迁移编排服务。当前版本适合小型数据库、受控测试环境和迁移流程验证，重点覆盖连接管理、数据库发现、备份恢复、迁移任务编排、运行日志和结果校验。
+DataBridge 是一个面向 PostgreSQL、MySQL、MongoDB、Neo4j 和 etcd 的数据管理工作台，包含 React 前端控制台和 Go 编写的任务编排服务。当前版本适合小型数据库、受控测试环境和迁移流程验证，重点覆盖连接管理、数据库发现、备份恢复、迁移任务编排、运行日志和结果校验。
 
 ## 当前支持
 
@@ -10,6 +10,9 @@ DataBridge 是一个面向 PostgreSQL、MySQL、MongoDB 和 Neo4j 的数据库�
 - MySQL
 - MongoDB
 - Neo4j
+- etcd（连接管理和整集群快照备份）
+
+etcd 连接只需填写一个可用的客户端端点。DataBridge 会通过成员列表自动发现并保存集群的 `clientURLs`；执行备份时逐个检查端点，并在节点不可用或快照失败时自动切换到下一健康节点。
 
 ### 迁移方向
 

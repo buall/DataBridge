@@ -15,6 +15,7 @@ type ConnectionInput struct {
 	Password  string              `json:"password"`
 	SSLMode   string              `json:"sslMode"`
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Endpoints []string            `json:"-"`
 }
 
 type UpdateConnectionInput struct {
@@ -27,6 +28,7 @@ type UpdateConnectionInput struct {
 	Password  string              `json:"password,omitempty"`
 	SSLMode   string              `json:"sslMode"`
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Endpoints []string            `json:"-"`
 }
 
 type DuplicateConnectionInput struct {
@@ -66,6 +68,7 @@ type Connection struct {
 	CreatedAt time.Time           `json:"createdAt"`
 	Password  string              `json:"-"`
 	TLSConfig ConnectionTLSConfig `json:"-"`
+	Endpoints []string            `json:"endpoints,omitempty"`
 }
 
 type StorageInput struct {

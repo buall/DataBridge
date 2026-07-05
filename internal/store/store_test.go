@@ -24,6 +24,7 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	connection, err := first.AddConnection(model.ConnectionInput{
 		Name: "source", Host: "db.example.internal", Port: 5432,
 		Username: "migration", Password: "secret-password", SSLMode: "require",
+		Endpoints: []string{"https://etcd-1:2379", "https://etcd-2:2379"},
 	}, 15*time.Millisecond, "16.3")
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +71,9 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	if loadedConnection.Version != "16.3" {
 		t.Fatalf("version = %q", loadedConnection.Version)
 	}
+	if len(loadedConnection.Endpoints) != 2 || loadedConnection.Endpoints[1] != "https://etcd-2:2379" {
+		t.Fatalf("endpoints = %#v", loadedConnection.Endpoints)
+	}
 	loadedMigration, err := second.Migration(migration.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +117,51 @@ func TestStoreMarksRunningMigrationFailedAfterRestart(t *testing.T) {
 	}
 	if !strings.Contains(loaded.Error, "服务重启") {
 		t.Fatalf("error = %q", loaded.Error)
+	}
+}
+
+func TestStoreRecoversInterruptedScheduledBackupWithoutImmediateRetry(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "databridge.db")
+	keyPath := filepath.Join(directory, "databridge.key")
+	first, err := New(databasePath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().UTC().Add(-time.Hour)
+	backup := model.BackupJob{
+		ID: NewID(), Name: "interrupted schedule", Status: model.StatusRunning,
+		Stage: "export", StartedAt: due, ScheduleMode: "scheduled", NextRunAt: &due,
+		SourceName: "source", SourceType: "MongoDB", Destination: "object",
+		ArtifactVersions: []model.BackupArtifactVersion{{
+			ID: "run-1", StartedAt: due, Status: model.StatusRunning, Stage: "export",
+		}},
+		Events: []model.Event{},
+	}
+	if err := first.AddBackup(backup, context.CancelFunc(func() {})); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(databasePath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	loaded, err := second.Backup(backup.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != model.StatusScheduled || loaded.Stage != "scheduled" {
+		t.Fatalf("status = %s, stage = %s", loaded.Status, loaded.Stage)
+	}
+	if loaded.NextRunAt != nil {
+		t.Fatalf("stale next run was retained: %v", loaded.NextRunAt)
+	}
+	if len(loaded.ArtifactVersions) != 1 || loaded.ArtifactVersions[0].Status != model.StatusFailed || loaded.ArtifactVersions[0].FinishedAt == nil {
+		t.Fatalf("interrupted version was not finalized: %#v", loaded.ArtifactVersions)
 	}
 }
 

@@ -1,4 +1,4 @@
-export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Neo4j" | "Redis";
+export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Neo4j" | "etcd" | "Redis";
 export type ConnectionStatus = "connected" | "warning";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";
@@ -16,6 +16,7 @@ export interface DatabaseConnection {
   status: ConnectionStatus;
   latency: number;
   version?: string;
+  endpoints?: string[];
   createdAt: string;
 }
 

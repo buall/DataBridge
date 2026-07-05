@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"databridge/internal/backup"
+	"databridge/internal/etcd"
 	"databridge/internal/migrate"
 	"databridge/internal/model"
 	"databridge/internal/mongo"
@@ -257,6 +258,13 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
 	}
+	if input.Type == "etcd" {
+		input.Endpoints, err = etcd.DiscoverEndpoints(ctx, connectionFromInput(input))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+			return
+		}
+	}
 	connection, err := s.store.AddConnection(input, latency, version)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
@@ -273,7 +281,7 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input model.UpdateConnectionInput
-	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, input) {
+	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, current.Type, input) {
 		return
 	}
 	password := current.Password
@@ -304,6 +312,16 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
 	}
+	if current.Type == "etcd" {
+		candidate := current
+		candidate.Host, candidate.Port, candidate.Username, candidate.Password = input.Host, input.Port, input.Username, password
+		candidate.SSLMode, candidate.TLSConfig = input.SSLMode, tlsConfig
+		input.Endpoints, err = etcd.DiscoverEndpoints(ctx, candidate)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+			return
+		}
+	}
 	connection, err := s.store.UpdateConnection(current.ID, input, latency, version)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
@@ -320,7 +338,7 @@ func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input model.DuplicateConnectionInput
-	if !decodeJSON(w, r, &input) || !validateDuplicateConnection(w, input) {
+	if !decodeJSON(w, r, &input) || !validateDuplicateConnection(w, current.Type, input) {
 		return
 	}
 	password := current.Password
@@ -351,6 +369,13 @@ func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
+	}
+	if duplicate.Type == "etcd" {
+		duplicate.Endpoints, err = etcd.DiscoverEndpoints(ctx, connectionFromInput(duplicate))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+			return
+		}
 	}
 	connection, err := s.store.AddConnection(duplicate, latency, version)
 	if err != nil {
@@ -391,6 +416,9 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 		SSLMode:   connection.SSLMode,
 		TLSConfig: connection.TLSConfig,
 	})
+	if connection.Type == "etcd" {
+		latency, version, err = etcd.TestConnection(ctx, connection)
+	}
 	if err != nil {
 		_ = s.store.UpdateConnectionHealth(connection.ID, "warning", 0, connection.Version)
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
@@ -400,11 +428,21 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
 	}
+	if connection.Type == "etcd" {
+		if endpoints, discoverErr := etcd.DiscoverEndpoints(ctx, connection); discoverErr == nil {
+			connection.Endpoints = endpoints
+			_ = s.store.UpdateConnectionEndpoints(connection.ID, endpoints)
+		}
+	}
 	connection.Status = "connected"
 	connection.LatencyMS = latency.Milliseconds()
 	connection.Version = version
 	connection.Region = s.connectionRegion(r.Context(), connection.Host)
 	writeJSON(w, http.StatusOK, connection)
+}
+
+func connectionFromInput(input model.ConnectionInput) model.Connection {
+	return model.Connection{Type: input.Type, Host: input.Host, Port: input.Port, Username: input.Username, Password: input.Password, SSLMode: input.SSLMode, TLSConfig: input.TLSConfig, Endpoints: input.Endpoints}
 }
 
 func (s *Server) connectionRegion(ctx context.Context, host string) string {
@@ -1970,6 +2008,8 @@ func backupProgress(stage string, reported int) int {
 		return 20
 	case "export":
 		return 35
+	case "verify":
+		return 70
 	case "extract":
 		return 25
 	case "restore":
@@ -3427,6 +3467,9 @@ type restorePlan struct {
 }
 
 func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.RestoreBackupRequest) (restorePlan, error) {
+	if sourceJob.SourceType == "etcd" {
+		return restorePlan{}, fmt.Errorf("etcd 快照暂不支持在 DataBridge 内自动恢复，请下载产物后按 etcdutl 离线恢复流程操作")
+	}
 	strategy := normalizeRestoreStrategy(input.Strategy)
 	restoreJob, err := backupJobForArtifactVersion(sourceJob, strings.TrimSpace(input.ArtifactVersionID))
 	if err != nil {
@@ -4773,8 +4816,9 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 		writeError(w, http.StatusBadRequest, "invalid_connection", "请选择数据库类型")
 		return false
 	}
-	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" || input.Password == "" {
-		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称、主机地址、用户名和密码不能为空")
+	credentialsMissing := input.Type != "etcd" && (strings.TrimSpace(input.Username) == "" || input.Password == "")
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || credentialsMissing {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称和主机地址不能为空；该数据库类型还需要用户名和密码")
 		return false
 	}
 	if input.Port == 0 {
@@ -4790,9 +4834,9 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 	return true
 }
 
-func validateConnectionUpdate(w http.ResponseWriter, input model.UpdateConnectionInput) bool {
-	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称、主机地址和用户名不能为空")
+func validateConnectionUpdate(w http.ResponseWriter, databaseType string, input model.UpdateConnectionInput) bool {
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || (databaseType != "etcd" && strings.TrimSpace(input.Username) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称和主机地址不能为空")
 		return false
 	}
 	if input.Port == 0 {
@@ -4805,9 +4849,9 @@ func validateConnectionUpdate(w http.ResponseWriter, input model.UpdateConnectio
 	return true
 }
 
-func validateDuplicateConnection(w http.ResponseWriter, input model.DuplicateConnectionInput) bool {
-	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || strings.TrimSpace(input.Username) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称、主机地址和用户名不能为空")
+func validateDuplicateConnection(w http.ResponseWriter, databaseType string, input model.DuplicateConnectionInput) bool {
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || (databaseType != "etcd" && strings.TrimSpace(input.Username) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称和主机地址不能为空")
 		return false
 	}
 	if input.Port == 0 {
@@ -4845,6 +4889,8 @@ func normalizeDatabaseType(value string) string {
 		return "MongoDB"
 	case "neo4j":
 		return "Neo4j"
+	case "etcd":
+		return "etcd"
 	default:
 		return ""
 	}
@@ -4860,6 +4906,9 @@ func defaultPort(databaseType string) int {
 	if databaseType == "Neo4j" {
 		return 7687
 	}
+	if databaseType == "etcd" {
+		return 2379
+	}
 	return 5432
 }
 
@@ -4873,6 +4922,8 @@ func testConnection(ctx context.Context, input model.ConnectionInput) (time.Dura
 		return mongo.Test(ctx, input)
 	case "Neo4j":
 		return neo4j.Test(ctx, input)
+	case "etcd":
+		return etcd.Test(ctx, input)
 	default:
 		return 0, "", fmt.Errorf("unsupported database type %q", input.Type)
 	}
@@ -4888,6 +4939,8 @@ func serverVersion(ctx context.Context, connection model.Connection) (string, er
 		return mongo.ServerVersion(ctx, connection)
 	case "Neo4j":
 		return neo4j.ServerVersion(ctx, connection)
+	case "etcd":
+		return etcd.ServerVersion(ctx, connection)
 	default:
 		return "", fmt.Errorf("unsupported database type %q", connection.Type)
 	}

@@ -23,6 +23,11 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+func marshalStrings(values []string) []byte {
+	data, _ := json.Marshal(values)
+	return data
+}
+
 type Store struct {
 	db      *sql.DB
 	aead    cipher.AEAD
@@ -304,6 +309,7 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
 		SSLMode: input.SSLMode, TLSConfig: dbtls.Normalize(input.TLSConfig), Status: "connected",
+		Endpoints: append([]string(nil), input.Endpoints...),
 		LatencyMS: latency.Milliseconds(), Version: version, CreatedAt: time.Now().UTC(),
 	}
 	encrypted, err := s.encrypt(input.Password)
@@ -316,10 +322,10 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO connections
-		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		connection.ID, connection.Name, connection.Note, connection.Type, connection.Host, connection.Port,
-		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, connection.Status,
+		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, marshalStrings(connection.Endpoints), connection.Status,
 		connection.LatencyMS, connection.Version, connection.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("save connection: %w", err)
@@ -330,7 +336,7 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at
+		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at
 		FROM connections ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -353,7 +359,7 @@ func (s *Store) Connections() ([]model.Connection, error) {
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, status, latency_ms, server_version, created_at
+		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
 }
@@ -373,6 +379,13 @@ func (s *Store) UpdateConnectionHealth(id, status string, latency time.Duration,
 	return nil
 }
 
+func (s *Store) UpdateConnectionEndpoints(id string, endpoints []string) error {
+	if _, err := s.db.Exec(`UPDATE connections SET endpoints_json = ? WHERE id = ?`, marshalStrings(endpoints), id); err != nil {
+		return fmt.Errorf("update connection endpoints: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, latency time.Duration, version string) (model.Connection, error) {
 	current, err := s.Connection(id)
 	if err != nil {
@@ -386,6 +399,10 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	if !input.TLSConfig.Empty() {
 		tlsConfig = dbtls.Normalize(input.TLSConfig)
 	}
+	endpoints := current.Endpoints
+	if input.Endpoints != nil {
+		endpoints = append([]string(nil), input.Endpoints...)
+	}
 	encrypted, err := s.encrypt(password)
 	if err != nil {
 		return model.Connection{}, err
@@ -398,9 +415,9 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 	status := "connected"
 	if _, err := s.db.Exec(`
 		UPDATE connections
-		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, tls_config_encrypted = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
+		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, tls_config_encrypted = ?, endpoints_json = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
 		WHERE id = ?`,
-		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, encryptedTLSConfig, status, latency.Milliseconds(), version, current.Type, id); err != nil {
+		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, encryptedTLSConfig, marshalStrings(endpoints), status, latency.Milliseconds(), version, current.Type, id); err != nil {
 		return model.Connection{}, fmt.Errorf("update connection: %w", err)
 	}
 	updated, err := s.Connection(id)
@@ -848,6 +865,7 @@ func (s *Store) initialize() error {
 			password_encrypted BLOB NOT NULL,
 			ssl_mode TEXT NOT NULL,
 			tls_config_encrypted BLOB,
+			endpoints_json BLOB NOT NULL DEFAULT '[]',
 			status TEXT NOT NULL,
 			latency_ms INTEGER NOT NULL,
 			server_version TEXT NOT NULL DEFAULT '',
@@ -919,6 +937,9 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionTLSConfigColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureConnectionEndpointsColumn(); err != nil {
+		return err
+	}
 	if err := s.recoverInterruptedMigrations(); err != nil {
 		return err
 	}
@@ -951,6 +972,16 @@ func (s *Store) ensureConnectionTLSConfigColumn() error {
 			return nil
 		}
 		return fmt.Errorf("migrate connections.tls_config_encrypted: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionEndpointsColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN endpoints_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.endpoints_json: %w", err)
 	}
 	return nil
 }
@@ -991,12 +1022,32 @@ func (s *Store) recoverInterruptedBackups() error {
 		}
 		finished := time.Now().UTC()
 		if err := s.UpdateBackup(item.ID, func(value *model.BackupJob) {
-			value.Status = model.StatusFailed
-			value.Stage = "failed"
-			value.Error = "API 服务重启，运行中的备份任务已中断"
+			const interrupted = "API 服务重启，运行中的备份任务已中断"
+			value.Error = interrupted
 			value.FinishedAt = &finished
+			for index := range value.ArtifactVersions {
+				version := &value.ArtifactVersions[index]
+				if version.Status != model.StatusPending && version.Status != model.StatusRunning {
+					continue
+				}
+				version.Status = model.StatusFailed
+				version.Stage = "failed"
+				version.Error = interrupted
+				version.FinishedAt = &finished
+			}
+			if value.ScheduleMode == "scheduled" {
+				// Discard the stale due time. The API scheduler will calculate the
+				// next future occurrence instead of immediately retrying a backup
+				// that was interrupted (for example by an OOM restart).
+				value.Status = model.StatusScheduled
+				value.Stage = "scheduled"
+				value.NextRunAt = nil
+			} else {
+				value.Status = model.StatusFailed
+				value.Stage = "failed"
+			}
 			value.Events = append(value.Events, model.Event{
-				Time: finished, Level: "ERROR", Message: value.Error,
+				Time: finished, Level: "ERROR", Message: interrupted,
 			})
 		}); err != nil {
 			return err
@@ -1013,9 +1064,10 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var item model.Connection
 	var encrypted []byte
 	var encryptedTLSConfig []byte
+	var endpointsJSON []byte
 	var createdAt string
 	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
-		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &item.Status, &item.LatencyMS,
+		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &endpointsJSON, &item.Status, &item.LatencyMS,
 		&item.Version, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
@@ -1030,6 +1082,11 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	item.TLSConfig, err = s.decryptTLSConfig(encryptedTLSConfig)
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("decrypt connection TLS config %s: %w", item.ID, err)
+	}
+	if len(endpointsJSON) > 0 {
+		if err := json.Unmarshal(endpointsJSON, &item.Endpoints); err != nil {
+			return model.Connection{}, fmt.Errorf("decode connection endpoints %s: %w", item.ID, err)
+		}
 	}
 	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {

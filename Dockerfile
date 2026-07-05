@@ -32,6 +32,7 @@ FROM debian:bookworm-slim AS runtime
 ARG TARGETARCH
 ARG MONGO_TOOLS_VERSION=100.17.0
 ARG MONGO_TOOLS_DISTRO=ubuntu2204
+ARG ETCD_VERSION=3.5.21
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
@@ -87,6 +88,18 @@ RUN set -eux; \
     install -m 0755 /tmp/mongodb-tools/bin/mongostat /usr/local/bin/mongostat; \
     install -m 0755 /tmp/mongodb-tools/bin/mongotop /usr/local/bin/mongotop; \
     rm -rf /tmp/mongodb-tools /tmp/mongodb-tools.tgz
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) etcd_arch="amd64" ;; \
+      arm64) etcd_arch="arm64" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/etcd-io/etcd/releases/download/v${ETCD_VERSION}/etcd-v${ETCD_VERSION}-linux-${etcd_arch}.tar.gz" -o /tmp/etcd.tgz; \
+    mkdir -p /tmp/etcd; \
+    tar -xzf /tmp/etcd.tgz -C /tmp/etcd --strip-components=1; \
+    install -m 0755 /tmp/etcd/etcdctl /usr/local/bin/etcdctl; \
+    rm -rf /tmp/etcd /tmp/etcd.tgz
 
 WORKDIR /app
 RUN mkdir -p /data && useradd --system --uid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin databridge && chown -R databridge:databridge /data /app

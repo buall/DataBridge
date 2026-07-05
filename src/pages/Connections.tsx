@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarClock, Check, Copy, Database, Download, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, Trash2, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Copy, Database, Download, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { BackupJob, BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
@@ -430,7 +430,7 @@ export function Connections({
                     <button onClick={() => openEditConnection(connection)}><Edit3 size={15} /><span>编辑连接信息</span></button>
                     <button onClick={() => openCopyConnection(connection)}><Copy size={15} /><span>复制连接</span></button>
                     <button onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>{testing === connection.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>刷新状态</span></button>
-                    <button onClick={() => showDatabases(connection)}><Database size={15} /><span>查看数据库</span></button>
+                    {connection.type !== "etcd" && <button onClick={() => showDatabases(connection)}><Database size={15} /><span>查看数据库</span></button>}
                     {supportsDirectDatabaseCreate(connection.type) && <button onClick={() => openCreateDatabase(connection)}><Plus size={15} /><span>创建数据库</span></button>}
                     {supportsSeedData(connection.type) && <button onClick={() => openSeedData(connection)}><WandSparkles size={15} /><span>写入假数据</span></button>}
                     {supportsMigration(connection.type) && <button onClick={() => startMigration(connection.id)}><Play size={15} /><span>发起迁移</span></button>}
@@ -441,8 +441,8 @@ export function Connections({
             </div>
             <dl>
               <div><dt>主机地址</dt><dd className="host-address-value"><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} title={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
-              <div><dt>连接用户</dt><dd>{connection.username}</dd></div>
-              <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>
+              <div><dt>连接用户</dt><dd>{connection.username || "未启用鉴权"}</dd></div>
+              {connection.type === "etcd" ? <div><dt>集群成员</dt><dd title={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 1} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>
             </dl>
             <div className="connection-card-foot">
@@ -523,18 +523,19 @@ export function Connections({
             <label className="field"><span>连接名称</span><input required value={duplicateModal.form.name} onChange={(e) => updateDuplicateForm({ name: e.target.value })} /></label>
             <SelectField label="数据库类型" value={duplicateModal.connection.type} disabled onChange={() => undefined}><option value={duplicateModal.connection.type}>{duplicateModal.connection.type}</option></SelectField>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={duplicateModal.form.host} onChange={(e) => updateDuplicateForm({ host: e.target.value })} /></label><label className="field port"><span>端口</span><input required type="number" value={duplicateModal.form.port} onChange={(e) => updateDuplicateForm({ port: e.target.value })} /></label></div>
-            <label className="field"><span>用户名</span><input required value={duplicateModal.form.username} onChange={(e) => updateDuplicateForm({ username: e.target.value })} /></label>
+            <label className="field"><span>用户名{duplicateModal.connection.type === "etcd" ? "（可选）" : ""}</span><input required={duplicateModal.connection.type !== "etcd"} value={duplicateModal.form.username} onChange={(e) => updateDuplicateForm({ username: e.target.value })} /></label>
             <label className="field"><span>密码</span><input type="password" value={duplicateModal.form.password} onChange={(e) => updateDuplicateForm({ password: e.target.value })} placeholder="留空则沿用原连接密码" /></label>
+            <EtcdTLSModeGuide enabled={duplicateModal.connection.type === "etcd"} />
             <SelectField label={connectionSecurityConfig(duplicateModal.connection.type).label} value={duplicateModal.form.sslMode} onChange={(sslMode) => updateDuplicateForm({ sslMode })}>
               {connectionSecurityConfig(duplicateModal.connection.type).options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </SelectField>
             <p className="field-hint">{connectionSecurityConfig(duplicateModal.connection.type).hint}</p>
             {duplicateModal.form.sslMode === "verify-full" && (
-              <TLSCertificateFields
-                value={duplicateModal.form.tlsConfig}
-                onChange={(tlsConfig) => updateDuplicateForm({ tlsConfig })}
-                preserveExisting
-              />
+              <><EtcdTLSHint enabled={duplicateModal.connection.type === "etcd"} /><TLSCertificateFields
+                  value={duplicateModal.form.tlsConfig}
+                  onChange={(tlsConfig) => updateDuplicateForm({ tlsConfig })}
+                  preserveExisting
+                /></>
             )}
             <label className="field"><span>备注</span><input value={duplicateModal.form.note} onChange={(e) => updateDuplicateForm({ note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {duplicateModal.error && <div className="form-error left">{duplicateModal.error}</div>}
@@ -550,18 +551,19 @@ export function Connections({
             <label className="field"><span>连接名称</span><input required value={editModal.form.name} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, name: e.target.value }, error: "" })} /></label>
             <SelectField label="数据库类型" value={editModal.connection.type} disabled onChange={() => undefined}><option value={editModal.connection.type}>{editModal.connection.type}</option></SelectField>
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={editModal.form.host} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, host: e.target.value }, error: "" })} /></label><label className="field port"><span>端口</span><input required type="number" value={editModal.form.port} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, port: e.target.value }, error: "" })} /></label></div>
-            <label className="field"><span>用户名</span><input required value={editModal.form.username} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, username: e.target.value }, error: "" })} /></label>
+            <label className="field"><span>用户名{editModal.connection.type === "etcd" ? "（可选）" : ""}</span><input required={editModal.connection.type !== "etcd"} value={editModal.form.username} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, username: e.target.value }, error: "" })} /></label>
             <label className="field"><span>密码</span><input type="password" value={editModal.form.password} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, password: e.target.value }, error: "" })} placeholder="留空则保持当前密码不变" /></label>
+            <EtcdTLSModeGuide enabled={editModal.connection.type === "etcd"} />
             <SelectField label={connectionSecurityConfig(editModal.connection.type).label} value={editModal.form.sslMode} onChange={(sslMode) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode }, error: "" })}>
               {connectionSecurityConfig(editModal.connection.type).options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </SelectField>
             <p className="field-hint">{connectionSecurityConfig(editModal.connection.type).hint}</p>
             {editModal.form.sslMode === "verify-full" && (
-              <TLSCertificateFields
-                value={editModal.form.tlsConfig}
-                onChange={(tlsConfig) => setEditModal({ ...editModal, form: { ...editModal.form, tlsConfig }, error: "" })}
-                preserveExisting
-              />
+              <><EtcdTLSHint enabled={editModal.connection.type === "etcd"} /><TLSCertificateFields
+                  value={editModal.form.tlsConfig}
+                  onChange={(tlsConfig) => setEditModal({ ...editModal, form: { ...editModal.form, tlsConfig }, error: "" })}
+                  preserveExisting
+                /></>
             )}
             <label className="field"><span>备注</span><input value={editModal.form.note} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, note: e.target.value }, error: "" })} placeholder="可选，记录用途、环境或负责人" /></label>
             {editModal.error && <div className="form-error left">{editModal.error}</div>}
@@ -576,24 +578,25 @@ export function Connections({
         <div className="modal-backdrop" onMouseDown={closeConnectionForm}>
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={closeConnectionForm}><X /></button></div>
-            <SelectField label={requiredLabel("数据库类型")} ariaLabel="数据库类型" invalid={Boolean(formErrors.type)} value={form.type} onChange={(type) => { const nextForm = { ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() }; setForm(nextForm); setFormErrors((current) => ({ ...current, type: undefined, port: undefined, sslMode: undefined })); }}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option></SelectField>
+            <SelectField label={requiredLabel("数据库类型")} ariaLabel="数据库类型" invalid={Boolean(formErrors.type)} value={form.type} onChange={(type) => { const nextForm = { ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() }; setForm(nextForm); setFormErrors((current) => ({ ...current, type: undefined, port: undefined, sslMode: undefined })); }}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option><option value="etcd">etcd</option></SelectField>
             {formErrors.type && <div className="form-error left field-error">{formErrors.type}</div>}
             <div className="compatibility-hint"><Info size={16} /><span>{formCompatibilityHint}</span></div>
             <label className="field"><span>{requiredLabel("连接名称")}</span><input value={form.name} className={formErrors.name ? "invalid" : ""} onChange={(e) => { updateFormField("name", e.target.value); setNameCustomized(e.target.value.trim().length > 0); setFormErrors((current) => ({ ...current, name: undefined })); }} onBlur={(e) => validateSingleField("name", { ...form, name: e.target.value })} placeholder="输入便于识别的连接名称" /></label>
             {formErrors.name && <div className="form-error left field-error">{formErrors.name}</div>}
             <div className="field-row"><label className="field grow"><span>{requiredLabel("主机地址")}</span><input value={form.host} className={formErrors.host ? "invalid" : ""} onChange={(e) => { const nextForm = { ...form, host: e.target.value }; setForm(nextForm); setFormErrors((current) => ({ ...current, host: validateConnectionForm(nextForm).host })); }} onBlur={(e) => validateSingleField("host", { ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>{requiredLabel("端口")}</span><input inputMode="numeric" pattern="[0-9]*" maxLength={5} value={form.port} className={formErrors.port ? "invalid" : ""} onBeforeInput={(e) => { const value = (e as unknown as { data?: string }).data ?? ""; if (value && /\D/.test(value)) e.preventDefault(); }} onChange={(e) => { const next = e.target.value.replace(/[^\d]/g, "").slice(0, 5); const nextForm = { ...form, port: next }; setForm(nextForm); setFormErrors((current) => ({ ...current, port: validateConnectionForm(nextForm).port })); }} onBlur={(e) => validateSingleField("port", { ...form, port: e.target.value })} /></label></div>
             {(formErrors.host || formErrors.port) && <div className="form-error left field-error">{formErrors.host ?? formErrors.port}</div>}
-            <label className="field"><span>{requiredLabel("用户名")}</span><input value={form.username} className={formErrors.username ? "invalid" : ""} onChange={(e) => { updateFormField("username", e.target.value); setFormErrors((current) => ({ ...current, username: undefined })); }} onBlur={(e) => validateSingleField("username", { ...form, username: e.target.value })} placeholder="migration_user" /></label>
+            <label className="field"><span>{form.type === "etcd" ? "用户名（未启用鉴权可留空）" : requiredLabel("用户名")}</span><input value={form.username} className={formErrors.username ? "invalid" : ""} onChange={(e) => { updateFormField("username", e.target.value); setFormErrors((current) => ({ ...current, username: undefined })); }} onBlur={(e) => validateSingleField("username", { ...form, username: e.target.value })} placeholder={form.type === "etcd" ? "root（可选）" : "migration_user"} /></label>
             {formErrors.username && <div className="form-error left field-error">{formErrors.username}</div>}
-            <label className="field"><span>{requiredLabel("密码")}</span><input type="password" value={form.password} className={formErrors.password ? "invalid" : ""} onChange={(e) => { updateFormField("password", e.target.value); setFormErrors((current) => ({ ...current, password: undefined })); }} onBlur={(e) => validateSingleField("password", { ...form, password: e.target.value })} /></label>
+            <label className="field"><span>{form.type === "etcd" ? "密码（可选）" : requiredLabel("密码")}</span><input type="password" value={form.password} className={formErrors.password ? "invalid" : ""} onChange={(e) => { updateFormField("password", e.target.value); setFormErrors((current) => ({ ...current, password: undefined })); }} onBlur={(e) => validateSingleField("password", { ...form, password: e.target.value })} /></label>
             {formErrors.password && <div className="form-error left field-error">{formErrors.password}</div>}
+            <EtcdTLSModeGuide enabled={form.type === "etcd"} />
             <SelectField label={requiredLabel(formSecurityConfig.label)} ariaLabel={formSecurityConfig.label} invalid={Boolean(formErrors.sslMode)} value={form.sslMode} onChange={(sslMode) => { setForm({ ...form, sslMode }); setFormErrors((current) => ({ ...current, sslMode: undefined })); }}>
               {formSecurityConfig.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </SelectField>
             {formErrors.sslMode && <div className="form-error left field-error">{formErrors.sslMode}</div>}
             <p className="field-hint">{formSecurityConfig.hint}</p>
             {form.sslMode === "verify-full" && (
-              <TLSCertificateFields value={form.tlsConfig} onChange={(tlsConfig) => setForm({ ...form, tlsConfig })} />
+              <><EtcdTLSHint enabled={form.type === "etcd"} /><TLSCertificateFields value={form.tlsConfig} onChange={(tlsConfig) => setForm({ ...form, tlsConfig })} /></>
             )}
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
@@ -601,6 +604,36 @@ export function Connections({
           </form>
         </div>
       )}
+    </div>
+  );
+}
+
+function EtcdTLSHint({ enabled }: { enabled: boolean }) {
+  if (!enabled) return null;
+  return (
+    <div className="etcd-tls-hint" role="note">
+      <div><Info size={17} /><strong>Kubernetes etcd 通常需要双向 TLS 证书</strong></div>
+      <p>自建 kubeadm 集群常见文件如下。请读取文件并粘贴完整 PEM 内容，不要只填写文件路径。</p>
+      <dl>
+        <div><dt>CA 证书</dt><dd><code>/etc/kubernetes/pki/etcd/ca.crt</code></dd></div>
+        <div><dt>客户端证书</dt><dd><code>/etc/kubernetes/pki/etcd/healthcheck-client.crt</code></dd></div>
+        <div><dt>客户端私钥</dt><dd><code>/etc/kubernetes/pki/etcd/healthcheck-client.key</code></dd></div>
+      </dl>
+      <small>DataBridge 还需要能访问控制平面节点的 2379 端口；托管 Kubernetes 通常不会开放 etcd 或提供这些证书。</small>
+    </div>
+  );
+}
+
+function EtcdTLSModeGuide({ enabled }: { enabled: boolean }) {
+  if (!enabled) return null;
+  return (
+    <div className="etcd-tls-mode-guide" role="note">
+      <div><ShieldCheck size={17} /><strong>不知道如何选择？Kubernetes 集群请选择 verify-full</strong></div>
+      <div className="etcd-tls-mode-options">
+        <span><b>verify-full · 推荐</b><small>kubeadm 等生产 Kubernetes 集群；校验 CA 和节点身份，可使用客户端证书。</small></span>
+        <span><b>require</b><small>使用 HTTPS，但忽略服务端证书校验；仅用于证书暂时无法匹配的受控环境。</small></span>
+        <span><b>disable</b><small>仅适用于明确关闭 TLS 的本地或测试 etcd，不能用于默认 kubeadm 集群。</small></span>
+      </div>
     </div>
   );
 }
@@ -716,6 +749,8 @@ function connectionCompatibilityHint(type: DatabaseType) {
       return "适用版本建议：MongoDB 5.0、6.0、7.0、8.0 已完成主组合兼容性测试，建议优先使用这些版本；其他版本请先完成兼容性演练。";
     case "Neo4j":
       return "适用版本建议：Neo4j 4.4、5.x 已完成主组合兼容性测试，建议优先使用这些版本；跨大版本场景请先验证约束和索引兼容性。";
+    case "etcd":
+      return "当前支持 etcd v3 客户端端点连接与整集群快照备份；一个连接代表一个集群。";
     default:
       return "适用版本建议：当前数据库类型暂无兼容性测试结论，请先在测试环境完成连接、迁移、备份恢复演练。";
   }
@@ -769,6 +804,16 @@ function connectionSecurityConfig(type: DatabaseType) {
           { value: "verify-full", label: "verify-full · 使用 bolt+s" },
         ],
       };
+    case "etcd":
+      return {
+        label: "TLS 模式",
+        hint: "disable 使用 HTTP；require 使用 HTTPS 但不校验服务端证书；verify-full 使用 CA 校验证书和主机名，并可配置客户端证书。",
+        options: [
+          { value: "disable", label: "disable · HTTP" },
+          { value: "require", label: "require · HTTPS" },
+          { value: "verify-full", label: "verify-full · mTLS / 严格校验" },
+        ],
+      };
     default:
       return {
         label: "SSL 模式",
@@ -783,6 +828,7 @@ function connectionSecurityConfig(type: DatabaseType) {
 }
 
 function defaultSecurityMode(type: DatabaseType) {
+  if (type === "etcd") return "verify-full";
   return type === "MongoDB" || type === "Neo4j" ? "disable" : "prefer";
 }
 
@@ -790,6 +836,7 @@ function defaultPort(type: DatabaseType) {
   if (type === "MySQL") return "3306";
   if (type === "MongoDB") return "27017";
   if (type === "Neo4j") return "7687";
+  if (type === "etcd") return "2379";
   return "5432";
 }
 
@@ -831,8 +878,8 @@ function validateConnectionForm(form: ConnectionFormState): ConnectionFormErrors
     if (!Number.isInteger(port) || port < 1 || port > 65535) errors.port = "端口范围需在 1 到 65535 之间";
   }
 
-  if (!form.username.trim()) errors.username = "请输入用户名";
-  if (!form.password.trim()) errors.password = "请输入密码";
+  if (form.type !== "etcd" && !form.username.trim()) errors.username = "请输入用户名";
+  if (form.type !== "etcd" && !form.password.trim()) errors.password = "请输入密码";
   if (!form.sslMode.trim()) errors.sslMode = "请选择连接加密模式";
   return errors;
 }

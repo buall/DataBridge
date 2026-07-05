@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode"
 
+	dbetcd "databridge/internal/etcd"
 	"databridge/internal/model"
 	dbmongo "databridge/internal/mongo"
 	"databridge/internal/remotestorage"
@@ -112,9 +113,77 @@ func (e *Engine) Run(ctx context.Context, source model.Connection, request model
 		return e.runMongo(ctx, source, request, report)
 	case "Neo4j":
 		return e.runNeo4j(ctx, source, request, report)
+	case "etcd":
+		return e.runEtcd(ctx, source, request, report)
 	default:
 		return fmt.Errorf("unsupported backup source type %q", source.Type)
 	}
+}
+
+func (e *Engine) runEtcd(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	if _, err := toolPath("etcdctl"); err != nil {
+		return err
+	}
+	dest, err := newDestination(request)
+	if err != nil {
+		return err
+	}
+	tempDir, err := MkdirTemp("databridge-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+
+	snapshot := filepath.Join(tempDir, backupFileName(source, "cluster", "db"))
+	endpoints := append([]string(nil), source.Endpoints...)
+	seed := dbetcd.SeedEndpoint(source)
+	foundSeed := false
+	for _, endpoint := range endpoints {
+		if endpoint == seed {
+			foundSeed = true
+			break
+		}
+	}
+	if !foundSeed {
+		endpoints = append(endpoints, seed)
+	}
+	var failures []string
+	snapshotCreated := false
+	for _, endpoint := range endpoints {
+		probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		healthErr := dbetcd.HealthyEndpoint(probeCtx, source, endpoint)
+		cancel()
+		if healthErr != nil {
+			failures = append(failures, endpoint+": "+healthErr.Error())
+			report(Progress{Stage: "export", EventLevel: "WARN", EventMessage: "etcd 节点不可用，尝试下一节点：" + endpoint})
+			continue
+		}
+		args, argsErr := dbetcd.CommandArgs(source, endpoint, tempDir)
+		if argsErr != nil {
+			return argsErr
+		}
+		report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在从健康节点创建 etcd 集群快照：" + endpoint})
+		_ = os.Remove(snapshot)
+		if runErr := runCommand(ctx, "etcdctl", append(args, "snapshot", "save", snapshot), append(os.Environ(), "ETCDCTL_API=3"), "export", report); runErr != nil {
+			failures = append(failures, endpoint+": "+runErr.Error())
+			report(Progress{Stage: "export", EventLevel: "WARN", EventMessage: "etcd 快照失败，切换下一节点：" + endpoint})
+			continue
+		}
+		snapshotCreated = true
+		break
+	}
+	if !snapshotCreated {
+		return fmt.Errorf("所有 etcd 节点均无法完成快照: %s", strings.Join(failures, "; "))
+	}
+	report(Progress{Stage: "verify", EventLevel: "INFO", EventMessage: "正在校验 etcd 快照"})
+	if err := runCommand(ctx, "etcdctl", []string{"snapshot", "status", snapshot, "--write-out=json"}, append(os.Environ(), "ETCDCTL_API=3"), "verify", report); err != nil {
+		return fmt.Errorf("etcd snapshot status: %w", err)
+	}
+	archive, err := compressBackup(tempDir, snapshot, source, "cluster", report)
+	if err != nil {
+		return err
+	}
+	return dest.upload(ctx, archive, backupObjectKey(source, "cluster", filepath.Base(archive)), report)
 }
 
 func (e *Engine) runPostgres(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {

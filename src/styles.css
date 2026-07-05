@@ -556,6 +556,21 @@ h1, h2, h3, h4, p { margin: 0; }
 .compatibility-hint { margin-top: -8px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid #91caff; border-radius: 8px; background: #e6f4ff; color: #1d4ed8; line-height: 1.5; }
 .compatibility-hint svg { width: 16px; height: 16px; align-self: center; color: #3b73ff; }
 .compatibility-hint span { min-width: 0; color: #1d4ed8; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.etcd-tls-hint { display: grid; gap: 10px; padding: 14px; border: 1px solid #bfdbfe; border-radius: 8px; background: #f0f7ff; color: #1e3a5f; }
+.etcd-tls-hint > div:first-child { display: flex; align-items: center; gap: 8px; color: #1d4ed8; }
+.etcd-tls-hint p, .etcd-tls-hint small { margin: 0; font-size: 11px; line-height: 1.6; }
+.etcd-tls-hint dl { display: grid; gap: 7px; margin: 0; }
+.etcd-tls-hint dl div { min-width: 0; display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; align-items: center; }
+.etcd-tls-hint dt { color: var(--muted); font-size: 11px; }
+.etcd-tls-hint dd { min-width: 0; margin: 0; }
+.etcd-tls-hint code { display: block; padding: 5px 7px; border-radius: 5px; background: #fff; color: #174ea6; font-size: 10px; overflow-wrap: anywhere; white-space: normal; }
+.etcd-tls-hint small { color: var(--muted); }
+.etcd-tls-mode-guide { display: grid; gap: 11px; padding: 14px; border: 1px solid #93c5fd; border-radius: 8px; background: #eff6ff; }
+.etcd-tls-mode-guide > div:first-child { display: flex; align-items: center; gap: 8px; color: #1d4ed8; font-size: 12px; }
+.etcd-tls-mode-options { display: grid; gap: 7px; }
+.etcd-tls-mode-options span { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: start; padding-top: 7px; border-top: 1px solid rgba(147,197,253,.45); }
+.etcd-tls-mode-options b { color: #1e3a5f; font-size: 11px; }
+.etcd-tls-mode-options small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .required-mark { color: var(--red); font-weight: 700; }
 .delete-warning { color: #475467; font-size: 12px; line-height: 1.7; }
 .connection-database-list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }

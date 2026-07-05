@@ -90,6 +90,7 @@ export function DatabaseLogo({ type, name, size = "md" }: { type: DatabaseType; 
 }
 
 export function DatabaseTypeIcon({ type }: { type: DatabaseType }) {
+  if (type === "etcd") return <span className="database-type-icon" aria-hidden="true"><strong>ET</strong></span>;
   const icon = databaseIconAsset(type);
   return <span className="database-type-icon" aria-hidden="true"><img src={icon} alt="" /></span>;
 }
@@ -113,7 +114,7 @@ function databaseIconAsset(type: DatabaseType) {
 }
 
 function databaseShortName(type: DatabaseType) {
-  return type === "PostgreSQL" ? "PG" : type === "MySQL" ? "MY" : type === "MongoDB" ? "MG" : type === "Neo4j" ? "N4" : "RD";
+  return type === "PostgreSQL" ? "PG" : type === "MySQL" ? "MY" : type === "MongoDB" ? "MG" : type === "Neo4j" ? "N4" : type === "etcd" ? "ET" : "RD";
 }
 
 function regionFlagClass(region?: string) {

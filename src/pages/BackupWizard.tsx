@@ -17,7 +17,7 @@ export function BackupWizard({
   onStart: (config: BackupConfig) => Promise<void>;
 }) {
   const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local"), [storages]);
-  const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB" || item.type === "Neo4j"), [connections]);
+  const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB" || item.type === "Neo4j" || item.type === "etcd"), [connections]);
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [databaseConnectionId, setDatabaseConnectionId] = useState("");
@@ -59,6 +59,15 @@ export function BackupWizard({
     setDatabaseConnectionId("");
     setConfig((current) => current.sourceId === sourceId ? { ...current, sourceDatabase: "", sourceDatabases: [] } : current);
     if (!sourceId) {
+      setLoading(false);
+      return;
+    }
+    const selectedSource = backupableConnections.find((item) => item.id === sourceId);
+    if (selectedSource?.type === "etcd") {
+      const cluster = [{ name: "整个集群", sizeBytes: 0 }];
+      setDatabases(cluster);
+      setDatabaseConnectionId(sourceId);
+      setConfig((current) => current.sourceId === sourceId ? { ...current, sourceDatabase: "整个集群", sourceDatabases: ["整个集群"] } : current);
       setLoading(false);
       return;
     }
@@ -132,7 +141,7 @@ export function BackupWizard({
   }
 
   if (!backupableConnections.length) {
-    return <div className="empty-state"><div>DB</div><h2>暂无可备份连接</h2><p>请先添加 PostgreSQL、MySQL、MongoDB 或 Neo4j 连接，再创建备份任务。</p></div>;
+    return <div className="empty-state"><div>DB</div><h2>暂无可备份连接</h2><p>请先添加 PostgreSQL、MySQL、MongoDB、Neo4j 或 etcd 连接，再创建备份任务。</p></div>;
   }
   if (!writableStorages.length) {
     return <div className="empty-state"><div>DB</div><h2>暂无备份目标</h2><p>请先在远端存储中添加对象存储或本地目录。</p></div>;
@@ -147,11 +156,11 @@ export function BackupWizard({
 
       {step === 0 && (
         <Card className="wizard-card connection-step">
-          <div className="card-heading"><h3>选择要备份的数据库</h3><p>当前支持 PostgreSQL、MySQL、MongoDB 和 Neo4j 全库导出。</p></div>
+          <div className="card-heading"><h3>{source?.type === "etcd" ? "选择要备份的 etcd 集群" : "选择要备份的数据库"}</h3><p>{source?.type === "etcd" ? "etcd 备份固定包含整个集群，不支持按 key 前缀拆分。" : "当前支持 PostgreSQL、MySQL、MongoDB 和 Neo4j 全库导出。"}</p></div>
           <div className="config-grid backup-source-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase || "数据库"} 备份`} /></label>
             <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [] })} />
-            <DatabaseMultiSelect type={source?.type} databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
+            {source?.type === "etcd" ? <div className="info-banner">备份范围：整个集群</div> : <DatabaseMultiSelect type={source?.type} databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
           </div>
           {loading && <p className="loading-copy">正在加载数据库...</p>}
         </Card>
@@ -632,6 +641,7 @@ function formatNumber(value: number) {
 }
 
 function backupFormatLabel(type: DatabaseConnection["type"] | undefined) {
+  if (type === "etcd") return "etcd snapshot (.db) + tar.gz";
   if (type === "MongoDB") return "mongodump + tar.gz";
   if (type === "Neo4j") return "cypher-shell + APOC + tar.gz";
   return "tar.gz";
