@@ -1,11 +1,17 @@
 package backup
 
 import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"databridge/internal/model"
 )
 
 func TestNormalizeNeo4jDumpForTargetUpgradesLegacyUniqueConstraint(t *testing.T) {
@@ -170,5 +176,57 @@ func TestCommandOutputBufferHandlesWritesLargerThanLimit(t *testing.T) {
 	}
 	if buffer.Len() != maxCommandOutputBytes || !strings.HasSuffix(buffer.String(), "tail") {
 		t.Fatalf("large write was not reduced to bounded tail")
+	}
+}
+
+func TestCompressBackupWithSystemTarIncludesNestedFiles(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "dump")
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		filepath.Join(root, "collection.bson"):         "root data",
+		filepath.Join(root, "nested", "metadata.json"): "nested data",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(name, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archive, err := compressBackup(context.Background(), base, root, model.Connection{Type: "MongoDB", Name: "source"}, "database", func(Progress) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveFile, err := os.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archiveFile.Close()
+	gzipReader, err := gzip.NewReader(archiveFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gzipReader.Close()
+
+	got := map[string]string{}
+	reader := tar.NewReader(gzipReader)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[header.Name] = string(data)
+	}
+	if got["dump/collection.bson"] != "root data" || got["dump/nested/metadata.json"] != "nested data" {
+		t.Fatalf("unexpected archive contents: %#v", got)
 	}
 }

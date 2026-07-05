@@ -179,7 +179,7 @@ func (e *Engine) runEtcd(ctx context.Context, source model.Connection, request m
 	if err := runCommand(ctx, "etcdctl", []string{"snapshot", "status", snapshot, "--write-out=json"}, append(os.Environ(), "ETCDCTL_API=3"), "verify", report); err != nil {
 		return fmt.Errorf("etcd snapshot status: %w", err)
 	}
-	archive, err := compressBackup(tempDir, snapshot, source, "cluster", report)
+	archive, err := compressBackup(ctx, tempDir, snapshot, source, "cluster", report)
 	if err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func (e *Engine) runPostgres(ctx context.Context, source model.Connection, reque
 	if err := runCommand(ctx, pgDumpTool, args, postgresEnv(source.Password, source.SSLMode), "export", report); err != nil {
 		return err
 	}
-	archive, err := compressBackup(tempDir, dumpFile, source, request.SourceDatabase, report)
+	archive, err := compressBackup(ctx, tempDir, dumpFile, source, request.SourceDatabase, report)
 	if err != nil {
 		return err
 	}
@@ -242,7 +242,7 @@ func (e *Engine) runMySQL(ctx context.Context, source model.Connection, request 
 	if err := file.Close(); err != nil {
 		return err
 	}
-	archive, err := compressBackup(tempDir, dumpFile, source, request.SourceDatabase, report)
+	archive, err := compressBackup(ctx, tempDir, dumpFile, source, request.SourceDatabase, report)
 	if err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 	if err := runCommand(ctx, "mongodump", args, os.Environ(), "export", report); err != nil {
 		return err
 	}
-	archive, err := compressBackup(tempDir, dumpDir, source, request.SourceDatabase, report)
+	archive, err := compressBackup(ctx, tempDir, dumpDir, source, request.SourceDatabase, report)
 	if err != nil {
 		return err
 	}
@@ -362,7 +362,7 @@ func (e *Engine) exportNeo4jLocal(ctx context.Context, source model.Connection, 
 		cleanup()
 		return "", nil, fmt.Errorf("neo4j cypher export file is empty")
 	}
-	archive, err := compressBackup(tempDir, dumpFile, source, database, report)
+	archive, err := compressBackup(ctx, tempDir, dumpFile, source, database, report)
 	if err != nil {
 		cleanup()
 		return "", nil, err
@@ -1224,95 +1224,25 @@ func extractBackup(archivePath, tempDir string) (string, error) {
 	return dumpFile, nil
 }
 
-func compressBackup(tempDir, dumpFile string, source model.Connection, database string, report Reporter) (string, error) {
+func compressBackup(ctx context.Context, tempDir, dumpFile string, source model.Connection, database string, report Reporter) (string, error) {
 	archive := filepath.Join(tempDir, backupFileName(source, database, "tar.gz"))
 	report(Progress{Stage: "compress", EventLevel: "INFO", EventMessage: "正在压缩备份文件"})
-	output, err := os.Create(archive)
+	if _, err := os.Stat(dumpFile); err != nil {
+		return "", err
+	}
+	args := []string{"-C", filepath.Dir(dumpFile), "-czf", archive, "--", filepath.Base(dumpFile)}
+	if err := runCommand(ctx, "tar", args, os.Environ(), "compress", report); err != nil {
+		_ = os.Remove(archive)
+		return "", fmt.Errorf("tar backup: %w", err)
+	}
+	info, err := os.Stat(archive)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("stat backup archive: %w", err)
 	}
-	gzipWriter := gzip.NewWriter(output)
-	tarWriter := tar.NewWriter(gzipWriter)
-	info, err := os.Stat(dumpFile)
-	if err != nil {
-		output.Close()
-		return "", err
-	}
-	if info.IsDir() {
-		if err := addDirectoryToTar(tarWriter, dumpFile, filepath.Dir(dumpFile)); err != nil {
-			output.Close()
-			return "", err
-		}
-	} else {
-		input, err := os.Open(dumpFile)
-		if err != nil {
-			output.Close()
-			return "", err
-		}
-		header := &tar.Header{
-			Name:    filepath.Base(dumpFile),
-			Mode:    0o600,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-		}
-		if err := tarWriter.WriteHeader(header); err != nil {
-			input.Close()
-			output.Close()
-			return "", err
-		}
-		if _, err := io.Copy(tarWriter, input); err != nil {
-			input.Close()
-			output.Close()
-			return "", err
-		}
-		input.Close()
-	}
-	if err := tarWriter.Close(); err != nil {
-		output.Close()
-		return "", err
-	}
-	if err := gzipWriter.Close(); err != nil {
-		output.Close()
-		return "", err
-	}
-	if err := output.Close(); err != nil {
-		return "", err
+	if info.Size() == 0 {
+		return "", fmt.Errorf("backup archive is empty")
 	}
 	return archive, nil
-}
-
-func addDirectoryToTar(tarWriter *tar.Writer, root, base string) error {
-	return filepath.Walk(root, func(current string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		relative, err := filepath.Rel(base, current)
-		if err != nil {
-			return err
-		}
-		header := &tar.Header{
-			Name:    filepath.ToSlash(relative),
-			Mode:    0o600,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-		}
-		if err := tarWriter.WriteHeader(header); err != nil {
-			return err
-		}
-		input, err := os.Open(current)
-		if err != nil {
-			return err
-		}
-		_, copyErr := io.Copy(tarWriter, input)
-		closeErr := input.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
 }
 
 func backupObjectKey(source model.Connection, database, fileName string) string {
