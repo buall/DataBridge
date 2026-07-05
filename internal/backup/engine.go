@@ -982,15 +982,15 @@ func runCommand(ctx context.Context, name string, args []string, env []string, s
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env = env
-	var stdout, stderr bytes.Buffer
+	stdout, stderr := newCommandOutputBuffer(), newCommandOutputBuffer()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if stdout.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stdout.String())})
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stdout.String()})
 	}
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
 	}
 	if err != nil {
 		return err
@@ -1010,11 +1010,11 @@ func runCommandToWriterEnv(ctx context.Context, name string, args []string, env 
 	if len(stdin) > 0 && stdin[0] != nil {
 		cmd.Stdin = stdin[0]
 	}
-	var stderr bytes.Buffer
+	stderr := newCommandOutputBuffer()
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
 	}
 	if err != nil {
 		return err
@@ -1033,17 +1033,54 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	if len(stdin) > 0 && stdin[0] != nil {
 		cmd.Stdin = stdin[0]
 	}
-	var stderr bytes.Buffer
+	stderr := newCommandOutputBuffer()
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: strings.TrimSpace(stderr.String())})
+		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
 	}
 	if err != nil {
 		return err
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
+}
+
+const maxCommandOutputBytes = 64 * 1024
+
+type commandOutputBuffer struct {
+	data      []byte
+	truncated bool
+}
+
+func newCommandOutputBuffer() commandOutputBuffer {
+	return commandOutputBuffer{data: make([]byte, 0, maxCommandOutputBytes)}
+}
+
+func (b *commandOutputBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if len(p) >= maxCommandOutputBytes {
+		b.data = append(b.data[:0], p[len(p)-maxCommandOutputBytes:]...)
+		b.truncated = true
+		return written, nil
+	}
+	if overflow := len(b.data) + len(p) - maxCommandOutputBytes; overflow > 0 {
+		copy(b.data, b.data[overflow:])
+		b.data = b.data[:len(b.data)-overflow]
+		b.truncated = true
+	}
+	b.data = append(b.data, p...)
+	return written, nil
+}
+
+func (b *commandOutputBuffer) Len() int { return len(b.data) }
+
+func (b *commandOutputBuffer) String() string {
+	output := strings.TrimSpace(string(b.data))
+	if b.truncated {
+		return "...输出过长，仅保留最后 64 KiB...\n" + output
+	}
+	return output
 }
 
 func decodeCypherShellPlainOutput(rawPath, outputPath string) error {
@@ -1269,11 +1306,12 @@ func addDirectoryToTar(tarWriter *tar.Writer, root, base string) error {
 		if err != nil {
 			return err
 		}
-		defer input.Close()
-		if _, err := io.Copy(tarWriter, input); err != nil {
-			return err
+		_, copyErr := io.Copy(tarWriter, input)
+		closeErr := input.Close()
+		if copyErr != nil {
+			return copyErr
 		}
-		return nil
+		return closeErr
 	})
 }
 

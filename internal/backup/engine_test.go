@@ -143,3 +143,32 @@ func TestCleanupStaleWorkDirsDoesNothingWithoutConfiguredDirectory(t *testing.T)
 		t.Fatalf("CleanupStaleWorkDirs() = (%d, %v), want (0, nil)", removed, err)
 	}
 }
+
+func TestCommandOutputBufferKeepsBoundedTail(t *testing.T) {
+	buffer := newCommandOutputBuffer()
+	prefix := strings.Repeat("a", maxCommandOutputBytes)
+	if _, err := buffer.Write([]byte(prefix)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buffer.Write([]byte("important error at the end")); err != nil {
+		t.Fatal(err)
+	}
+	if buffer.Len() != maxCommandOutputBytes {
+		t.Fatalf("buffer length = %d, want %d", buffer.Len(), maxCommandOutputBytes)
+	}
+	output := buffer.String()
+	if !strings.Contains(output, "仅保留最后 64 KiB") || !strings.HasSuffix(output, "important error at the end") {
+		t.Fatalf("unexpected bounded output: %q", output)
+	}
+}
+
+func TestCommandOutputBufferHandlesWritesLargerThanLimit(t *testing.T) {
+	buffer := newCommandOutputBuffer()
+	large := strings.Repeat("x", maxCommandOutputBytes) + "tail"
+	if _, err := buffer.Write([]byte(large)); err != nil {
+		t.Fatal(err)
+	}
+	if buffer.Len() != maxCommandOutputBytes || !strings.HasSuffix(buffer.String(), "tail") {
+		t.Fatalf("large write was not reduced to bounded tail")
+	}
+}
