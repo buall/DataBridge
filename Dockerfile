@@ -33,6 +33,7 @@ ARG TARGETARCH
 ARG MONGO_TOOLS_VERSION=100.17.0
 ARG MONGO_TOOLS_DISTRO=ubuntu2204
 ARG ETCD_VERSION=3.5.21
+ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
@@ -100,6 +101,21 @@ RUN set -eux; \
     tar -xzf /tmp/etcd.tgz -C /tmp/etcd --strip-components=1; \
     install -m 0755 /tmp/etcd/etcdctl /usr/local/bin/etcdctl; \
     rm -rf /tmp/etcd /tmp/etcd.tgz
+
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) mc_arch="amd64" ;; \
+      arm64) mc_arch="arm64" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    mc_name="mc.${MC_VERSION}"; \
+    mc_base="https://dl.min.io/client/mc/release/linux-${mc_arch}/archive"; \
+    curl -fsSL "${mc_base}/${mc_name}" -o "/tmp/${mc_name}"; \
+    curl -fsSL "${mc_base}/${mc_name}.sha256sum" -o "/tmp/${mc_name}.sha256sum"; \
+    cd /tmp; \
+    sha256sum -c "${mc_name}.sha256sum"; \
+    install -m 0755 "/tmp/${mc_name}" /usr/local/bin/mc; \
+    rm -f "/tmp/${mc_name}" "/tmp/${mc_name}.sha256sum"
 
 WORKDIR /app
 RUN mkdir -p /data && useradd --system --uid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin databridge && chown -R databridge:databridge /data /app

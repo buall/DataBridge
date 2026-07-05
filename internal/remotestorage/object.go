@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
 	"sort"
 	"strings"
@@ -21,6 +22,10 @@ import (
 )
 
 const testObjectBody = "databridge object storage connectivity test\n"
+
+const maxMCOutputBytes = 64 << 10
+
+var findMCExecutable = func() (string, error) { return exec.LookPath("mc") }
 
 func TestObjectStorage(ctx context.Context, storage model.RemoteStorage) error {
 	if strings.TrimSpace(storage.Endpoint) == "" || strings.TrimSpace(storage.Bucket) == "" || strings.TrimSpace(storage.AccessKey) == "" || storage.SecretKey == "" {
@@ -107,15 +112,65 @@ func CreateObjectBucket(ctx context.Context, storage model.RemoteStorage, bucket
 }
 
 func UploadObject(ctx context.Context, storage model.RemoteStorage, objectKey, filePath string) (int64, error) {
-	body, err := os.ReadFile(filePath)
+	info, err := os.Stat(filePath)
 	if err != nil {
 		return 0, err
 	}
-	if err := signedObjectRequest(ctx, http.MethodPut, storage, objectKey, body); err != nil {
+	mcPath, err := findMCExecutable()
+	if err != nil {
+		return 0, fmt.Errorf("mc not found in PATH: %w", err)
+	}
+	endpoint, err := url.Parse(strings.TrimRight(storage.Endpoint, "/"))
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return 0, fmt.Errorf("invalid object storage endpoint %q", storage.Endpoint)
+	}
+	endpoint.User = url.UserPassword(storage.AccessKey, storage.SecretKey)
+	configDir, err := os.MkdirTemp("", "databridge-mc-*")
+	if err != nil {
 		return 0, err
 	}
-	return int64(len(body)), nil
+	defer os.RemoveAll(configDir)
+
+	const alias = "databridge"
+	target := alias + "/" + path.Join(storage.Bucket, objectKey)
+	cmd := exec.CommandContext(ctx, mcPath, "--config-dir", configDir, "--quiet", "cp", filePath, target)
+	cmd.Env = append(os.Environ(), "MC_HOST_"+alias+"="+endpoint.String(), "MC_NO_COLOR=1")
+	output := newMCOutputBuffer()
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		message := output.String()
+		if message != "" {
+			return 0, fmt.Errorf("mc upload failed: %w: %s", err, message)
+		}
+		return 0, fmt.Errorf("mc upload failed: %w", err)
+	}
+	return info.Size(), nil
 }
+
+type mcOutputBuffer struct {
+	data []byte
+}
+
+func newMCOutputBuffer() mcOutputBuffer {
+	return mcOutputBuffer{data: make([]byte, 0, maxMCOutputBytes)}
+}
+
+func (b *mcOutputBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	if len(p) >= maxMCOutputBytes {
+		b.data = append(b.data[:0], p[len(p)-maxMCOutputBytes:]...)
+		return written, nil
+	}
+	if overflow := len(b.data) + len(p) - maxMCOutputBytes; overflow > 0 {
+		copy(b.data, b.data[overflow:])
+		b.data = b.data[:len(b.data)-overflow]
+	}
+	b.data = append(b.data, p...)
+	return written, nil
+}
+
+func (b *mcOutputBuffer) String() string { return strings.TrimSpace(string(b.data)) }
 
 func DownloadObject(ctx context.Context, storage model.RemoteStorage, objectKey, filePath string) (int64, error) {
 	resp, err := signedObjectResponse(ctx, http.MethodGet, storage, objectKey, nil)
