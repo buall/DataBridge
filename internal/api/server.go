@@ -129,6 +129,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
 	protected.HandleFunc("DELETE /api/migrations/{id}", server.deleteMigration)
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
+	protected.HandleFunc("GET /api/logs", server.listLogs)
 	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
 	protected.HandleFunc("PUT /api/settings/smtp", server.updateSMTPSettings)
 	protected.HandleFunc("GET /api/settings/notification-recipients", server.listNotificationRecipients)
@@ -1257,12 +1258,27 @@ func (s *Server) deleteMigration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listMigrations(w http.ResponseWriter, _ *http.Request) {
-	items, err := s.store.Migrations()
+	items, err := s.store.MigrationsLimit(100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateMigration, err))
 		return
 	}
-	auditLogs, err := s.store.AuditLogs()
+	for index := range items {
+		items[index] = compactMigrationListJob(items[index])
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) listLogs(w http.ResponseWriter, _ *http.Request) {
+	items, err := s.store.MigrationsLimit(100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateMigration, err))
+		return
+	}
+	for index := range items {
+		items[index] = compactMigrationLogJob(items[index])
+	}
+	auditLogs, err := s.store.AuditLogsLimit(200)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateMigration, err))
 		return
@@ -1271,6 +1287,21 @@ func (s *Server) listMigrations(w http.ResponseWriter, _ *http.Request) {
 		"migrations": items,
 		"auditLogs":  auditLogs,
 	})
+}
+
+func compactMigrationListJob(job model.Migration) model.Migration {
+	job.Results = []model.TableResult{}
+	job.Events = []model.Event{}
+	return job
+}
+
+func compactMigrationLogJob(job model.Migration) model.Migration {
+	job.Results = []model.TableResult{}
+	const eventLimit = 20
+	if len(job.Events) > eventLimit {
+		job.Events = append([]model.Event(nil), job.Events[len(job.Events)-eventLimit:]...)
+	}
+	return job
 }
 
 func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {

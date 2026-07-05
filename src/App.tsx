@@ -122,13 +122,12 @@ export default function App() {
 
   useEffect(() => {
     if (!authenticated) return;
-    Promise.all([api.connections(), api.storages(), api.migrationsWithAudit(), api.backups()])
-      .then(([connectionItems, storageItems, migrationData, backupItems]) => {
+    Promise.all([api.connections(), api.storages(), api.migrations(), api.backups()])
+      .then(([connectionItems, storageItems, migrationItems, backupItems]) => {
         setConnections(connectionItems);
         setStorages(storageItems);
-        setMigrations(migrationData.migrations);
+        setMigrations(migrationItems);
         setBackups(backupItems);
-        setAuditLogs(migrationData.auditLogs);
       })
       .catch((error) => {
         if (error && typeof error === "object" && "status" in error && error.status === 401) {
@@ -138,6 +137,26 @@ export default function App() {
         setLoadError(error.message);
       });
   }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated || route.view !== "logs") return;
+    api.logs()
+      .then((data) => {
+        setAuditLogs(data.auditLogs);
+        setMigrations((current) => current.map((job) => {
+          const logJob = data.migrations.find((item) => item.id === job.id);
+          return logJob ? { ...job, events: logJob.events } : job;
+        }));
+      })
+      .catch((error) => setLoadError(error.message));
+  }, [authenticated, route.view]);
+
+  useEffect(() => {
+    if (!authenticated || route.view !== "migrations" || route.stage !== "report" || !route.jobId) return;
+    api.migration(route.jobId)
+      .then((detail) => setMigrations((current) => [detail, ...current.filter((item) => item.id !== detail.id)]))
+      .catch((error) => setLoadError(error.message));
+  }, [authenticated, route.view, route.stage, route.jobId]);
 
   useEffect(() => {
     const handlePopState = () => {

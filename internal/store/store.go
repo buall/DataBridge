@@ -587,10 +587,21 @@ func (s *Store) AddAuditLog(entry AuditLog) error {
 }
 
 func (s *Store) AuditLogs() ([]AuditLog, error) {
-	rows, err := s.db.Query(`
+	return s.AuditLogsLimit(0)
+}
+
+func (s *Store) AuditLogsLimit(limit int) ([]AuditLog, error) {
+	query := `
 		SELECT id, time, level, action, resource_type, resource_id, resource_name, connection_name, database_name, status, message, detail
 		FROM audit_logs
-		ORDER BY time DESC`)
+		ORDER BY time DESC`
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(`
+		`+query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list audit logs: %w", err)
 	}
@@ -641,7 +652,17 @@ func (s *Store) Migration(id string) (model.Migration, error) {
 }
 
 func (s *Store) Migrations() ([]model.Migration, error) {
-	rows, err := s.db.Query(`SELECT data FROM migrations ORDER BY updated_at DESC`)
+	return s.MigrationsLimit(0)
+}
+
+func (s *Store) MigrationsLimit(limit int) ([]model.Migration, error) {
+	query := `SELECT data FROM migrations ORDER BY updated_at DESC`
+	var args []any
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list migrations: %w", err)
 	}

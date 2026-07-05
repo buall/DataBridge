@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/smtp"
@@ -77,7 +78,7 @@ func TestFailedScheduledBackupRemainsEligibleForNextRun(t *testing.T) {
 	}
 }
 
-func TestListMigrationsSerializesAuditLogsForFrontend(t *testing.T) {
+func TestListLogsSerializesAuditLogsForFrontend(t *testing.T) {
 	appStore, _, handler := newTestServer(t)
 	if err := appStore.AddAuditLog(store.AuditLog{
 		Time:         time.Date(2026, 6, 30, 10, 11, 12, 0, time.UTC),
@@ -93,7 +94,7 @@ func TestListMigrationsSerializesAuditLogsForFrontend(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/migrations", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/logs", nil)
 	request.RemoteAddr = "127.0.0.1:12345"
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -118,6 +119,30 @@ func TestListMigrationsSerializesAuditLogsForFrontend(t *testing.T) {
 		if _, ok := log[key]; ok {
 			t.Fatalf("audit log exposed Go field key %q: %#v", key, log)
 		}
+	}
+}
+
+func TestMigrationListAndLogCompaction(t *testing.T) {
+	events := make([]model.Event, 25)
+	for index := range events {
+		events[index] = model.Event{Time: time.Unix(int64(index), 0), Level: "INFO", Message: fmt.Sprintf("event-%d", index)}
+	}
+	job := model.Migration{
+		ID:      "migration-1",
+		Results: []model.TableResult{{Table: "large_table", CopiedRows: 100}},
+		Events:  events,
+	}
+
+	listJob := compactMigrationListJob(job)
+	if len(listJob.Results) != 0 || len(listJob.Events) != 0 {
+		t.Fatalf("list job still contains details: results=%d events=%d", len(listJob.Results), len(listJob.Events))
+	}
+	logJob := compactMigrationLogJob(job)
+	if len(logJob.Results) != 0 || len(logJob.Events) != 20 {
+		t.Fatalf("log job compaction = results:%d events:%d", len(logJob.Results), len(logJob.Events))
+	}
+	if logJob.Events[0].Message != "event-5" || logJob.Events[19].Message != "event-24" {
+		t.Fatalf("log job did not retain latest events: %#v", logJob.Events)
 	}
 }
 

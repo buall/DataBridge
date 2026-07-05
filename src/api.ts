@@ -219,13 +219,13 @@ export const api = {
     request<{ ok: boolean }>(`/migrations/${id}/cancel`, { method: "POST" }),
   deleteMigration: (id: string) =>
     request<{ ok: boolean }>(`/migrations/${id}`, { method: "DELETE" }),
-  migrationsWithAudit: async () => {
-    const response = await request<MigrationJob[] | MigrationsResponse>("/migrations");
+  logs: async () => {
+    const response = await request<MigrationsResponse>("/logs");
     const migrations = (Array.isArray(response) ? response : response.migrations).map(normalizeMigration);
     const auditLogs = Array.isArray(response) ? [] : (response.auditLogs ?? []);
     return { migrations, auditLogs };
   },
-  migrations: async () => (await api.migrationsWithAudit()).migrations,
+  migrations: async () => (await request<MigrationJob[]>("/migrations")).map(normalizeMigration),
   backups: async () => (await request<BackupJob[]>("/backups")).map(normalizeBackup),
   createBackup: async (config: BackupConfig) =>
     normalizeBackup(await request<BackupJob>("/backups", { method: "POST", body: JSON.stringify(config) })),
