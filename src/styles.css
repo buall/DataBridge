@@ -180,12 +180,13 @@ h1, h2, h3, h4, p { margin: 0; }
 .database-type-icon svg, .database-type-icon img { width: 16px; height: 16px; display: block; flex: 0 0 16px; object-fit: contain; }
 .database-type-icon.mysql { background: #fff4e5; }
 .database-type-icon.redis { background: #fff0f0; }
+.database-type-icon.etcd { background: #eef7ff; }
 .version-tag { display: inline-flex; align-items: center; min-height: 18px; border-radius: 5px; padding: 1px 6px; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-style: normal; font-weight: 700; line-height: 1; }
 .database-logo { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 40px; border-radius: 10px; color: #fff; font-size: 15px; font-weight: 800; line-height: 1; overflow: hidden; }
 .database-logo.sm { width: 32px; height: 32px; flex-basis: 32px; border-radius: 8px; font-size: 12px; }
 .database-logo img { width: 22px; height: 22px; display: block; object-fit: contain; filter: drop-shadow(0 1px 0 rgba(255,255,255,0.15)); }
 .database-logo.sm img { width: 18px; height: 18px; }
-.database-logo.postgresql { background: linear-gradient(135deg, #315f8b 0%, #3f79a9 100%); }.database-logo.mysql { background: linear-gradient(135deg, #4d6f95 0%, #5f86b0 100%); }.database-logo.mongodb { background: linear-gradient(135deg, #0f7a43 0%, #18a957 100%); }.database-logo.neo4j { background: linear-gradient(135deg, #eef7ff 0%, #dfefff 100%); color: #2b4f85; }.database-logo.redis { background: linear-gradient(135deg, #355f86 0%, #46769d 100%); }
+.database-logo.postgresql { background: linear-gradient(135deg, #315f8b 0%, #3f79a9 100%); }.database-logo.mysql { background: linear-gradient(135deg, #4d6f95 0%, #5f86b0 100%); }.database-logo.mongodb { background: linear-gradient(135deg, #0f7a43 0%, #18a957 100%); }.database-logo.neo4j { background: linear-gradient(135deg, #eef7ff 0%, #dfefff 100%); color: #2b4f85; }.database-logo.redis { background: linear-gradient(135deg, #355f86 0%, #46769d 100%); }.database-logo.etcd { background: linear-gradient(135deg, #dff3ff 0%, #eef8ff 100%); color: #1d4f84; }
 .connection-meta { border-top: 1px solid var(--border); margin-top: 16px; padding-top: 14px; display: flex; align-items: end; justify-content: space-between; }
 .connection-meta div span, .connection-meta div strong { display: block; }.connection-meta div span { font-size: 9px; color: var(--muted); font-weight: 700; }.connection-meta div strong { font-size: 12px; margin-top: 6px; }.latency { color: var(--green); font-size: 10px; font-weight: 600; }
 .connection-meta div strong.region-value { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }

@@ -5,6 +5,7 @@ import mongodbIcon from "../assets/icons/devicon--mongodb.svg";
 import neo4jIcon from "../assets/icons/devicon--neo4j.svg";
 import postgresqlIcon from "../assets/icons/devicon--postgresql.svg";
 import redisIcon from "../assets/icons/devicon--redis.svg";
+import etcdIcon from "../assets/icons/devicon--etcd.svg";
 import type { DatabaseType } from "../types";
 
 type SelectOptionItem = { value: string; label: string };
@@ -86,13 +87,13 @@ export function Badge({
 
 export function DatabaseLogo({ type, name, size = "md" }: { type: DatabaseType; name?: string; size?: "sm" | "md" }) {
   const fallback = connectionInitials(name) || databaseShortName(type);
-  return <span className={`database-logo ${type.toLowerCase()} ${size}`}>{fallback}</span>;
+  const icon = databaseIconAsset(type);
+  return <span className={`database-logo ${type.toLowerCase()} ${size}`}>{icon ? <img src={icon} alt="" aria-hidden="true" /> : fallback}</span>;
 }
 
 export function DatabaseTypeIcon({ type }: { type: DatabaseType }) {
-  if (type === "etcd") return <span className="database-type-icon" aria-hidden="true"><strong>ET</strong></span>;
   const icon = databaseIconAsset(type);
-  return <span className="database-type-icon" aria-hidden="true"><img src={icon} alt="" /></span>;
+  return <span className={`database-type-icon ${type.toLowerCase()}`} aria-hidden="true">{icon ? <img src={icon} alt="" /> : <strong>{databaseShortName(type)}</strong>}</span>;
 }
 
 export function RegionFlag({ region }: { region?: string }) {
@@ -110,7 +111,7 @@ function connectionInitials(name?: string) {
 }
 
 function databaseIconAsset(type: DatabaseType) {
-  return type === "PostgreSQL" ? postgresqlIcon : type === "MySQL" ? mysqlIcon : type === "MongoDB" ? mongodbIcon : type === "Neo4j" ? neo4jIcon : redisIcon;
+  return type === "PostgreSQL" ? postgresqlIcon : type === "MySQL" ? mysqlIcon : type === "MongoDB" ? mongodbIcon : type === "Neo4j" ? neo4jIcon : type === "etcd" ? etcdIcon : redisIcon;
 }
 
 function databaseShortName(type: DatabaseType) {
