@@ -546,6 +546,102 @@ func TestFeishuNotificationCardUsesStatusTemplate(t *testing.T) {
 	}
 }
 
+func TestBackupNotificationUsesCustomTitle(t *testing.T) {
+	job := model.BackupJob{
+		Name:           "通知测试",
+		SourceDatabase: "system",
+		Destination:    "notification-test",
+		Notification:   model.BackupNotification{Title: "腾讯云新加坡"},
+	}
+	if got, want := backupNotificationTitle(job, true), "腾讯云新加坡 备份成功"; got != want {
+		t.Fatalf("title = %q, want %q", got, want)
+	}
+	markdown := backupNotificationMarkdown(job, true)
+	if !strings.HasPrefix(markdown, "**腾讯云新加坡 备份成功**") {
+		t.Fatalf("markdown should use custom title: %q", markdown)
+	}
+	payload := webhookPayloadForTarget("open.feishu.cn", nil, "腾讯云新加坡 备份成功", markdown, true)
+	card := payload["card"].(map[string]any)
+	header := card["header"].(map[string]any)
+	title := header["title"].(map[string]string)
+	if title["content"] != "腾讯云新加坡 备份成功" {
+		t.Fatalf("Feishu title = %q", title["content"])
+	}
+}
+
+func TestBackupNotificationUsesGlobalTitle(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	if _, err := appStore.UpdateNotificationSettings(model.NotificationSettings{MessageTitle: "腾讯云新加坡"}); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan map[string]any, 1)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		received <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhook.Close()
+
+	job := model.BackupJob{
+		ID:             "backup-1",
+		Name:           "通知测试",
+		SourceDatabase: "system",
+		Destination:    "notification-test",
+		Notification: model.BackupNotification{
+			Enabled: true,
+			Method:  "webhook",
+			Target:  webhook.URL,
+		},
+	}
+	if err := server.sendBackupNotification(job, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case payload := <-received:
+		if text, _ := payload["text"].(string); !strings.HasPrefix(text, "腾讯云新加坡 备份成功") {
+			t.Fatalf("payload text should use global title: %#v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("webhook did not receive notification")
+	}
+}
+
+func TestNotificationRecipientTestEmailUsesGlobalTitle(t *testing.T) {
+	t.Cleanup(resetSMTPTestHooks)
+	appStore, server, _ := newTestServer(t)
+	if _, err := appStore.UpdateNotificationSettings(model.NotificationSettings{MessageTitle: "业务系统"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.UpdateSMTPSettings(model.SMTPSettings{
+		Enabled: true,
+		Host:    "smtp.example.com",
+		Port:    587,
+		From:    "DataBridge <no-reply@example.com>",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var gotMessage string
+	smtpSendMail = func(_ string, _ smtp.Auth, _ string, _ []string, msg []byte) error {
+		gotMessage = string(msg)
+		return nil
+	}
+	smtpTLSDial = func(string, string, *tls.Config) (*tls.Conn, error) {
+		t.Fatal("TLS dial should not be used for port 587")
+		return nil, nil
+	}
+
+	err := server.sendNotificationRecipientTest(model.NotificationRecipient{Name: "邮箱", Type: "email", Target: "ops@example.com", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotMessage, "Subject: 业务系统 备份成功：通知测试") {
+		t.Fatalf("email subject should use global title: %q", gotMessage)
+	}
+}
+
 func TestSendTelegramMessage(t *testing.T) {
 	var requestPath string
 	var payload map[string]string

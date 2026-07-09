@@ -50,7 +50,10 @@ type AuditLog struct {
 	Detail         string    `json:"detail"`
 }
 
-const smtpSettingsKey = "smtp"
+const (
+	smtpSettingsKey         = "smtp"
+	notificationSettingsKey = "notification"
+)
 
 func New(databasePath, keyPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
@@ -178,8 +181,40 @@ func (s *Store) UpdateSMTPSettings(input model.SMTPSettings) (model.SMTPSettings
 	return settings, nil
 }
 
+func (s *Store) NotificationSettings() (model.NotificationSettings, error) {
+	var data []byte
+	if err := s.db.QueryRow(`SELECT data FROM app_settings WHERE key = ?`, notificationSettingsKey).Scan(&data); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.NotificationSettings{}, nil
+		}
+		return model.NotificationSettings{}, fmt.Errorf("load notification settings: %w", err)
+	}
+	var settings model.NotificationSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return model.NotificationSettings{}, fmt.Errorf("decode notification settings: %w", err)
+	}
+	settings.MessageTitle = strings.TrimSpace(settings.MessageTitle)
+	return settings, nil
+}
+
+func (s *Store) UpdateNotificationSettings(input model.NotificationSettings) (model.NotificationSettings, error) {
+	settings := model.NotificationSettings{MessageTitle: strings.TrimSpace(input.MessageTitle)}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return model.NotificationSettings{}, fmt.Errorf("encode notification settings: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.Exec(`
+		INSERT INTO app_settings (key, data, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+		notificationSettingsKey, data, now); err != nil {
+		return model.NotificationSettings{}, fmt.Errorf("save notification settings: %w", err)
+	}
+	return settings, nil
+}
+
 func (s *Store) NotificationRecipients() ([]model.NotificationRecipient, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, target_encrypted, enabled, created_at, updated_at FROM notification_recipients ORDER BY created_at DESC`)
+	rows, err := s.db.Query(`SELECT id, name, type, target_encrypted, message_title, enabled, created_at, updated_at FROM notification_recipients ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list notification recipients: %w", err)
 	}
@@ -196,7 +231,7 @@ func (s *Store) NotificationRecipients() ([]model.NotificationRecipient, error) 
 }
 
 func (s *Store) NotificationRecipient(id string) (model.NotificationRecipient, error) {
-	return s.scanNotificationRecipient(s.db.QueryRow(`SELECT id, name, type, target_encrypted, enabled, created_at, updated_at FROM notification_recipients WHERE id = ?`, id))
+	return s.scanNotificationRecipient(s.db.QueryRow(`SELECT id, name, type, target_encrypted, message_title, enabled, created_at, updated_at FROM notification_recipients WHERE id = ?`, id))
 }
 
 func (s *Store) AddNotificationRecipient(input model.NotificationRecipientInput) (model.NotificationRecipient, error) {
@@ -205,8 +240,8 @@ func (s *Store) AddNotificationRecipient(input model.NotificationRecipientInput)
 	if err != nil {
 		return model.NotificationRecipient{}, fmt.Errorf("encrypt notification recipient: %w", err)
 	}
-	item := model.NotificationRecipient{ID: newID(), Name: strings.TrimSpace(input.Name), Type: input.Type, Target: strings.TrimSpace(input.Target), Enabled: input.Enabled, CreatedAt: now, UpdatedAt: now}
-	if _, err := s.db.Exec(`INSERT INTO notification_recipients (id, name, type, target_encrypted, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Name, item.Type, target, item.Enabled, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	item := model.NotificationRecipient{ID: newID(), Name: strings.TrimSpace(input.Name), Type: input.Type, Target: strings.TrimSpace(input.Target), MessageTitle: strings.TrimSpace(input.MessageTitle), Enabled: input.Enabled, CreatedAt: now, UpdatedAt: now}
+	if _, err := s.db.Exec(`INSERT INTO notification_recipients (id, name, type, target_encrypted, message_title, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, item.ID, item.Name, item.Type, target, item.MessageTitle, item.Enabled, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		return model.NotificationRecipient{}, fmt.Errorf("add notification recipient: %w", err)
 	}
 	setNotificationRecipientTargetSummary(&item)
@@ -227,7 +262,7 @@ func (s *Store) UpdateNotificationRecipient(id string, input model.NotificationR
 		return model.NotificationRecipient{}, fmt.Errorf("encrypt notification recipient: %w", err)
 	}
 	now := time.Now().UTC()
-	result, err := s.db.Exec(`UPDATE notification_recipients SET name = ?, type = ?, target_encrypted = ?, enabled = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(input.Name), input.Type, target, input.Enabled, now.Format(time.RFC3339Nano), id)
+	result, err := s.db.Exec(`UPDATE notification_recipients SET name = ?, type = ?, target_encrypted = ?, message_title = ?, enabled = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(input.Name), input.Type, target, strings.TrimSpace(input.MessageTitle), input.Enabled, now.Format(time.RFC3339Nano), id)
 	if err != nil {
 		return model.NotificationRecipient{}, fmt.Errorf("update notification recipient: %w", err)
 	}
@@ -253,7 +288,7 @@ func (s *Store) scanNotificationRecipient(row scanner) (model.NotificationRecipi
 	var targetEncrypted []byte
 	var enabled bool
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.Name, &item.Type, &targetEncrypted, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.Name, &item.Type, &targetEncrypted, &item.MessageTitle, &enabled, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.NotificationRecipient{}, ErrNotFound
 		}
@@ -946,6 +981,7 @@ func (s *Store) initialize() error {
 			name TEXT NOT NULL,
 			type TEXT NOT NULL,
 			target_encrypted BLOB NOT NULL,
+			message_title TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -963,6 +999,9 @@ func (s *Store) initialize() error {
 		return err
 	}
 	if err := s.ensureConnectionEndpointsColumn(); err != nil {
+		return err
+	}
+	if err := s.ensureNotificationRecipientMessageTitleColumn(); err != nil {
 		return err
 	}
 	if err := s.recoverInterruptedMigrations(); err != nil {
@@ -1007,6 +1046,16 @@ func (s *Store) ensureConnectionEndpointsColumn() error {
 			return nil
 		}
 		return fmt.Errorf("migrate connections.endpoints_json: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureNotificationRecipientMessageTitleColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE notification_recipients ADD COLUMN message_title TEXT NOT NULL DEFAULT ''`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate notification_recipients.message_title: %w", err)
 	}
 	return nil
 }

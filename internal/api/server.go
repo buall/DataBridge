@@ -132,6 +132,8 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/logs", server.listLogs)
 	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
 	protected.HandleFunc("PUT /api/settings/smtp", server.updateSMTPSettings)
+	protected.HandleFunc("GET /api/settings/notification", server.getNotificationSettings)
+	protected.HandleFunc("PUT /api/settings/notification", server.updateNotificationSettings)
 	protected.HandleFunc("GET /api/settings/notification-recipients", server.listNotificationRecipients)
 	protected.HandleFunc("POST /api/settings/notification-recipients", server.createNotificationRecipient)
 	protected.HandleFunc("POST /api/settings/notification-recipients/test", server.testNotificationRecipientInput)
@@ -2620,6 +2622,9 @@ func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error
 	if !job.Notification.Enabled {
 		return nil
 	}
+	if err := s.applyDefaultNotificationTitle(&job); err != nil {
+		return err
+	}
 	if len(job.Notification.RecipientIDs) > 0 {
 		errors := make([]string, 0)
 		for _, id := range job.Notification.RecipientIDs {
@@ -2650,13 +2655,28 @@ func (s *Server) sendBackupNotification(job model.BackupJob, success bool) error
 	}
 }
 
-func (s *Server) sendBackupNotificationToRecipient(job model.BackupJob, success bool, recipient model.NotificationRecipient) error {
-	if recipient.Type == "telegram" {
-		return sendTelegramMessage(&http.Client{Timeout: 10 * time.Second}, "https://api.telegram.org", recipient.Target, backupNotificationHTML(job, success))
+func (s *Server) applyDefaultNotificationTitle(job *model.BackupJob) error {
+	if strings.TrimSpace(job.Notification.Title) != "" {
+		return nil
 	}
+	settings, err := s.store.NotificationSettings()
+	if err != nil {
+		return err
+	}
+	job.Notification.Title = settings.MessageTitle
+	return nil
+}
+
+func (s *Server) sendBackupNotificationToRecipient(job model.BackupJob, success bool, recipient model.NotificationRecipient) error {
 	copy := job
 	copy.Notification.RecipientIDs = nil
 	copy.Notification.Target = recipient.Target
+	if strings.TrimSpace(recipient.MessageTitle) != "" {
+		copy.Notification.Title = recipient.MessageTitle
+	}
+	if recipient.Type == "telegram" {
+		return sendTelegramMessage(&http.Client{Timeout: 10 * time.Second}, "https://api.telegram.org", recipient.Target, backupNotificationHTML(copy, success))
+	}
 	if recipient.Type == "email" {
 		copy.Notification.Method = "email"
 		return s.sendBackupEmail(copy, success)
@@ -2846,7 +2866,7 @@ func (s *Server) sendBackupEmail(job model.BackupJob, success bool) error {
 		return fmt.Errorf("邮件收件人不能为空")
 	}
 	addr := net.JoinHostPort(settings.Host, strconv.Itoa(settings.Port))
-	subject := fmt.Sprintf("DataBridge 备份%s：%s", backupNotificationStatus(success), job.Name)
+	subject := fmt.Sprintf("%s：%s", backupNotificationTitle(job, success), job.Name)
 	msg := strings.Join([]string{
 		"To: " + to,
 		"From: " + settings.From,
@@ -2983,7 +3003,7 @@ func backupNotificationHTML(job model.BackupJob, success bool) string {
 
 func backupNotificationLines(job model.BackupJob, success bool) []string {
 	lines := []string{
-		fmt.Sprintf("DataBridge 备份%s", backupNotificationStatus(success)),
+		backupNotificationTitle(job, success),
 		fmt.Sprintf("任务名称：%s", job.Name),
 	}
 	if finishedAt := backupNotificationFinishedAt(job); finishedAt != "" {
@@ -2995,6 +3015,14 @@ func backupNotificationLines(job model.BackupJob, success bool) []string {
 	)
 	lines = append(lines, backupNotificationArtifactLines(job)...)
 	return lines
+}
+
+func backupNotificationTitle(job model.BackupJob, success bool) string {
+	title := strings.TrimSpace(job.Notification.Title)
+	if title == "" {
+		title = "DataBridge"
+	}
+	return fmt.Sprintf("%s 备份%s", title, backupNotificationStatus(success))
 }
 
 func backupNotificationFinishedAt(job model.BackupJob) string {
@@ -4535,6 +4563,28 @@ func (s *Server) updateSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, settings)
 }
 
+func (s *Server) getNotificationSettings(w http.ResponseWriter, _ *http.Request) {
+	settings, err := s.store.NotificationSettings()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "读取通知配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	var input model.NotificationSettings
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	settings, err := s.store.UpdateNotificationSettings(input)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", "保存通知配置失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
 func (s *Server) listNotificationRecipients(w http.ResponseWriter, _ *http.Request) {
 	items, err := s.store.NotificationRecipients()
 	if err != nil {
@@ -4644,12 +4694,12 @@ func (s *Server) testNotificationRecipientInput(w http.ResponseWriter, r *http.R
 			allowSavedTarget = true
 		}
 	}
-	recipientInput, message := prepareNotificationRecipientInput(model.NotificationRecipientInput{Name: input.Name, Type: input.Type, Target: input.Target, BotToken: input.BotToken, ChatID: input.ChatID, Enabled: true}, currentTarget, allowSavedTarget)
+	recipientInput, message := prepareNotificationRecipientInput(model.NotificationRecipientInput{Name: input.Name, Type: input.Type, Target: input.Target, MessageTitle: input.MessageTitle, BotToken: input.BotToken, ChatID: input.ChatID, Enabled: true}, currentTarget, allowSavedTarget)
 	if message != "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", message)
 		return
 	}
-	recipient := model.NotificationRecipient{Name: strings.TrimSpace(input.Name), Type: input.Type, Target: recipientInput.Target, Enabled: true}
+	recipient := model.NotificationRecipient{Name: strings.TrimSpace(input.Name), Type: input.Type, Target: recipientInput.Target, MessageTitle: recipientInput.MessageTitle, Enabled: true}
 	if err := s.sendNotificationRecipientTest(recipient); err != nil {
 		writeError(w, http.StatusBadRequest, "notification_failed", err.Error())
 		return
@@ -4660,10 +4710,14 @@ func (s *Server) testNotificationRecipientInput(w http.ResponseWriter, r *http.R
 func (s *Server) sendNotificationRecipientTest(recipient model.NotificationRecipient) error {
 	now := time.Now()
 	job := model.BackupJob{ID: "notification-test", Name: "通知测试", SourceName: "DataBridge", SourceType: "System", SourceDatabase: "system", Destination: "notification-test", FinishedAt: &now}
+	if err := s.applyDefaultNotificationTitle(&job); err != nil {
+		return err
+	}
 	return s.sendBackupNotificationToRecipient(job, true, recipient)
 }
 
 func prepareNotificationRecipientInput(input model.NotificationRecipientInput, currentTarget string, allowSavedTarget bool) (model.NotificationRecipientInput, string) {
+	input.MessageTitle = strings.TrimSpace(input.MessageTitle)
 	if strings.TrimSpace(input.Name) == "" {
 		return input, "请填写接收者名称"
 	}

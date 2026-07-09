@@ -1,12 +1,13 @@
 import { Bell, CheckCircle2, Pencil, Plus, Save, Send, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { NotificationRecipient, NotificationRecipientInput, NotificationRecipientType, SMTPSettings } from "../types";
+import type { NotificationRecipient, NotificationRecipientInput, NotificationRecipientType, NotificationSettings, SMTPSettings } from "../types";
 import { Button, Card, SelectField } from "../components/UI";
 import { NotificationRecipientTypeIcon } from "../components/NotificationRecipientTypeIcon";
 
 const emptySMTP: SMTPSettings = { enabled: false, host: "", port: 587, username: "", password: "", from: "" };
-const emptyRecipient: NotificationRecipientInput = { name: "", type: "feishu", target: "", enabled: true };
+const emptyNotificationSettings: NotificationSettings = { messageTitle: "" };
+const emptyRecipient: NotificationRecipientInput = { name: "", type: "feishu", target: "", messageTitle: "", enabled: true };
 
 const recipientTypes: Array<{ value: NotificationRecipientType; label: string }> = [
   { value: "feishu", label: "飞书机器人" },
@@ -20,9 +21,12 @@ const recipientTypes: Array<{ value: NotificationRecipientType; label: string }>
 export function Settings() {
   const [recipients, setRecipients] = useState<NotificationRecipient[]>([]);
   const [smtp, setSMTP] = useState<SMTPSettings>(emptySMTP);
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(emptyNotificationSettings);
   const [loading, setLoading] = useState(true);
   const [savingSMTP, setSavingSMTP] = useState(false);
   const [smtpSaved, setSMTPSaved] = useState(false);
+  const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+  const [notificationSettingsSaved, setNotificationSettingsSaved] = useState(false);
   const [editing, setEditing] = useState<NotificationRecipient | null | "new">(null);
   const [recipientForm, setRecipientForm] = useState<NotificationRecipientInput>(emptyRecipient);
   const [savingRecipient, setSavingRecipient] = useState(false);
@@ -33,10 +37,11 @@ export function Settings() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([api.notificationRecipients(), api.smtpSettings()])
-      .then(([items, settings]) => {
+    Promise.all([api.notificationRecipients(), api.smtpSettings(), api.notificationSettings()])
+      .then(([items, settings, notification]) => {
         setRecipients(items);
         setSMTP({ ...emptySMTP, ...settings, password: "" });
+        setNotificationSettings({ ...emptyNotificationSettings, ...notification });
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "读取通知配置失败"))
       .finally(() => setLoading(false));
@@ -51,7 +56,7 @@ export function Settings() {
     setMessage("");
     setRecipientTestResult(null);
     setEditing(item ?? "new");
-    setRecipientForm(item ? { name: item.name, type: item.type, target: "", botToken: "", chatId: "", enabled: item.enabled } : emptyRecipient);
+    setRecipientForm(item ? { name: item.name, type: item.type, target: "", messageTitle: item.messageTitle ?? "", botToken: "", chatId: "", enabled: item.enabled } : emptyRecipient);
   }
 
   async function saveRecipient(event: React.FormEvent) {
@@ -59,7 +64,7 @@ export function Settings() {
     setSavingRecipient(true);
     setError("");
     try {
-      const input = { ...recipientForm, name: recipientForm.name.trim(), target: recipientForm.target?.trim(), botToken: recipientForm.botToken?.trim(), chatId: recipientForm.chatId?.trim() };
+      const input = { ...recipientForm, name: recipientForm.name.trim(), messageTitle: recipientForm.messageTitle?.trim(), target: recipientForm.target?.trim(), botToken: recipientForm.botToken?.trim(), chatId: recipientForm.chatId?.trim() };
       const saved = editing === "new"
         ? await api.createNotificationRecipient(input)
         : await api.updateNotificationRecipient((editing as NotificationRecipient).id, input);
@@ -107,6 +112,7 @@ export function Settings() {
         ...recipientForm,
         id: editing !== null && editing !== "new" ? editing.id : undefined,
         name: recipientForm.name.trim(),
+        messageTitle: recipientForm.messageTitle?.trim(),
         target: recipientForm.target?.trim(),
         botToken: recipientForm.botToken?.trim(),
         chatId: recipientForm.chatId?.trim(),
@@ -135,6 +141,23 @@ export function Settings() {
     }
   }
 
+  async function submitNotificationSettings(event: React.FormEvent) {
+    event.preventDefault();
+    setSavingNotificationSettings(true);
+    setNotificationSettingsSaved(false);
+    setError("");
+    try {
+      const updated = await api.updateNotificationSettings({ messageTitle: notificationSettings.messageTitle?.trim() });
+      setNotificationSettings({ ...emptyNotificationSettings, ...updated });
+      setNotificationSettingsSaved(true);
+      setMessage("通知默认标题已保存");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "保存通知配置失败");
+    } finally {
+      setSavingNotificationSettings(false);
+    }
+  }
+
   const recipientTypeChanged = editing !== null && editing !== "new" && recipientForm.type !== editing.type;
   const editingSameType = editing !== null && editing !== "new" && !recipientTypeChanged;
   const telegramCredentialsReady = recipientForm.type === "telegram" && ((recipientForm.botToken?.trim() !== "" && recipientForm.chatId?.trim() !== "") || editingSameType);
@@ -157,7 +180,7 @@ export function Settings() {
             {recipients.map((item) => (
               <div className="recipient-row" key={item.id}>
                 <div className={`recipient-icon ${item.type}`}><NotificationRecipientTypeIcon type={item.type} /></div>
-                <div className="recipient-copy"><strong>{item.name}</strong><span>{recipientTypeLabel(item.type)} · {item.targetMasked}</span></div>
+                <div className="recipient-copy"><strong>{item.name}</strong><span>{recipientTypeLabel(item.type)} · {item.targetMasked}{item.messageTitle ? ` · 标题：${item.messageTitle}` : ""}</span></div>
                 <span className={item.enabled ? "recipient-status enabled" : "recipient-status"}>{item.enabled ? "已启用" : "已停用"}</span>
                 <div className="recipient-actions">
                   <button type="button" title="发送测试通知" disabled={testingId === item.id} onClick={() => testRecipient(item)}><Send size={15} /><span>{testingId === item.id ? "测试中" : "测试"}</span></button>
@@ -187,11 +210,23 @@ export function Settings() {
         )}
       </Card>
 
+      <Card className="settings-card">
+        <div className="section-title compact"><div><h3>通知默认标题</h3><p>所有备份通知默认使用这个项目名，单个接收者可在编辑时覆盖。</p></div></div>
+        {loading ? <div className="loading-copy">正在加载通知配置...</div> : (
+          <form className="settings-form notification-title-settings-form" onSubmit={submitNotificationSettings}>
+            <label className="field settings-wide"><span>默认消息标题</span><input value={notificationSettings.messageTitle ?? ""} onChange={(event) => setNotificationSettings({ ...notificationSettings, messageTitle: event.target.value })} placeholder="留空默认 DataBridge，例如：业务系统名称" /></label>
+            <div className="notification-title-preview"><span>发送标题将显示为</span><strong>{`${notificationSettings.messageTitle?.trim() || "DataBridge"} 备份成功`}</strong></div>
+            <div className="settings-actions notification-title-actions">{notificationSettingsSaved && <em><CheckCircle2 size={14} />已保存</em>}<Button disabled={savingNotificationSettings} type="submit"><Save size={15} />{savingNotificationSettings ? "保存中..." : "保存默认标题"}</Button></div>
+          </form>
+        )}
+      </Card>
+
       {editing && (
         <div className="modal-backdrop">
           <form className="modal recipient-editor-modal" onSubmit={saveRecipient}>
             <div className="modal-title"><div><h3>{editing === "new" ? "新增通知接收者" : "编辑通知接收者"}</h3><p>凭证和 Webhook 地址会加密保存在服务端。</p></div><button type="button" className="icon-button" aria-label="关闭" onClick={() => setEditing(null)}><X size={17} /></button></div>
             <label className="field"><span>接收者名称</span><input required value={recipientForm.name} onChange={(event) => setRecipientForm({ ...recipientForm, name: event.target.value })} placeholder="例如：运维群-钉钉" /></label>
+            <label className="field"><span>消息标题</span><input value={recipientForm.messageTitle ?? ""} onChange={(event) => setRecipientForm({ ...recipientForm, messageTitle: event.target.value })} placeholder="留空使用全局默认标题，例如：业务系统名称" /></label>
             <SelectField label="接收者类型" value={recipientForm.type} onChange={(type) => setRecipientForm({ ...recipientForm, type: type as NotificationRecipientType, target: "", botToken: "", chatId: "" })}>{recipientTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</SelectField>
             {recipientForm.type === "telegram" ? (
               <div className="telegram-recipient-fields">

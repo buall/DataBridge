@@ -234,6 +234,7 @@ export interface NotificationRecipient {
   id: string;
   name: string;
   type: NotificationRecipientType;
+  messageTitle?: string;
   targetMasked: string;
   targetSet: boolean;
   enabled: boolean;
@@ -245,6 +246,7 @@ export interface NotificationRecipientInput {
   name: string;
   type: NotificationRecipientType;
   target?: string;
+  messageTitle?: string;
   botToken?: string;
   chatId?: string;
   enabled: boolean;
@@ -286,6 +288,10 @@ export interface SMTPSettings {
   password?: string;
   passwordSet?: boolean;
   from: string;
+}
+
+export interface NotificationSettings {
+  messageTitle?: string;
 }
 
 export interface MigrationEvent {

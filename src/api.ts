@@ -13,6 +13,7 @@ import type {
   NotificationRecipient,
   NotificationRecipientInput,
   NotificationRecipientTestInput,
+  NotificationSettings,
   RemoteStorage,
   RemoteStorageInput,
   RestoreBackupConfig,
@@ -250,6 +251,9 @@ export const api = {
   smtpSettings: () => request<SMTPSettings>("/settings/smtp"),
   updateSMTPSettings: (input: SMTPSettings) =>
     request<SMTPSettings>("/settings/smtp", { method: "PUT", body: JSON.stringify(input) }),
+  notificationSettings: () => request<NotificationSettings>("/settings/notification"),
+  updateNotificationSettings: (input: NotificationSettings) =>
+    request<NotificationSettings>("/settings/notification", { method: "PUT", body: JSON.stringify(input) }),
   notificationRecipients: () => request<NotificationRecipient[]>("/settings/notification-recipients"),
   createNotificationRecipient: (input: NotificationRecipientInput) =>
     request<NotificationRecipient>("/settings/notification-recipients", { method: "POST", body: JSON.stringify(input) }),

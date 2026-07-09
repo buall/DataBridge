@@ -175,11 +175,11 @@ func TestStoreNotificationRecipientCRUDAndEncryption(t *testing.T) {
 	defer appStore.Close()
 
 	const target = "https://oapi.dingtalk.com/robot/send?access_token=secret-token"
-	created, err := appStore.AddNotificationRecipient(model.NotificationRecipientInput{Name: "运维群", Type: "dingtalk", Target: target, Enabled: true})
+	created, err := appStore.AddNotificationRecipient(model.NotificationRecipientInput{Name: "运维群", Type: "dingtalk", Target: target, MessageTitle: "腾讯云新加坡", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Target != target || created.TargetMasked == target || !created.TargetSet {
+	if created.Target != target || created.TargetMasked == target || !created.TargetSet || created.MessageTitle != "腾讯云新加坡" {
 		t.Fatalf("unexpected created recipient: %#v", created)
 	}
 	databaseBytes, err := os.ReadFile(databasePath)
@@ -189,11 +189,11 @@ func TestStoreNotificationRecipientCRUDAndEncryption(t *testing.T) {
 	if strings.Contains(string(databaseBytes), "secret-token") {
 		t.Fatal("database contains plaintext notification target")
 	}
-	updated, err := appStore.UpdateNotificationRecipient(created.ID, model.NotificationRecipientInput{Name: "值班群", Type: "dingtalk", Enabled: false})
+	updated, err := appStore.UpdateNotificationRecipient(created.ID, model.NotificationRecipientInput{Name: "值班群", Type: "dingtalk", MessageTitle: "生产库", Enabled: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "值班群" || updated.Enabled || updated.Target != target {
+	if updated.Name != "值班群" || updated.Enabled || updated.Target != target || updated.MessageTitle != "生产库" {
 		t.Fatalf("unexpected updated recipient: %#v", updated)
 	}
 	if err := appStore.DeleteNotificationRecipient(created.ID); err != nil {
@@ -201,6 +201,38 @@ func TestStoreNotificationRecipientCRUDAndEncryption(t *testing.T) {
 	}
 	if _, err := appStore.NotificationRecipient(created.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestStoreNotificationSettings(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "databridge.db")
+	appStore, err := New(databasePath, filepath.Join(directory, "databridge.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appStore.Close()
+
+	settings, err := appStore.NotificationSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.MessageTitle != "" {
+		t.Fatalf("default message title = %q", settings.MessageTitle)
+	}
+	updated, err := appStore.UpdateNotificationSettings(model.NotificationSettings{MessageTitle: " 腾讯云新加坡 "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.MessageTitle != "腾讯云新加坡" {
+		t.Fatalf("updated message title = %q", updated.MessageTitle)
+	}
+	loaded, err := appStore.NotificationSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.MessageTitle != "腾讯云新加坡" {
+		t.Fatalf("loaded message title = %q", loaded.MessageTitle)
 	}
 }
 

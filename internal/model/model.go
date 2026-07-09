@@ -224,6 +224,7 @@ type BackupNotification struct {
 	Enabled      bool     `json:"enabled,omitempty"`
 	Method       string   `json:"method,omitempty"`
 	Target       string   `json:"target,omitempty"`
+	Title        string   `json:"title,omitempty"`
 	RecipientIDs []string `json:"recipientIds,omitempty"`
 	Trigger      string   `json:"trigger,omitempty"`
 }
@@ -233,6 +234,7 @@ type NotificationRecipient struct {
 	Name         string    `json:"name"`
 	Type         string    `json:"type"`
 	Target       string    `json:"-"`
+	MessageTitle string    `json:"messageTitle,omitempty"`
 	TargetMasked string    `json:"targetMasked"`
 	TargetSet    bool      `json:"targetSet"`
 	Enabled      bool      `json:"enabled"`
@@ -241,22 +243,24 @@ type NotificationRecipient struct {
 }
 
 type NotificationRecipientInput struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Target   string `json:"target,omitempty"`
-	BotToken string `json:"botToken,omitempty"`
-	ChatID   string `json:"chatId,omitempty"`
-	Enabled  bool   `json:"enabled"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Target       string `json:"target,omitempty"`
+	MessageTitle string `json:"messageTitle,omitempty"`
+	BotToken     string `json:"botToken,omitempty"`
+	ChatID       string `json:"chatId,omitempty"`
+	Enabled      bool   `json:"enabled"`
 }
 
 type NotificationRecipientTestInput struct {
-	ID       string `json:"id,omitempty"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Target   string `json:"target,omitempty"`
-	BotToken string `json:"botToken,omitempty"`
-	ChatID   string `json:"chatId,omitempty"`
-	Enabled  bool   `json:"enabled"`
+	ID           string `json:"id,omitempty"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	Target       string `json:"target,omitempty"`
+	MessageTitle string `json:"messageTitle,omitempty"`
+	BotToken     string `json:"botToken,omitempty"`
+	ChatID       string `json:"chatId,omitempty"`
+	Enabled      bool   `json:"enabled"`
 }
 
 type BackupNotificationTestRequest struct {
@@ -309,6 +313,10 @@ type SMTPSettings struct {
 	Password    string `json:"password,omitempty"`
 	PasswordSet bool   `json:"passwordSet,omitempty"`
 	From        string `json:"from"`
+}
+
+type NotificationSettings struct {
+	MessageTitle string `json:"messageTitle,omitempty"`
 }
 
 type MigrationStatus string
