@@ -91,8 +91,8 @@ func DiscoverEndpoints(ctx context.Context, connection model.Connection) ([]stri
 	if err != nil {
 		return nil, fmt.Errorf("发现 etcd 集群成员失败: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	var response memberListResponse
-	if err := json.Unmarshal(output, &response); err != nil {
+	response, err := parseMemberListOutput(output)
+	if err != nil {
 		return nil, fmt.Errorf("解析 etcd 集群成员: %w", err)
 	}
 	seen := map[string]bool{}
@@ -111,6 +111,29 @@ func DiscoverEndpoints(ctx context.Context, connection model.Connection) ([]stri
 	}
 	sort.Strings(endpoints)
 	return endpoints, nil
+}
+
+func parseMemberListOutput(output []byte) (memberListResponse, error) {
+	var lastErr error
+	text := string(output)
+	for index, char := range text {
+		if char != '{' {
+			continue
+		}
+		var response memberListResponse
+		decoder := json.NewDecoder(strings.NewReader(text[index:]))
+		if err := decoder.Decode(&response); err != nil {
+			lastErr = err
+			continue
+		}
+		if response.Members != nil {
+			return response, nil
+		}
+	}
+	if lastErr != nil {
+		return memberListResponse{}, lastErr
+	}
+	return memberListResponse{}, fmt.Errorf("未找到 etcd member list JSON")
 }
 
 func HealthyEndpoint(ctx context.Context, connection model.Connection, endpoint string) error {

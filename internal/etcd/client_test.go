@@ -60,6 +60,28 @@ func TestDiscoverEndpointsFromSeedMemberList(t *testing.T) {
 	}
 }
 
+func TestParseMemberListOutputSkipsExtraJSON(t *testing.T) {
+	output := []byte(`{"cluster_id":"ignored"}{"members":[{"clientURLs":["https://etcd-1:2379"]}]}`)
+	response, err := parseMemberListOutput(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Members) != 1 || len(response.Members[0].ClientURLs) != 1 || response.Members[0].ClientURLs[0] != "https://etcd-1:2379" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestParseMemberListOutputSkipsLogPrefix(t *testing.T) {
+	output := []byte("warning: retrying member list\n{\"members\":[{\"clientURLs\":[\"http://127.0.0.1:2379\"]}]}\n")
+	response, err := parseMemberListOutput(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Members) != 1 || response.Members[0].ClientURLs[0] != "http://127.0.0.1:2379" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestServerVersionRejectsUnhealthyCluster(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/version" {

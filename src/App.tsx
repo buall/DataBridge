@@ -197,7 +197,7 @@ export default function App() {
         view: "backups",
         stage: job.status === "running" || job.status === "pending" ? "running" : "report",
         jobId: job.id,
-        sourceId: null,
+        sourceId: current.sourceId === "artifacts" ? "artifacts" : null,
       } : current);
     });
   }, [backups, route]);
