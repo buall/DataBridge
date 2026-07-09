@@ -62,7 +62,7 @@ export function Connections({
   const [query, setQuery] = useState("");
   const [form, setForm] = useState<ConnectionFormState>(emptyConnectionForm("PostgreSQL"));
   const [nameCustomized, setNameCustomized] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [submittingAction, setSubmittingAction] = useState<"save" | "test" | null>(null);
   const [formError, setFormError] = useState("");
   const [formErrors, setFormErrors] = useState<ConnectionFormErrors>({});
   const scheduledBackupsByConnection = useMemo(() => groupScheduledBackupsByConnection(backups), [backups]);
@@ -115,25 +115,28 @@ export function Connections({
     };
   }, [openMenu]);
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLElement | null;
+    const action = submitter?.dataset.action === "save" ? "save" : "test";
+    const validate = action === "test";
     const validationErrors = validateConnectionForm(form);
     setFormErrors(validationErrors);
     if (Object.keys(validationErrors).length > 0) {
       setFormError("请先修正表单中的必填项和格式问题。");
       return;
     }
-    setSubmitting(true);
+    setSubmittingAction(action);
     setFormError("");
     try {
-      const input: ConnectionInput = { ...form, port: Number(form.port) };
+      const input: ConnectionInput = { ...form, port: Number(form.port), validate };
       const connection = await api.createConnection(input);
       onAdd(connection);
       closeConnectionForm();
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "连接失败");
+      setFormError(error instanceof Error ? error.message : validate ? "连接失败" : "保存连接失败");
     } finally {
-      setSubmitting(false);
+      setSubmittingAction(null);
     }
   }
 
@@ -442,14 +445,14 @@ export function Connections({
             <dl>
               <div><dt>主机地址</dt><dd className="host-address-value"><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} title={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
               <div><dt>连接用户</dt><dd>{connection.username || "未启用鉴权"}</dd></div>
-              {connection.type === "etcd" ? <div><dt>集群成员</dt><dd title={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 1} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
+              {connection.type === "etcd" ? <div><dt>集群成员</dt><dd title={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 0} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>
             </dl>
             <div className="connection-card-foot">
-              <Badge tone={connection.status === "connected" ? "green" : "red"}>{connection.status === "connected" ? "已连接" : "连接失败"}</Badge>
-              <button className={connection.status === "connected" ? "health-action healthy" : "health-action failed"} onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>
+              <Badge tone={connectionStatusTone(connection.status)}>{connectionStatusLabel(connection.status)}</Badge>
+              <button className={`health-action ${connectionHealthClass(connection.status)}`} onClick={() => testConnection(connection.id)} disabled={testing === connection.id}>
                 {testing === connection.id ? <RefreshCw size={14} className="spin" /> : connection.status === "connected" ? <Check size={14} /> : <AlertTriangle size={14} />}
-                {testing === connection.id ? "正在测试..." : connection.status === "connected" ? `${connection.latency}ms` : "网络不可达"}
+                {testing === connection.id ? "正在测试..." : connectionHealthLabel(connection)}
               </button>
             </div>
           </Card>
@@ -577,7 +580,7 @@ export function Connections({
       {showForm && (
         <div className="modal-backdrop" onMouseDown={closeConnectionForm}>
           <form className="modal" onSubmit={submit} onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-head"><div><h3>新建数据库连接</h3><p>凭证会加密保存，连接测试通过后即可使用。</p></div><button type="button" className="plain-icon" onClick={closeConnectionForm}><X /></button></div>
+            <div className="modal-head"><div><h3>新建数据库连接</h3><p>可直接保存草稿，或先测试连接再保存为可用连接。</p></div><button type="button" className="plain-icon" onClick={closeConnectionForm}><X /></button></div>
             <SelectField label={requiredLabel("数据库类型")} ariaLabel="数据库类型" invalid={Boolean(formErrors.type)} value={form.type} onChange={(type) => { const nextForm = { ...form, type: type as DatabaseType, port: defaultPort(type as DatabaseType), sslMode: defaultSecurityMode(type as DatabaseType), tlsConfig: emptyTLSConfig() }; setForm(nextForm); setFormErrors((current) => ({ ...current, type: undefined, port: undefined, sslMode: undefined })); }}><option value="PostgreSQL">PostgreSQL</option><option value="MySQL">MySQL</option><option value="MongoDB">MongoDB</option><option value="Neo4j">Neo4j</option><option value="etcd">etcd</option></SelectField>
             {formErrors.type && <div className="form-error left field-error">{formErrors.type}</div>}
             <div className="compatibility-hint"><Info size={16} /><span>{formCompatibilityHint}</span></div>
@@ -600,7 +603,7 @@ export function Connections({
             )}
             <label className="field"><span>备注</span><input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="可选，记录用途、环境或负责人" /></label>
             {formError && <div className="form-error left">{formError}</div>}
-            <div className="modal-actions"><Button type="button" variant="secondary" onClick={closeConnectionForm}>取消</Button><Button type="submit" disabled={submitting}>{submitting ? "正在保存..." : "测试并保存"}</Button></div>
+            <div className="modal-actions"><Button type="button" variant="secondary" onClick={closeConnectionForm}>取消</Button><Button type="submit" variant="secondary" data-action="save" disabled={Boolean(submittingAction)}>{submittingAction === "save" ? "正在保存..." : "保存"}</Button><Button type="submit" data-action="test" disabled={Boolean(submittingAction)}>{submittingAction === "test" ? "正在测试..." : "测试并保存"}</Button></div>
           </form>
         </div>
       )}
@@ -622,6 +625,30 @@ function EtcdTLSHint({ enabled }: { enabled: boolean }) {
       <small>DataBridge 还需要能访问控制平面节点的 2379 端口；托管 Kubernetes 通常不会开放 etcd 或提供这些证书。</small>
     </div>
   );
+}
+
+function connectionStatusTone(status: DatabaseConnection["status"]) {
+  if (status === "connected") return "green";
+  if (status === "untested") return "orange";
+  return "red";
+}
+
+function connectionStatusLabel(status: DatabaseConnection["status"]) {
+  if (status === "connected") return "已连接";
+  if (status === "untested") return "未验证";
+  return "连接失败";
+}
+
+function connectionHealthClass(status: DatabaseConnection["status"]) {
+  if (status === "connected") return "healthy";
+  if (status === "untested") return "pending";
+  return "failed";
+}
+
+function connectionHealthLabel(connection: DatabaseConnection) {
+  if (connection.status === "connected") return `${connection.latency}ms`;
+  if (connection.status === "untested") return "点击测试";
+  return "网络不可达";
 }
 
 function EtcdTLSModeGuide({ enabled }: { enabled: boolean }) {

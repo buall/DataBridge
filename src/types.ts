@@ -1,5 +1,5 @@
 export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Neo4j" | "etcd" | "Redis";
-export type ConnectionStatus = "connected" | "warning";
+export type ConnectionStatus = "connected" | "warning" | "untested";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";
 
@@ -36,6 +36,7 @@ export interface ConnectionInput {
   password: string;
   sslMode: string;
   tlsConfig?: ConnectionTLSConfig;
+  validate?: boolean;
 }
 
 export interface BatchImportIssue {

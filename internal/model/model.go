@@ -15,7 +15,9 @@ type ConnectionInput struct {
 	Password  string              `json:"password"`
 	SSLMode   string              `json:"sslMode"`
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Validate  *bool               `json:"validate,omitempty"`
 	Endpoints []string            `json:"-"`
+	Status    string              `json:"-"`
 }
 
 type UpdateConnectionInput struct {

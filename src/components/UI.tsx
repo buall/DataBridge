@@ -87,8 +87,7 @@ export function Badge({
 
 export function DatabaseLogo({ type, name, size = "md" }: { type: DatabaseType; name?: string; size?: "sm" | "md" }) {
   const fallback = connectionInitials(name) || databaseShortName(type);
-  const icon = databaseIconAsset(type);
-  return <span className={`database-logo ${type.toLowerCase()} ${size}`}>{icon ? <img src={icon} alt="" aria-hidden="true" /> : fallback}</span>;
+  return <span className={`database-logo ${type.toLowerCase()} ${size}`}>{fallback}</span>;
 }
 
 export function DatabaseTypeIcon({ type }: { type: DatabaseType }) {

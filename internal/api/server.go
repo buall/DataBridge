@@ -252,19 +252,27 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.Type = normalizeDatabaseType(input.Type)
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
-	defer cancel()
-	latency, version, err := testConnection(ctx, input)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
-		return
-	}
-	if input.Type == "etcd" {
-		input.Endpoints, err = etcd.DiscoverEndpoints(ctx, connectionFromInput(input))
+	shouldValidate := input.Validate == nil || *input.Validate
+	var latency time.Duration
+	var version string
+	if shouldValidate {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		defer cancel()
+		var err error
+		latency, version, err = testConnection(ctx, input)
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+			writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
 			return
 		}
+		if input.Type == "etcd" {
+			input.Endpoints, err = etcd.DiscoverEndpoints(ctx, connectionFromInput(input))
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "connection_failed", err.Error())
+				return
+			}
+		}
+	} else {
+		input.Status = "untested"
 	}
 	connection, err := s.store.AddConnection(input, latency, version)
 	if err != nil {

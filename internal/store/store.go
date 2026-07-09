@@ -305,10 +305,14 @@ func setNotificationRecipientTargetSummary(item *model.NotificationRecipient) {
 }
 
 func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration, version string) (model.Connection, error) {
+	status := strings.TrimSpace(input.Status)
+	if status == "" {
+		status = "connected"
+	}
 	connection := model.Connection{
 		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
-		SSLMode: input.SSLMode, TLSConfig: dbtls.Normalize(input.TLSConfig), Status: "connected",
+		SSLMode: input.SSLMode, TLSConfig: dbtls.Normalize(input.TLSConfig), Status: status,
 		Endpoints: append([]string(nil), input.Endpoints...),
 		LatencyMS: latency.Milliseconds(), Version: version, CreatedAt: time.Now().UTC(),
 	}
