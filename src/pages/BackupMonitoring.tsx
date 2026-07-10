@@ -470,6 +470,7 @@ function stageLabel(stage: string) {
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const etcdClusterDatabase: DatabaseInfo = { name: "整个集群", sizeBytes: 0 };
 function ScheduleEditor({
   job,
   connections,
@@ -517,6 +518,15 @@ function ScheduleEditor({
 
   useEffect(() => {
     if (!form.sourceId) return;
+    const selectedSource = connections.find((item) => item.id === form.sourceId);
+    if (selectedSource?.type === "etcd") {
+      setDatabases([etcdClusterDatabase]);
+      setDatabaseConnectionId(form.sourceId);
+      setLoadingDatabases(false);
+      setError("");
+      setForm((current) => current.sourceId === form.sourceId ? { ...current, sourceDatabase: etcdClusterDatabase.name, sourceDatabases: [etcdClusterDatabase.name] } : current);
+      return;
+    }
     let cancelled = false;
     setLoadingDatabases(true);
     setError("");
@@ -540,7 +550,7 @@ function ScheduleEditor({
         if (!cancelled) setLoadingDatabases(false);
       });
     return () => { cancelled = true; };
-  }, [form.sourceId]);
+  }, [connections, form.sourceId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -587,7 +597,7 @@ function ScheduleEditor({
             <SelectField label="源端连接" value={form.sourceId} onChange={(sourceId) => setForm({ ...form, sourceId, sourceDatabase: "", sourceDatabases: [] })}>
               {connections.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}
             </SelectField>
-            <DatabaseMultiSelect type={source?.type} databases={databases} loading={loadingDatabases} selected={form.sourceDatabases} onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />
+            {source?.type === "etcd" ? <div className="info-banner schedule-editor-etcd-scope">备份范围：整个集群</div> : <DatabaseMultiSelect type={source?.type} databases={databases} loading={loadingDatabases} selected={form.sourceDatabases} onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
           </div>
         </div>
         <div className="schedule-editor-section">

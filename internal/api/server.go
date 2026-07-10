@@ -5049,6 +5049,8 @@ func databases(ctx context.Context, connection model.Connection) ([]model.Databa
 		return mongo.Databases(ctx, connection)
 	case "Neo4j":
 		return neo4j.Databases(ctx, connection)
+	case "etcd":
+		return []model.DatabaseInfo{{Name: "整个集群"}}, nil
 	default:
 		return nil, fmt.Errorf("unsupported database type %q", connection.Type)
 	}
