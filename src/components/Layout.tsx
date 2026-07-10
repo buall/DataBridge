@@ -5,15 +5,12 @@ import {
   Cable,
   ChevronDown,
   Cloud,
-  Database,
   LayoutDashboard,
   LogOut,
-  ListTree,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
   ScrollText,
-  Settings,
   SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
@@ -158,12 +155,6 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
             ))}
           </nav>
 
-          <div className="resource-nav">
-            <span className="nav-caption">资源管理</span>
-            <button title="数据库类型" data-label="数据库类型"><Database size={16} /><span>数据库类型</span></button>
-            <button title="安全与凭证" data-label="安全与凭证"><Settings size={16} /><span>安全与凭证</span></button>
-            <button title="Agent 节点" data-label="Agent 节点"><ListTree size={16} /><span>Agent 节点</span></button>
-          </div>
         </div>
 
         <div className="sidebar-user">
