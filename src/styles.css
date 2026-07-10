@@ -176,11 +176,10 @@ h1, h2, h3, h4, p { margin: 0; }
 .connection-preview-head > div span, .connection-card-head > div span, .storage-card-head span { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .connection-preview-head .connection-version-line, .connection-card-head .connection-version-line, .storage-card-subtitle { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .connection-note { margin-top: 6px !important; color: #7a879b !important; font-size: 11px !important; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.database-type-icon { background: #eef4fb; }
 .connection-preview-head > div span.database-type-icon, .connection-card-head > div span.database-type-icon { width: 18px; height: 18px; margin-top: 0; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; border-radius: 5px; color: inherit; background: #eef4fb; overflow: hidden; line-height: 1; }
 .database-type-icon svg, .database-type-icon img { width: 16px; height: 16px; display: block; flex: 0 0 16px; object-fit: contain; }
-.database-type-icon.mysql { background: #fff4e5; }
-.database-type-icon.redis { background: #fff0f0; }
-.database-type-icon.etcd { background: #eef7ff; }
+.database-type-icon.mysql, .database-type-icon.redis, .database-type-icon.etcd { background: #eef4fb; }
 .version-tag { display: inline-flex; align-items: center; min-height: 18px; border-radius: 5px; padding: 1px 6px; color: #1d4ed8; background: #eff6ff; font-size: 10px; font-style: normal; font-weight: 700; line-height: 1; }
 .database-logo { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 40px; border-radius: 10px; color: #fff; font-size: 15px; font-weight: 800; line-height: 1; overflow: hidden; }
 .database-logo.sm { width: 32px; height: 32px; flex-basis: 32px; border-radius: 8px; font-size: 12px; }
@@ -208,8 +207,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .task-summary-card { min-height: 98px; padding: 20px; display: grid; align-content: center; gap: 7px; border-left: 4px solid #94a3b8; }
 .task-summary-card.blue { border-left-color: var(--blue); }.task-summary-card.green { border-left-color: var(--green); }.task-summary-card.orange { border-left-color: var(--orange); }
 .task-summary-card span { color: var(--muted); font-size: 11px; font-weight: 600; }.task-summary-card strong { font-size: 27px; }.task-summary-card small { color: var(--muted); font-size: 10px; }
-.migration-list-table { min-width: 960px; }
-.migration-list-table .table-row { grid-template-columns: minmax(190px, 1fr) minmax(250px, 1.35fr) .8fr 1fr .65fr 184px; }
+.migration-list-table { min-width: 1180px; }
+.migration-list-table .table-row { grid-template-columns: minmax(190px, 1fr) minmax(360px, 1.5fr) .72fr .9fr .58fr 184px; }
 .backup-list-table { min-width: 1260px; }
 .backup-list-table .table-row { grid-template-columns: minmax(190px, 1fr) 86px 118px minmax(190px, 1.05fr) minmax(190px, 1fr) .85fr .65fr 184px; }
 .migration-list-table .table-head > :last-child,
@@ -221,7 +220,17 @@ h1, h2, h3, h4, p { margin: 0; }
 .migration-list-table .task-row-button:hover > .task-table-desktop > :last-child,
 .backup-list-table .task-row-button:hover > .task-table-desktop > :last-child { background: #f8fbff; box-shadow: -14px 0 18px rgba(248,251,255,.95), -1px 0 0 rgba(226,232,240,.9); }
 .task-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-route { min-width: 0; display: grid; gap: 5px; }.task-route strong, .task-route small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.task-route strong { color: #172033; font-size: 12px; }.task-route small { color: var(--muted); font-size: 10px; }
+.task-route { min-width: 0; display: grid; gap: 5px; }.task-route.route-with-icon { grid-template-columns: 22px minmax(0, 1fr); grid-template-areas: "icon name" "icon meta"; column-gap: 9px; row-gap: 5px; align-items: center; }.task-route.route-with-icon .database-type-icon { grid-area: icon; align-self: center; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: #eef4fb; overflow: hidden; }.task-route strong, .task-route small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.task-route strong { color: #172033; font-size: 12px; }.task-route small { color: var(--muted); font-size: 10px; }.task-route.route-with-icon strong { grid-area: name; }.task-route.route-with-icon small { grid-area: meta; }
+.migration-route-pair { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 12px; }
+.migration-route-endpoint { min-width: 0; display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-areas: "icon name" "icon meta"; column-gap: 9px; row-gap: 5px; align-items: center; }
+.migration-route-pair .migration-route-endpoint { flex: 0 1 auto; max-width: 210px; }
+.migration-route-endpoint .database-type-icon, .migration-route-icon-placeholder { grid-area: icon; align-self: center; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; overflow: hidden; }
+.migration-route-endpoint .database-type-icon { background: #eef4fb; }
+.migration-route-icon-placeholder { background: #eef2f7; color: #94a3b8; font-size: 10px; font-weight: 800; }
+.migration-route-endpoint strong, .migration-route-endpoint small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.migration-route-endpoint strong { grid-area: name; color: #172033; font-size: 12px; line-height: 1.25; }
+.migration-route-endpoint small { grid-area: meta; color: var(--muted); font-size: 10px; line-height: 1.25; }
+.migration-route-arrow { flex: 0 0 auto; color: #94a3b8; font-size: 14px; font-weight: 800; line-height: 1; text-align: center; }
 .task-time { color: #536176; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .task-type-tag { width: fit-content; max-width: 100%; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 800; white-space: nowrap; }
 .task-type-tag.backup { color: #1d4ed8; background: #eaf1ff; }
@@ -728,6 +737,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .schedule-editor-section .section-title { margin-bottom: 0; }
 .schedule-editor-section .section-title.compact { padding: 0; }
 .schedule-editor-section .backup-target-selector { margin-top: 0; }
+.schedule-editor-readonly-source > div { min-height: 44px; padding: 0 13px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; color: #172033; display: flex; align-items: center; font-size: 13px; font-weight: 700; }
+.schedule-editor-etcd-scope { min-height: 44px; margin-top: 19px; padding: 0 15px; display: flex; align-items: center; line-height: 1.35; }
 .schedule-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 4px; }
 .scheduled-options { display: grid; gap: 16px; }
 .notification-panel { max-width: 680px; border-top: 1px solid var(--border); padding-top: 4px; }
@@ -1220,6 +1231,15 @@ h1, h2, h3, h4, p { margin: 0; }
     white-space: normal;
     overflow-wrap: anywhere;
   }
+  .task-mobile-copy .task-mobile-source { display: flex; align-items: center; gap: 6px; }
+  .task-mobile-copy .task-mobile-source .database-type-icon { width: 17px; height: 17px; flex: 0 0 17px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; background: #eef4fb; overflow: hidden; }
+  .task-mobile-copy .migration-mobile-route { max-width: 100%; margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  .task-mobile-copy .migration-mobile-route .migration-route-endpoint { flex: 0 1 auto; max-width: calc((100% - 26px) / 2); }
+  .task-mobile-copy .migration-mobile-route .migration-route-endpoint { grid-template-columns: 18px minmax(0, 1fr); column-gap: 7px; }
+  .task-mobile-copy .migration-mobile-route .database-type-icon,
+  .task-mobile-copy .migration-mobile-route .migration-route-icon-placeholder { width: 18px; height: 18px; border-radius: 5px; font-size: 8px; }
+  .task-mobile-copy .migration-mobile-route strong { font-size: 11px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+  .task-mobile-copy .migration-mobile-route small { margin-top: 0; font-size: 10px; white-space: normal; overflow-wrap: anywhere; }
   .task-mobile-details {
     margin: 22px 0 16px;
     display: grid;

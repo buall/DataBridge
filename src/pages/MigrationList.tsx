@@ -1,13 +1,14 @@
 import { Activity, ArrowRight, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { MigrationJob } from "../types";
-import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
+import type { DatabaseConnection, DatabaseType, MigrationJob } from "../types";
+import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon } from "../components/UI";
 
 export function MigrationList({
   title = "迁移任务",
   description = "查看任务进度、结果和校验报告。",
   migrations,
+  connections,
   onCreate,
   onOpen,
   onDelete,
@@ -15,6 +16,7 @@ export function MigrationList({
   title?: string;
   description?: string;
   migrations: MigrationJob[];
+  connections: DatabaseConnection[];
   onCreate: () => void;
   onOpen: (job: MigrationJob) => void;
   onDelete: (job: MigrationJob) => Promise<void>;
@@ -63,10 +65,7 @@ export function MigrationList({
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
                   <strong className="task-name">{displayTaskName(job)}</strong>
-                  <div className="task-route">
-                    <strong>{job.sourceName} → {job.targetName}</strong>
-                    <small>{job.sourceDatabase} → {job.targetDatabase}</small>
-                  </div>
+                  <MigrationRoute job={job} connections={connections} />
                   <span className="task-meta task-started-at">{formatDate(job.startedAt)}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
@@ -80,8 +79,7 @@ export function MigrationList({
                     <span className="task-mobile-icon"><Activity size={18} /></span>
                     <div className="task-mobile-copy">
                       <strong>{displayTaskName(job)}</strong>
-                      <span>{job.sourceName} → {job.targetName}</span>
-                      <small>{job.sourceDatabase} → {job.targetDatabase}</small>
+                      <MigrationRoute job={job} connections={connections} mobile />
                     </div>
                   </div>
                   <div className="task-mobile-details">
@@ -135,6 +133,32 @@ export function MigrationList({
 function displayTaskName(job: MigrationJob) {
   const databaseRoute = `${job.sourceDatabase} → ${job.targetDatabase}`;
   return job.name && job.name !== databaseRoute ? job.name : `${job.sourceName} 到 ${job.targetName}迁移`;
+}
+
+function MigrationRoute({ job, connections, mobile = false }: { job: MigrationJob; connections: DatabaseConnection[]; mobile?: boolean }) {
+  const sourceType = migrationConnectionType(job.sourceName, connections);
+  const targetType = migrationConnectionType(job.targetName, connections) ?? sourceType;
+  return (
+    <div className={mobile ? "migration-mobile-route" : "migration-route-pair"}>
+      <MigrationEndpoint type={sourceType} name={job.sourceName} database={job.sourceDatabase} />
+      <span className="migration-route-arrow" aria-hidden="true">→</span>
+      <MigrationEndpoint type={targetType} name={job.targetName} database={job.targetDatabase} />
+    </div>
+  );
+}
+
+function MigrationEndpoint({ type, name, database }: { type: DatabaseType | null; name: string; database: string }) {
+  return (
+    <div className="migration-route-endpoint">
+      {type ? <DatabaseTypeIcon type={type} /> : <span className="migration-route-icon-placeholder" aria-hidden="true">DB</span>}
+      <strong>{name}</strong>
+      <small>{type ? `${type} · ${database}` : database}</small>
+    </div>
+  );
+}
+
+function migrationConnectionType(name: string, connections: DatabaseConnection[]): DatabaseType | null {
+  return connections.find((connection) => connection.name === name)?.type ?? null;
 }
 
 function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; value: number; detail: string; tone?: "gray" | "blue" | "green" }) {

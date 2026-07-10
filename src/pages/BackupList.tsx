@@ -1,8 +1,8 @@
 import { Archive, ArrowRight, Download, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { BackupJob } from "../types";
-import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
+import type { BackupJob, DatabaseType } from "../types";
+import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon } from "../components/UI";
 import { api } from "../api";
 
 export function BackupList({
@@ -74,7 +74,7 @@ export function BackupList({
                   <strong className="task-name">{job.name}</strong>
                   <TaskTypeTag job={job} />
                   <time className="task-time">{formatTaskTime(job.startedAt)}</time>
-                  <div className="task-route"><strong>{job.sourceName}</strong><small>{job.sourceType} · {job.sourceDatabase}</small></div>
+                  <SourceRoute job={job} />
                   <span className="task-name task-meta task-destination">{job.destination}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
@@ -88,7 +88,7 @@ export function BackupList({
                     <span className="task-mobile-icon"><Archive size={18} /></span>
                     <div className="task-mobile-copy">
                       <strong>{job.name}</strong>
-                      <span>{job.sourceName}</span>
+                      <span className="task-mobile-source"><SourceTypeIcon type={job.sourceType} />{job.sourceName}</span>
                       <small>{job.sourceType} · {job.sourceDatabase}</small>
                     </div>
                   </div>
@@ -155,6 +155,25 @@ function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; v
 function TaskTypeTag({ job }: { job: BackupJob }) {
   const type = backupTaskType(job);
   return <span className={`task-type-tag ${type.tone}`}>{type.label}</span>;
+}
+
+function SourceRoute({ job }: { job: BackupJob }) {
+  return (
+    <div className="task-route route-with-icon">
+      <SourceTypeIcon type={job.sourceType} />
+      <strong>{job.sourceName}</strong>
+      <small>{job.sourceType} · {job.sourceDatabase}</small>
+    </div>
+  );
+}
+
+function SourceTypeIcon({ type }: { type: string }) {
+  const databaseType = backupDatabaseType(type);
+  return databaseType ? <DatabaseTypeIcon type={databaseType} /> : null;
+}
+
+function backupDatabaseType(type: string): DatabaseType | null {
+  return ["PostgreSQL", "MySQL", "MongoDB", "Neo4j", "etcd", "Redis"].includes(type) ? type as DatabaseType : null;
 }
 
 function backupTaskType(job: BackupJob) {

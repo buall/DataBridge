@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, Clipboard, Copy, DatabaseBackup, Download, FileArchive, Gauge, HardDrive, Pencil, Play, Square, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, Clipboard, Copy, DatabaseBackup, Download, FileArchive, Gauge, HardDrive, Pencil, Play, Square, Trash2, X } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
@@ -589,14 +589,18 @@ function ScheduleEditor({
   return (
     <div className="modal-backdrop">
       <form className="modal schedule-editor-modal" onSubmit={submit}>
-        <div className="modal-title"><div><h3>编辑备份任务</h3><p>{job.sourceName} / {job.sourceDatabase}</p></div></div>
+        <div className="modal-title">
+          <div><h3>编辑备份任务</h3><p>{job.sourceName} / {job.sourceDatabase}</p></div>
+          <button type="button" className="icon-button" aria-label="关闭编辑备份任务" onClick={onClose}><X size={17} /></button>
+        </div>
         {error && <div className="error-banner">{error}</div>}
         <div className="schedule-editor-section">
           <label className="field"><span>任务名称</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
           <div className="schedule-editor-source-grid">
-            <SelectField label="源端连接" value={form.sourceId} onChange={(sourceId) => setForm({ ...form, sourceId, sourceDatabase: "", sourceDatabases: [] })}>
-              {connections.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}
-            </SelectField>
+            <div className="field schedule-editor-readonly-source">
+              <span>源端连接</span>
+              <div aria-readonly="true">{source ? `${source.name} · ${source.type}` : job.sourceName}</div>
+            </div>
             {source?.type === "etcd" ? <div className="info-banner schedule-editor-etcd-scope">备份范围：整个集群</div> : <DatabaseMultiSelect type={source?.type} databases={databases} loading={loadingDatabases} selected={form.sourceDatabases} onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
           </div>
         </div>
