@@ -120,9 +120,9 @@ export function BackupArtifacts({
                   </dl>
                 </div>
 				<div className="artifact-actions">
-				  <button type="button" title="复制路径" onClick={() => copyArtifactPath(artifact)}>{copied === artifact.database ? <Clipboard size={15} /> : <Copy size={15} />}<span>{copied === artifact.database ? "已复制路径" : "复制路径"}</span></button>
-				  <button type="button" title="下载备份产物" disabled={downloading === artifact.database} onClick={() => downloadArtifact(artifact)}><Download size={15} /><span>{downloading === artifact.database ? "下载中" : "下载"}</span></button>
-          {showEtcdSnapshotManual && <button type="button" className="manual" title="查看 etcd 数据恢复文档" onClick={() => setManualOpen(true)}><FileText size={15} /><span>数据恢复文档</span></button>}
+				  <button type="button" data-tooltip-content="复制路径" onClick={() => copyArtifactPath(artifact)}>{copied === artifact.database ? <Clipboard size={15} /> : <Copy size={15} />}<span>{copied === artifact.database ? "已复制路径" : "复制路径"}</span></button>
+				  <button type="button" data-tooltip-content="下载备份产物" disabled={downloading === artifact.database} onClick={() => downloadArtifact(artifact)}><Download size={15} /><span>{downloading === artifact.database ? "下载中" : "下载"}</span></button>
+          {showEtcdSnapshotManual && <button type="button" className="manual" data-tooltip-content="查看 etcd 数据恢复文档" onClick={() => setManualOpen(true)}><FileText size={15} /><span>数据恢复文档</span></button>}
 				</div>
 			  </div>
             ))}
@@ -378,7 +378,7 @@ kubectl get pods -A`,
                 </ul>
               ) : null}
               <div className="artifact-manual-command-wrap">
-                <button type="button" className="artifact-command-copy" title="复制命令" onClick={() => copyCommand(command, title)}>
+                <button type="button" className="artifact-command-copy" data-tooltip-content="复制命令" onClick={() => copyCommand(command, title)}>
                   {copiedCommand === title ? <Clipboard size={14} /> : <Copy size={14} />}
                   <span>{copiedCommand === title ? "已复制" : copiedCommand === "复制失败" ? "失败" : "复制"}</span>
                 </button>

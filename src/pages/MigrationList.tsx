@@ -64,21 +64,21 @@ export function MigrationList({
               return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
-                  <strong className="task-name">{displayTaskName(job)}</strong>
+                  <strong className="task-name" data-tooltip-content={displayTaskName(job)}>{displayTaskName(job)}</strong>
                   <MigrationRoute job={job} connections={connections} />
                   <span className="task-meta task-started-at">{formatDate(job.startedAt)}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
                   <span className="row-actions">
                     <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
-                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                   </span>
                 </div>
                 <div className="task-mobile-card">
                   <div className="task-mobile-head">
                     <span className="task-mobile-icon"><Activity size={18} /></span>
                     <div className="task-mobile-copy">
-                      <strong>{displayTaskName(job)}</strong>
+                      <strong data-tooltip-content={displayTaskName(job)}>{displayTaskName(job)}</strong>
                       <MigrationRoute job={job} connections={connections} mobile />
                     </div>
                   </div>
@@ -99,7 +99,7 @@ export function MigrationList({
                     <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
                     <span className="row-actions">
                       <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
-                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                     </span>
                   </div>
                 </div>
@@ -148,11 +148,12 @@ function MigrationRoute({ job, connections, mobile = false }: { job: MigrationJo
 }
 
 function MigrationEndpoint({ type, name, database }: { type: DatabaseType | null; name: string; database: string }) {
+  const meta = type ? `${type} · ${database}` : database;
   return (
-    <div className="migration-route-endpoint">
+    <div className="migration-route-endpoint" data-tooltip-content={`${name}\n${meta}`}>
       {type ? <DatabaseTypeIcon type={type} /> : <span className="migration-route-icon-placeholder" aria-hidden="true">DB</span>}
-      <strong>{name}</strong>
-      <small>{type ? `${type} · ${database}` : database}</small>
+      <strong data-tooltip-content={name}>{name}</strong>
+      <small data-tooltip-content={meta}>{meta}</small>
     </div>
   );
 }

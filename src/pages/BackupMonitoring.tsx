@@ -2,9 +2,9 @@ import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Cloc
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, RemoteStorage } from "../types";
+import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
 import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
-import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, NotificationTriggerSelector, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
+import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, NotificationTriggerSelector, notificationTriggerLabel, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
@@ -51,6 +51,7 @@ export function BackupMonitoring({
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [artifactError, setArtifactError] = useState("");
+  const { recipients, loadingRecipients } = useNotificationRecipients();
 
   useEffect(() => {
     let stopped = false;
@@ -159,6 +160,7 @@ export function BackupMonitoring({
       <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
       <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label={scheduled ? "保留期限" : "备份文件"} value={scheduled ? retentionLabel(retentionDaysFromJob(job)) : job.artifactName || "待生成"} detail={scheduled ? "按保留期限自动清理" : formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? scheduled ? "上次执行失败，计划仍有效" : "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
+      {scheduled && <ScheduleInfoCard job={job} storages={storages} recipients={recipients} loadingRecipients={loadingRecipients} />}
       <div className="monitor-grid single">
         <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
       </div>
@@ -178,6 +180,59 @@ export function BackupMonitoring({
 
 function RuntimeMetric({ icon, label, value, detail, warning = false, long = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warning?: boolean; long?: boolean }) {
   return <Card className={`runtime-metric ${long ? "long-text" : ""}`}><span className={warning ? "warning" : ""}>{icon}</span><div><small>{label}</small><strong>{value}</strong><em className={warning ? "warning" : ""}>{detail}</em></div></Card>;
+}
+
+function ScheduleInfoCard({
+  job,
+  storages,
+  recipients,
+  loadingRecipients,
+}: {
+  job: BackupJob;
+  storages: RemoteStorage[];
+  recipients: NotificationRecipient[];
+  loadingRecipients: boolean;
+}) {
+  const targets = scheduleTargets(job, storages);
+  const notification = scheduleNotification(job, recipients, loadingRecipients);
+  return (
+    <Card className="schedule-info-card">
+      <div className="section-title compact"><div><h3>任务配置</h3><p>定时任务的源端、目标存储和通知策略。</p></div></div>
+      <div className="schedule-info-grid">
+        <div className="schedule-info-item">
+          <span>源端 / 数据库</span>
+          <strong data-tooltip-content={`${job.sourceName}\n${sourceDatabaseLabel(job)}`}>{job.sourceName}</strong>
+          <small data-tooltip-content={sourceDatabaseLabel(job)}>{sourceDatabaseLabel(job)}</small>
+        </div>
+        <div className="schedule-info-item">
+          <span>执行计划</span>
+          <strong>{scheduleLabel(job)}</strong>
+          <small>下次执行：{formatDateTime(job.nextRunAt)}</small>
+        </div>
+        <div className="schedule-info-item">
+          <span>保留策略</span>
+          <strong>{retentionLabel(retentionDaysFromJob(job))}</strong>
+          <small>到期自动清理历史备份</small>
+        </div>
+        <div className="schedule-info-item">
+          <span>备份通知</span>
+          <strong>{notification.value}</strong>
+          <small data-tooltip-content={notification.detail}>{notification.detail}</small>
+        </div>
+        <div className="schedule-info-item schedule-info-targets">
+          <span>目标存储</span>
+          <ul>
+            {targets.map((target) => (
+              <li key={`${target.id}-${target.detail}`}>
+                <strong data-tooltip-content={target.name}>{target.name}</strong>
+                <small data-tooltip-content={target.detail}>{target.detail}</small>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 export function restoreSourceDatabases(job: BackupJob) {
@@ -467,6 +522,50 @@ function stageLabel(stage: string) {
   if (stage === "failed") return "执行失败";
   if (stage === "cancelled") return "已取消";
   return "任务排队";
+}
+
+function sourceDatabaseLabel(job: BackupJob) {
+  return job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean).join("、") || "未选择数据库";
+}
+
+function scheduleTargets(job: BackupJob, storages: RemoteStorage[]) {
+  const targets = job.backupTargets?.length
+    ? [...job.backupTargets].sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+    : initialBackupTargets(job, storages);
+  if (!targets.length) {
+    return [{
+      id: job.destination || "unknown",
+      name: job.destination || "未配置目标存储",
+      detail: storageTypeLabel(job.destinationType),
+    }];
+  }
+  return targets.map((target, index) => {
+    const storage = storages.find((item) => item.id === target.storageId);
+    const role = target.role === "secondary" ? "备份节点" : index === 0 ? "主节点" : "备份节点";
+    const storageName = storage?.name ?? target.storageId;
+    const storageMeta = storage ? storageLocation(storage) : "未找到存储配置";
+    return {
+      id: target.storageId,
+      name: storageName,
+      detail: `${role} · ${storageTypeLabel(storage?.type ?? job.destinationType)} · ${storageMeta}`,
+    };
+  });
+}
+
+function storageLocation(storage: RemoteStorage) {
+  return storage.bucket || storage.path || storage.endpoint || storage.provider || "未填写位置";
+}
+
+function scheduleNotification(job: BackupJob, recipients: NotificationRecipient[], loadingRecipients: boolean) {
+  if (!job.notificationEnabled) return { value: "未开启", detail: "不会发送备份结果通知" };
+  const trigger = notificationTriggerLabel(job.notificationTrigger ?? "all");
+  if (loadingRecipients) return { value: trigger, detail: "正在加载通知接收者" };
+  const names = (job.notificationRecipientIds ?? [])
+    .map((id) => recipients.find((item) => item.id === id)?.name ?? id)
+    .filter(Boolean);
+  if (names.length) return { value: trigger, detail: names.join("、") };
+  if (job.notificationTarget) return { value: trigger, detail: job.notificationTarget };
+  return { value: trigger, detail: "未选择接收者" };
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];

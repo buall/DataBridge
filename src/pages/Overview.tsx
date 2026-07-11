@@ -47,9 +47,9 @@ export function Overview({
               <div className="connection-preview-head">
                 <DatabaseLogo type={connection.type} name={connection.name} />
                 <div>
-                  <strong>{connection.name}</strong>
+                  <strong data-tooltip-content={connection.name}>{connection.name}</strong>
                   <span className="connection-version-line"><DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag">{connection.version ? `v${connection.version}` : "待刷新"}</em></span>
-                  <span className="connection-note">{connection.note || "\u00A0"}</span>
+                  <span className="connection-note" data-tooltip-content={connection.note || ""}>{connection.note || "\u00A0"}</span>
                 </div>
                 <Badge tone={connection.status === "connected" ? "green" : "orange"}>
                   {connection.status === "connected" ? "已连接" : "需验证"}
@@ -72,7 +72,7 @@ export function Overview({
             <div className="table-row table-head"><span>任务名称</span><span>源端 → 目标端</span><span>阶段</span><span>进度</span><span>状态</span></div>
             {migrations.slice(0, 8).map((task) => (
               <button className="table-row task-row-button" key={task.id} onClick={() => onOpenMigration(task)}>
-                <strong>{task.name}</strong><span>{task.sourceDatabase} → {task.targetDatabase}</span><span>{migrationStageLabel(task.stage)}</span>
+                <strong data-tooltip-content={task.name}>{task.name}</strong><span data-tooltip-content={`${task.sourceDatabase} → ${task.targetDatabase}`}>{task.sourceDatabase} → {task.targetDatabase}</span><span>{migrationStageLabel(task.stage)}</span>
                 <div className="table-progress"><div><i style={{ width: `${task.progress}%` }} /></div><small>{task.progress}%</small></div>
                 <Badge tone={migrationStatusTone(task.status)}>{migrationStatusLabel(task.status)}</Badge>
               </button>

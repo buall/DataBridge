@@ -183,9 +183,9 @@ export function Settings() {
                 <div className="recipient-copy"><strong>{item.name}</strong><span>{recipientTypeLabel(item.type)} · {item.targetMasked}{item.messageTitle ? ` · 标题：${item.messageTitle}` : ""}</span></div>
                 <span className={item.enabled ? "recipient-status enabled" : "recipient-status"}>{item.enabled ? "已启用" : "已停用"}</span>
                 <div className="recipient-actions">
-                  <button type="button" title="发送测试通知" disabled={testingId === item.id} onClick={() => testRecipient(item)}><Send size={15} /><span>{testingId === item.id ? "测试中" : "测试"}</span></button>
-                  <button type="button" title="编辑接收者" onClick={() => openRecipient(item)}><Pencil size={15} /><span>编辑</span></button>
-                  <button type="button" className="danger" title="删除接收者" onClick={() => removeRecipient(item)}><Trash2 size={15} /><span>删除</span></button>
+                  <button type="button" data-tooltip-content="发送测试通知" disabled={testingId === item.id} onClick={() => testRecipient(item)}><Send size={15} /><span>{testingId === item.id ? "测试中" : "测试"}</span></button>
+                  <button type="button" data-tooltip-content="编辑接收者" onClick={() => openRecipient(item)}><Pencil size={15} /><span>编辑</span></button>
+                  <button type="button" className="danger" data-tooltip-content="删除接收者" onClick={() => removeRecipient(item)}><Trash2 size={15} /><span>删除</span></button>
                 </div>
               </div>
             ))}

@@ -410,16 +410,18 @@ export function Connections({
       <div className="connections-grid">
         {filtered.map((connection) => {
           const scheduledBackups = scheduledBackupsForConnection(connection, scheduledBackupsByConnection);
+          const versionLabel = compactVersionLabel(connection.version);
+          const versionTitle = connection.version ? `v${connection.version}` : "待刷新";
           return (
           <Card className="connection-card" key={connection.id}>
             <div className="connection-card-head">
               <DatabaseLogo type={connection.type} name={connection.name} />
               <div>
                 <strong>{connection.name}</strong>
-                <span className="connection-version-line">
-                  <DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag">{connection.version ? `v${connection.version}` : "待刷新"}</em>
+                <span className="connection-version-line" data-tooltip-mode="always" data-tooltip-content={`${connection.type} · ${versionTitle}`}>
+                  <DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag" data-tooltip-mode="always" data-tooltip-content={versionTitle}>{versionLabel}</em>
                   {scheduledBackups.length > 0 && (
-                    <span className="connection-schedule-pill" title={scheduledBackups.map((job) => `${job.name} · ${scheduleLabel(job)}`).join("；")}>
+                    <span className="connection-schedule-pill" data-tooltip-mode="always" data-tooltip-content={scheduledBackups.map((job) => `${job.name} · ${scheduleLabel(job)}`).join("\n")}>
                       <CalendarClock size={12} />
                       {scheduledBackups.length} 个定时任务
                     </span>
@@ -443,9 +445,9 @@ export function Connections({
               </div>
             </div>
             <dl>
-              <div><dt>主机地址</dt><dd className="host-address-value"><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} title={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
+              <div><dt>主机地址</dt><dd className="host-address-value"><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} data-tooltip-content={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state">已复制</span>}</dd></div>
               <div><dt>连接用户</dt><dd>{connection.username || "未启用鉴权"}</dd></div>
-              {connection.type === "etcd" ? <div><dt>集群成员</dt><dd title={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 0} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
+              {connection.type === "etcd" ? <div><dt>集群成员</dt><dd data-tooltip-content={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 0} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>
             </dl>
             <div className="connection-card-foot">
@@ -931,6 +933,13 @@ function isDomainOrHostname(value: string) {
   const topLevelLabel = labels[labels.length - 1];
   if (/^\d+$/.test(topLevelLabel)) return false;
   return true;
+}
+
+function compactVersionLabel(version?: string) {
+  if (!version) return "待刷新";
+  const normalized = version.trim();
+  const core = normalized.split(/\s|\(/)[0] || normalized;
+  return `v${core}`;
 }
 
 function TLSCertificateFields({

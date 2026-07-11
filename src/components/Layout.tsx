@@ -130,7 +130,7 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
                   href={paths[id]}
                   data-label={label}
                   data-path={paths[id]}
-                  title={label}
+                  data-tooltip-content={label}
                   aria-current={activeView === id ? "page" : undefined}
                   aria-expanded={item.children ? expandedNav === id : undefined}
                   onClick={(event) => {
@@ -163,7 +163,7 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
             className="sidebar-user-toggle"
             aria-label={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
             aria-expanded={isMobile ? mobileNavOpen : !sidebarCollapsed}
-            title={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+            data-tooltip-content={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
             data-label={isMobile ? "关闭" : sidebarCollapsed ? "展开" : "收起"}
             onClick={() => {
               if (isMobile) {
@@ -198,7 +198,7 @@ export function Layout({ activeView, title, children, paths, onNavigate, onLogou
             </div>
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" aria-label="退出登录" title="退出登录" onClick={onLogout}><LogOut size={18} /></button>
+            <button className="icon-button" aria-label="退出登录" data-tooltip-content="退出登录" onClick={onLogout}><LogOut size={18} /></button>
             <div className="avatar dark">DB</div>
           </div>
         </header>

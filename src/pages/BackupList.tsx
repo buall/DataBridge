@@ -1,4 +1,4 @@
-import { Archive, ArrowRight, Download, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
+import { Archive, Download, Play, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupJob, DatabaseType } from "../types";
@@ -10,15 +10,18 @@ export function BackupList({
   onCreate,
   onOpen,
   onDelete,
+  onTrigger,
 }: {
   backups: BackupJob[];
   onCreate: () => void;
   onOpen: (job: BackupJob) => void;
   onDelete: (job: BackupJob) => Promise<void>;
+  onTrigger: (job: BackupJob) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [triggeringId, setTriggeringId] = useState("");
   const [error, setError] = useState("");
   async function exportSchedules() {
     try {
@@ -45,6 +48,17 @@ export function BackupList({
   const scheduled = backups.filter((item) => item.status === "scheduled").length;
   const completed = backups.filter((item) => item.status === "completed").length;
   const totalBytes = backups.reduce((sum, item) => sum + (item.artifactSize ?? 0), 0);
+  async function triggerJob(job: BackupJob) {
+    setTriggeringId(job.id);
+    setError("");
+    try {
+      await onTrigger(job);
+    } catch (triggerError) {
+      setError(triggerError instanceof Error ? triggerError.message : "立即触发备份失败");
+    } finally {
+      setTriggeringId("");
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -65,31 +79,35 @@ export function BackupList({
         </div>
         {filtered.length ? (
           <div className="task-table backup-list-table">
-            <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>创建时间</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
+            <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>创建时间</span><span>上一次调度</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
             {filtered.map((job) => {
               const deleteDisabled = job.status === "running" || job.status === "pending";
+              const triggerVisible = job.scheduleMode === "scheduled" || job.status === "scheduled";
+              const triggerDisabled = deleteDisabled || triggeringId === job.id;
+              const lastScheduleTime = lastScheduleLabel(job);
               return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
-                  <strong className="task-name">{job.name}</strong>
+                  <strong className="task-name" data-tooltip-content={job.name}>{job.name}</strong>
                   <TaskTypeTag job={job} />
                   <time className="task-time">{formatTaskTime(job.startedAt)}</time>
+                  <time className="task-time" data-tooltip-content={lastScheduleTime}>{lastScheduleTime}</time>
                   <SourceRoute job={job} />
-                  <span className="task-name task-meta task-destination">{job.destination}</span>
+                  <span className="task-name task-meta task-destination" data-tooltip-content={job.destination}>{job.destination}</span>
                   <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
                   <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
                   <span className="row-actions">
-                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
-                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                    {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
+                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                   </span>
                 </div>
                 <div className="task-mobile-card">
                   <div className="task-mobile-head">
                     <span className="task-mobile-icon"><Archive size={18} /></span>
                     <div className="task-mobile-copy">
-                      <strong>{job.name}</strong>
-                      <span className="task-mobile-source"><SourceTypeIcon type={job.sourceType} />{job.sourceName}</span>
-                      <small>{job.sourceType} · {job.sourceDatabase}</small>
+                      <strong data-tooltip-content={job.name}>{job.name}</strong>
+                      <span className="task-mobile-source" data-tooltip-content={job.sourceName}><SourceTypeIcon type={job.sourceType} />{job.sourceName}</span>
+                      <small data-tooltip-content={`${job.sourceType} · ${job.sourceDatabase}`}>{job.sourceType} · {job.sourceDatabase}</small>
                     </div>
                   </div>
                   <div className="task-mobile-details">
@@ -102,8 +120,12 @@ export function BackupList({
                       <strong>{formatTaskTime(job.startedAt)}</strong>
                     </div>
                     <div className="task-mobile-row">
+                      <span>上一次调度</span>
+                      <strong data-tooltip-content={lastScheduleTime}>{lastScheduleTime}</strong>
+                    </div>
+                    <div className="task-mobile-row">
                       <span>目标存储</span>
-                      <strong>{job.destination}</strong>
+                      <strong data-tooltip-content={job.destination}>{job.destination}</strong>
                     </div>
                     <div className="task-mobile-row">
                       <span>{job.status === "scheduled" ? "下次执行" : "进度"}</span>
@@ -116,8 +138,8 @@ export function BackupList({
                   <div className="task-mobile-foot">
                     <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
                     <span className="row-actions">
-                      <span className="row-action">{job.status === "running" || job.status === "pending" ? <Archive size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : job.status === "scheduled" ? "查看计划" : "查看结果"}<ArrowRight size={14} /></span>
-                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} title={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                      {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
+                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                     </span>
                   </div>
                 </div>
@@ -158,11 +180,12 @@ function TaskTypeTag({ job }: { job: BackupJob }) {
 }
 
 function SourceRoute({ job }: { job: BackupJob }) {
+  const meta = `${job.sourceType} · ${job.sourceDatabase}`;
   return (
-    <div className="task-route route-with-icon">
+    <div className="task-route route-with-icon" data-tooltip-content={`${job.sourceName}\n${meta}`}>
       <SourceTypeIcon type={job.sourceType} />
-      <strong>{job.sourceName}</strong>
-      <small>{job.sourceType} · {job.sourceDatabase}</small>
+      <strong data-tooltip-content={job.sourceName}>{job.sourceName}</strong>
+      <small data-tooltip-content={meta}>{meta}</small>
     </div>
   );
 }
@@ -185,6 +208,12 @@ function backupTaskType(job: BackupJob) {
 function formatTaskTime(value?: string) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function lastScheduleLabel(job: BackupJob) {
+  if (job.lastRunAt) return formatTaskTime(job.lastRunAt);
+  if (job.finishedAt && (job.scheduleMode === "scheduled" || job.status === "scheduled")) return formatTaskTime(job.finishedAt);
+  return "尚未执行";
 }
 
 function nextRunLabel(value?: string) {

@@ -111,6 +111,163 @@ export default function App() {
   const { view, stage: migrationStage } = route;
 
   useEffect(() => {
+    const applyOverflowTitles = () => {
+      document.querySelectorAll("body *").forEach((element) => {
+        if (!(element instanceof HTMLElement)) return;
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return;
+        if (element.childElementCount > 0) return;
+        const style = window.getComputedStyle(element);
+        const canClipText = style.overflow === "hidden" || style.overflowX === "hidden" || style.overflowY === "hidden" || style.textOverflow === "ellipsis";
+        if (!canClipText) return;
+        const overflowed = element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight;
+        if (!overflowed) {
+          if (element.dataset.autoTitle === "true") {
+            delete element.dataset.tooltipContent;
+            delete element.dataset.autoTitle;
+          }
+          return;
+        }
+        const text = element.innerText?.trim().replace(/\s+/g, " ");
+        if (!text || element.getAttribute("title") || element.dataset.tooltipContent) return;
+        element.dataset.tooltipContent = text;
+        element.dataset.autoTitle = "true";
+      });
+    };
+
+    const scheduleOverflowTitles = () => window.requestAnimationFrame(applyOverflowTitles);
+    scheduleOverflowTitles();
+    const observer = new MutationObserver(scheduleOverflowTitles);
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.addEventListener("resize", scheduleOverflowTitles);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleOverflowTitles);
+    };
+  }, []);
+
+  useEffect(() => {
+    let activeElement: HTMLElement | null = null;
+    let showTimer = 0;
+    const tooltip = document.createElement("div");
+    tooltip.className = "app-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    document.body.appendChild(tooltip);
+
+    const hideTooltip = () => {
+      window.clearTimeout(showTimer);
+      tooltip.classList.remove("visible");
+      activeElement = null;
+    };
+
+    const positionTooltip = (element: HTMLElement) => {
+      const offset = 8;
+      const rect = element.getBoundingClientRect();
+      const maxLeft = window.innerWidth - tooltip.offsetWidth - 10;
+      const maxTop = window.innerHeight - tooltip.offsetHeight - 10;
+      const preferredTop = rect.bottom + offset;
+      const fallbackTop = rect.top - tooltip.offsetHeight - offset;
+      const nextLeft = Math.max(10, Math.min(rect.left, maxLeft));
+      const nextTop = preferredTop <= maxTop ? preferredTop : Math.max(10, Math.min(fallbackTop, maxTop));
+      tooltip.style.left = `${nextLeft}px`;
+      tooltip.style.top = `${nextTop}px`;
+    };
+
+    const migrateTitle = (element: HTMLElement) => {
+      const currentTitle = element.getAttribute("title")?.trim();
+      if (!currentTitle) return;
+      element.dataset.tooltipContent = currentTitle;
+      element.removeAttribute("title");
+    };
+
+    const migrateTitles = (root: ParentNode = document.body) => {
+      if (root instanceof HTMLElement) migrateTitle(root);
+      root.querySelectorAll<HTMLElement>("[title]").forEach(migrateTitle);
+    };
+
+    const isOverflowed = (element: HTMLElement) => {
+      return element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1;
+    };
+
+    const shouldShowTooltip = (element: HTMLElement) => {
+      return element.dataset.tooltipMode === "always" || isOverflowed(element);
+    };
+
+    const containsPoint = (element: HTMLElement, clientX: number, clientY: number) => {
+      const rect = element.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    };
+
+    const findTooltipTarget = (element: Element, clientX: number, clientY: number) => {
+      let current: HTMLElement | null = element instanceof HTMLElement ? element : element.parentElement;
+      if (current) {
+        const pointedChild = Array.from(current.querySelectorAll<HTMLElement>("[data-tooltip-content], [title]"))
+          .reverse()
+          .find((child) => containsPoint(child, clientX, clientY));
+        if (pointedChild) {
+          migrateTitle(pointedChild);
+          return shouldShowTooltip(pointedChild) ? pointedChild : null;
+        }
+      }
+      while (current && current !== document.body) {
+        migrateTitle(current);
+        const hasTooltip = Boolean(current.dataset.tooltipContent?.trim());
+        if (hasTooltip) return shouldShowTooltip(current) ? current : null;
+        current = current.parentElement;
+      }
+      return null;
+    };
+
+    const showTooltip = (element: HTMLElement) => {
+      migrateTitle(element);
+      const title = element.dataset.tooltipContent?.trim();
+      if (!title) return;
+      hideTooltip();
+      activeElement = element;
+      tooltip.textContent = title;
+      positionTooltip(element);
+      showTimer = window.setTimeout(() => {
+        positionTooltip(element);
+        tooltip.classList.add("visible");
+      }, 120);
+    };
+
+    const handlePointerOver = (event: PointerEvent) => {
+      if (event.target instanceof HTMLElement) {
+        migrateTitles(event.target);
+      }
+      const target = event.target instanceof Element ? findTooltipTarget(event.target, event.clientX, event.clientY) : null;
+      if (!target || target === activeElement) return;
+      showTooltip(target);
+    };
+
+    const handlePointerOut = (event: PointerEvent) => {
+      if (!activeElement) return;
+      const related = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+      if (related && activeElement.contains(related)) return;
+      hideTooltip();
+    };
+
+    migrateTitles();
+    const migrateObserver = new MutationObserver(() => {
+      window.requestAnimationFrame(() => migrateTitles());
+    });
+    migrateObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
+    window.addEventListener("pointerover", handlePointerOver);
+    window.addEventListener("pointerout", handlePointerOut);
+    window.addEventListener("scroll", hideTooltip, true);
+    window.addEventListener("blur", hideTooltip);
+    return () => {
+      hideTooltip();
+      migrateObserver.disconnect();
+      tooltip.remove();
+      window.removeEventListener("pointerover", handlePointerOver);
+      window.removeEventListener("pointerout", handlePointerOut);
+      window.removeEventListener("scroll", hideTooltip, true);
+      window.removeEventListener("blur", hideTooltip);
+    };
+  }, []);
+
+  useEffect(() => {
     api.session()
       .then((session) => {
         setAuthenticated(session.authenticated);
@@ -261,6 +418,10 @@ export default function App() {
     window.history.pushState(null, "", pathForBackup(job));
     applyRoute({ view: "backups", stage: job.status === "scheduled" ? "report" : "running", jobId: job.id, sourceId: null });
   }
+  async function triggerBackup(job: BackupJob) {
+    const updated = await api.triggerBackup(job.id);
+    setBackups((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+  }
   function completeBatchImport(result: BatchImportResult) {
     setConnections((current) => [...current, ...result.connections.filter((connection) => !current.some((item) => item.id === connection.id))]);
     setBackups((current) => [...result.backups, ...current.filter((item) => !result.backups.some((backup) => backup.id === item.id))]);
@@ -335,7 +496,7 @@ export default function App() {
   else if (view === "connections") content = <Connections connections={connections} backups={backups} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onCreateMigration={createMigration} onBatchImported={completeBatchImport} />;
   else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} />;
   else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} /> : <MigrationList migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} />;
-  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} storages={storages} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} />;
+  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} storages={storages} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} onTrigger={triggerBackup} />;
   else if (view === "settings") content = <Settings />;
   else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 
