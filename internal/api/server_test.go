@@ -78,6 +78,67 @@ func TestFailedScheduledBackupRemainsEligibleForNextRun(t *testing.T) {
 	}
 }
 
+func TestPauseAndResumeBackupSchedule(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	due := time.Now().Add(-time.Minute)
+	job := model.BackupJob{
+		ID:                store.NewID(),
+		Name:              "scheduled backup",
+		Status:            model.StatusScheduled,
+		Stage:             "scheduled",
+		StartedAt:         time.Now().Add(-time.Hour),
+		ScheduleMode:      "scheduled",
+		ScheduleFrequency: "daily",
+		ScheduleTime:      "02:00:00",
+		NextRunAt:         &due,
+		Events:            []model.Event{},
+		Request: model.BackupRequest{
+			ScheduleMode:      "scheduled",
+			ScheduleFrequency: "daily",
+			ScheduleTime:      "02:00:00",
+		},
+	}
+	if err := appStore.AddBackup(job, func() {}); err != nil {
+		t.Fatal(err)
+	}
+
+	pauseResponse := httptest.NewRecorder()
+	pauseRequest := httptest.NewRequest(http.MethodPost, "/api/backups/"+job.ID+"/pause", nil)
+	pauseRequest.SetPathValue("id", job.ID)
+	server.pauseBackupSchedule(pauseResponse, pauseRequest)
+	if pauseResponse.Code != http.StatusOK {
+		t.Fatalf("pause status = %d, body = %s", pauseResponse.Code, pauseResponse.Body.String())
+	}
+	paused, err := appStore.Backup(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paused.SchedulePaused || paused.NextRunAt != nil {
+		t.Fatalf("paused schedule = paused:%v next:%v", paused.SchedulePaused, paused.NextRunAt)
+	}
+	if _, ok := scheduleRequestForBackup(paused); ok {
+		t.Fatal("paused schedule must not remain eligible for automatic execution")
+	}
+
+	resumeResponse := httptest.NewRecorder()
+	resumeRequest := httptest.NewRequest(http.MethodPost, "/api/backups/"+job.ID+"/resume", nil)
+	resumeRequest.SetPathValue("id", job.ID)
+	server.resumeBackupSchedule(resumeResponse, resumeRequest)
+	if resumeResponse.Code != http.StatusOK {
+		t.Fatalf("resume status = %d, body = %s", resumeResponse.Code, resumeResponse.Body.String())
+	}
+	resumed, err := appStore.Backup(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.SchedulePaused || resumed.NextRunAt == nil || !resumed.NextRunAt.After(time.Now()) {
+		t.Fatalf("resumed schedule = paused:%v next:%v", resumed.SchedulePaused, resumed.NextRunAt)
+	}
+	if len(resumed.Events) != 2 || resumed.Events[0].Message != "定时备份调度已暂停" || resumed.Events[1].Message != "定时备份调度已恢复" {
+		t.Fatalf("schedule events = %#v", resumed.Events)
+	}
+}
+
 func TestListLogsSerializesAuditLogsForFrontend(t *testing.T) {
 	appStore, _, handler := newTestServer(t)
 	if err := appStore.AddAuditLog(store.AuditLog{

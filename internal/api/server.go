@@ -145,6 +145,8 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
 	protected.HandleFunc("PUT /api/backups/{id}", server.updateBackup)
 	protected.HandleFunc("POST /api/backups/{id}/trigger", server.triggerBackup)
+	protected.HandleFunc("POST /api/backups/{id}/pause", server.pauseBackupSchedule)
+	protected.HandleFunc("POST /api/backups/{id}/resume", server.resumeBackupSchedule)
 	protected.HandleFunc("POST /api/backups/{id}/restore/precheck", server.restoreBackupPrecheck)
 	protected.HandleFunc("POST /api/backups/{id}/restore", server.restoreBackup)
 	protected.HandleFunc("POST /api/backups/{id}/cancel", server.cancelBackup)
@@ -1456,7 +1458,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 	finished := time.Now()
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.FinishedAt = &finished
-		if item.ScheduleMode == "scheduled" {
+		if item.ScheduleMode == "scheduled" && !item.SchedulePaused {
 			next, nextErr := nextBackupRun(item.Request, finished)
 			if nextErr == nil {
 				item.NextRunAt = &next
@@ -1472,7 +1474,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			}
 			item.Progress = 100
 			finishBackupArtifactVersion(item, versionID, model.StatusCompleted, "completed", finished, "")
-			if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
+			if item.ScheduleMode == "scheduled" && !item.SchedulePaused && item.NextRunAt != nil {
 				appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
 			} else {
 				appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "备份任务完成"})
@@ -1501,7 +1503,7 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			finishBackupArtifactVersion(item, versionID, model.StatusFailed, "failed", finished, err.Error())
 			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
-		if item.ScheduleMode == "scheduled" && item.NextRunAt != nil {
+		if item.ScheduleMode == "scheduled" && !item.SchedulePaused && item.NextRunAt != nil {
 			appendJobEvent(&item.Events, model.Event{Time: finished.Add(time.Millisecond), Level: "INFO", Message: "定时计划保持有效，下一次备份将在 " + item.NextRunAt.Format("2006-01-02 15:04") + " 执行"})
 		}
 	})
@@ -2099,7 +2101,7 @@ func (s *Server) runDueBackups() {
 	}
 	now := time.Now().In(appLocation)
 	for _, item := range items {
-		if item.ScheduleMode != "scheduled" || item.Status == model.StatusRunning || item.Status == model.StatusPending || item.NextRunAt == nil || item.NextRunAt.After(now) {
+		if item.ScheduleMode != "scheduled" || item.SchedulePaused || item.Status == model.StatusRunning || item.Status == model.StatusPending || item.NextRunAt == nil || item.NextRunAt.After(now) {
 			continue
 		}
 		if _, err := s.triggerScheduledBackup(item, "定时备份已触发"); err != nil {
@@ -2121,6 +2123,18 @@ func (s *Server) reconcileScheduledBackupRuns() {
 }
 
 func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time) {
+	if item.SchedulePaused {
+		if item.NextRunAt != nil {
+			if err := s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
+				if job.SchedulePaused {
+					job.NextRunAt = nil
+				}
+			}); err != nil {
+				log.Printf("backup scheduler clear paused due time failed: %s: %v", item.ID, err)
+			}
+		}
+		return
+	}
 	request, ok := scheduleRequestForBackup(item)
 	if !ok {
 		return
@@ -2153,9 +2167,13 @@ func (s *Server) reconcileScheduledBackupRun(item model.BackupJob, now time.Time
 }
 
 func scheduleRequestForBackup(item model.BackupJob) (model.BackupRequest, bool) {
-	if item.ScheduleMode != "scheduled" || item.Status == model.StatusRunning || item.Status == model.StatusPending {
+	if item.ScheduleMode != "scheduled" || item.SchedulePaused || item.Status == model.StatusRunning || item.Status == model.StatusPending {
 		return model.BackupRequest{}, false
 	}
+	return backupScheduleRequest(item), true
+}
+
+func backupScheduleRequest(item model.BackupJob) model.BackupRequest {
 	request := item.Request
 	request.ScheduleMode = "scheduled"
 	if request.ScheduleFrequency == "" {
@@ -2177,7 +2195,7 @@ func scheduleRequestForBackup(item model.BackupJob) (model.BackupRequest, bool) 
 		request.RetentionDays = item.RetentionDays
 	}
 	normalizeBackupSchedule(&request)
-	return request, true
+	return request
 }
 
 func scheduleClockMatches(request model.BackupRequest, value time.Time) bool {
@@ -3391,7 +3409,11 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.NotificationTarget = request.Notification.Target
 		item.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
 		item.NotificationTrigger = request.Notification.Trigger
-		item.NextRunAt = &next
+		if item.SchedulePaused {
+			item.NextRunAt = nil
+		} else {
+			item.NextRunAt = &next
+		}
 		appendJobEvent(&item.Events, model.Event{Time: now, Level: "INFO", Message: "定时备份计划已更新"})
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
@@ -3417,6 +3439,60 @@ func (s *Server) triggerBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, updated)
+}
+
+func (s *Server) pauseBackupSchedule(w http.ResponseWriter, r *http.Request) {
+	s.setBackupSchedulePaused(w, r, true)
+}
+
+func (s *Server) resumeBackupSchedule(w http.ResponseWriter, r *http.Request) {
+	s.setBackupSchedulePaused(w, r, false)
+}
+
+func (s *Server) setBackupSchedulePaused(w http.ResponseWriter, r *http.Request, paused bool) {
+	id := r.PathValue("id")
+	item, err := s.store.Backup(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	if item.ScheduleMode != "scheduled" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "仅定时备份可以暂停或恢复调度")
+		return
+	}
+	if item.SchedulePaused == paused {
+		writeJSON(w, http.StatusOK, item)
+		return
+	}
+	var next *time.Time
+	if !paused {
+		request := backupScheduleRequest(item)
+		value, err := nextBackupRun(request, time.Now().In(appLocation))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_schedule", err.Error())
+			return
+		}
+		next = &value
+	}
+	now := time.Now().In(appLocation)
+	if err := s.store.UpdateBackup(id, func(job *model.BackupJob) {
+		job.SchedulePaused = paused
+		job.NextRunAt = next
+		message := "定时备份调度已恢复"
+		if paused {
+			message = "定时备份调度已暂停"
+		}
+		appendJobEvent(&job.Events, model.Event{Time: now, Level: "INFO", Message: message})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	updated, err := s.store.Backup(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {

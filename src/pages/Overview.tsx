@@ -46,7 +46,8 @@ export function Overview({
   const consistency = results.length ? `${((validResults / results.length) * 100).toFixed(2)}%` : "—";
   const connected = connections.filter((item) => item.status === "connected");
   const needsCheck = connections.length - connected.length;
-  const scheduledBackups = backups.filter((item) => item.status === "scheduled");
+  const scheduledBackups = backups.filter((item) => item.status === "scheduled" && !item.schedulePaused);
+  const pausedBackups = backups.filter((item) => item.scheduleMode === "scheduled" && item.schedulePaused);
   const runningBackups = backups.filter((item) => item.status === "running" || item.status === "pending");
   const completedBackups = backups.filter((item) => item.status === "completed");
   const failedBackups = backups.filter((item) => item.status === "failed" || item.status === "cancelled");
@@ -63,11 +64,15 @@ export function Overview({
         ? `${runningBackups.length} 个备份正在执行`
         : scheduledBackups.length
           ? `${scheduledBackups.length} 个备份计划已生效`
-          : "等待配置数据保护";
+          : pausedBackups.length
+            ? `${pausedBackups.length} 个备份计划已暂停`
+            : "等待配置数据保护";
   const nextAction = failedBackups.length
     ? "先检查失败的备份任务，确保已有可用的恢复副本。"
     : needsCheck
       ? "先验证待检查连接，确认网络、账号和权限都可用。"
+      : !scheduledBackups.length && pausedBackups.length
+        ? "恢复已暂停的定时备份，重新启用自动数据保护。"
       : !scheduledBackups.length
         ? "为重要数据库创建定时备份，先确定恢复副本和保留周期。"
         : !completedBackups.length
@@ -83,7 +88,7 @@ export function Overview({
           <p>先确认连接可用、备份受保护，再查看迁移和校验活动。</p>
           <div className="overview-hero-summary">
             <span><Database size={15} />{connections.length ? `${connected.length}/${connections.length} 个连接可用` : "尚未配置连接"}</span>
-            <span><Archive size={15} />{scheduledBackups.length ? `${scheduledBackups.length} 个定时备份` : "尚未设置备份计划"}</span>
+            <span><Archive size={15} />{scheduledBackups.length ? `${scheduledBackups.length} 个定时备份` : pausedBackups.length ? `${pausedBackups.length} 个计划已暂停` : "尚未设置备份计划"}</span>
             <span><DatabaseBackup size={15} />{completedBackups.length ? `${completedBackups.length} 份备份可用` : "暂无可恢复副本"}</span>
           </div>
           <div className="overview-next-step"><strong>建议下一步</strong><span>{nextAction}</span></div>
@@ -104,7 +109,7 @@ export function Overview({
 
       <div className="metric-grid">
         <Metric icon={<Database />} label="连接实例" value={String(connections.length)} detail={connections.length ? `${connected.length} 个可用` : "还没有连接"} tone="blue" onClick={onConnections} />
-        <Metric icon={<Archive />} label="定时备份" value={String(scheduledBackups.length)} detail={scheduledBackups.length ? "按计划自动执行" : "尚未配置计划"} tone="green" onClick={onBackups} />
+        <Metric icon={<Archive />} label="定时备份" value={String(scheduledBackups.length)} detail={scheduledBackups.length ? "按计划自动执行" : pausedBackups.length ? `${pausedBackups.length} 个计划已暂停` : "尚未配置计划"} tone="green" onClick={onBackups} />
         <Metric icon={<DatabaseBackup />} label="可恢复副本" value={String(completedBackups.length)} detail={completedBackups.length ? formatBytes(backupBytes) : "等待首次备份"} tone="cyan" onClick={onBackups} />
         <Metric icon={<ShieldCheck />} label="数据校验" value={consistency} detail={results.length ? `${validResults} / ${results.length} 张表通过` : "暂无校验结果"} tone="purple" onClick={onMigrations} />
       </div>
@@ -169,8 +174,8 @@ export function Overview({
                 <span className={`overview-task-icon ${job.status}`}><Archive size={17} /></span>
                 <div className="overview-task-main"><strong data-tooltip-content={job.name}>{job.name}</strong><small data-tooltip-content={`${job.sourceName} / ${job.sourceDatabase}`}>{job.sourceName} / {job.sourceDatabase}</small></div>
                 <span className="overview-task-stage">{job.status === "scheduled" ? "定时计划" : job.destination}</span>
-                <div className="table-progress overview-task-progress"><div><i style={{ width: `${job.status === "scheduled" ? 100 : job.progress}%` }} /></div><small>{job.status === "scheduled" ? "已计划" : `${job.progress}%`}</small></div>
-                <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                <div className="table-progress overview-task-progress"><div><i style={{ width: `${job.status === "scheduled" ? 100 : job.progress}%` }} /></div><small>{job.schedulePaused ? "已暂停" : job.status === "scheduled" ? "已计划" : `${job.progress}%`}</small></div>
+                <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
               </button>
             ))}
           </div>

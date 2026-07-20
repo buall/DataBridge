@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, Clipboard, Copy, DatabaseBackup, Download, FileArchive, Gauge, HardDrive, Pencil, Play, Square, Trash2, X } from "lucide-react";
+import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, Clipboard, Copy, DatabaseBackup, Download, FileArchive, Gauge, HardDrive, PauseCircle, Pencil, Play, PlayCircle, Square, Trash2, X } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
@@ -48,6 +48,7 @@ export function BackupMonitoring({
   const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
   const [loadingRunId, setLoadingRunId] = useState("");
   const [triggering, setTriggering] = useState(false);
+  const [updatingSchedule, setUpdatingSchedule] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [artifactError, setArtifactError] = useState("");
@@ -112,6 +113,21 @@ export function BackupMonitoring({
     }
   }
 
+  async function toggleSchedulePaused() {
+    if (!job) return;
+    setUpdatingSchedule(true);
+    setError("");
+    try {
+      const next = job.schedulePaused ? await api.resumeBackupSchedule(jobId) : await api.pauseBackupSchedule(jobId);
+      setJob(next);
+      onComplete(next);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "更新调度状态失败");
+    } finally {
+      setUpdatingSchedule(false);
+    }
+  }
+
   function pollBackup() {
     window.setTimeout(async () => {
       try {
@@ -157,9 +173,9 @@ export function BackupMonitoring({
     <div className="page-stack">
       {error && <div className="error-banner">{error}</div>}
       {failed && <div className="error-banner detail-error"><strong>{job.error || "备份任务已取消"}</strong>{lastError && <span>{lastError}</span>}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
+      <div className="runtime-heading"><div><div><Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p>{job.sourceName} / {job.sourceDatabase} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" disabled={updatingSchedule} onClick={toggleSchedulePaused}>{job.schedulePaused ? <PlayCircle size={15} /> : <PauseCircle size={15} />}{updatingSchedule ? "处理中..." : job.schedulePaused ? "恢复调度" : "暂停调度"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{!scheduled && !failed && job.status !== "completed" && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
       <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
-      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label={scheduled ? "保留期限" : "备份文件"} value={scheduled ? retentionLabel(retentionDaysFromJob(job)) : job.artifactName || "待生成"} detail={scheduled ? "按保留期限自动清理" : formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? scheduled ? "上次执行失败，计划仍有效" : "任务已停止" : scheduled ? "计划可执行" : "持续监控"} warning={failed} /></div>
+      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? job.schedulePaused ? "自动调度已暂停" : "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label={scheduled ? "保留期限" : "备份文件"} value={scheduled ? retentionLabel(retentionDaysFromJob(job)) : job.artifactName || "待生成"} detail={scheduled ? "按保留期限自动清理" : formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? job.schedulePaused ? "已暂停" : formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? job.schedulePaused ? "恢复后重新计算执行时间" : "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? scheduled ? "上次执行失败，计划仍有效" : "任务已停止" : scheduled ? job.schedulePaused ? "等待恢复调度" : "计划可执行" : "持续监控"} warning={failed} /></div>
       {scheduled && <ScheduleInfoCard job={job} storages={storages} recipients={recipients} loadingRecipients={loadingRecipients} />}
       <div className="monitor-grid single">
         <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
@@ -207,7 +223,7 @@ function ScheduleInfoCard({
         <div className="schedule-info-item">
           <span>执行计划</span>
           <strong>{scheduleLabel(job)}</strong>
-          <small>下次执行：{formatDateTime(job.nextRunAt)}</small>
+          <small>{job.schedulePaused ? "调度已暂停" : `下次执行：${formatDateTime(job.nextRunAt)}`}</small>
         </div>
         <div className="schedule-info-item">
           <span>保留策略</span>

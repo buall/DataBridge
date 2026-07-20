@@ -432,6 +432,7 @@ type BackupJob struct {
 	ScheduleTime             string                  `json:"scheduleTime,omitempty"`
 	ScheduleWeekday          int                     `json:"scheduleWeekday,omitempty"`
 	ScheduleMonthDay         int                     `json:"scheduleMonthDay,omitempty"`
+	SchedulePaused           bool                    `json:"schedulePaused,omitempty"`
 	RetentionDays            int                     `json:"retentionDays,omitempty"`
 	RetentionMonths          int                     `json:"retentionMonths,omitempty"`
 	Notification             BackupNotification      `json:"notification,omitempty"`

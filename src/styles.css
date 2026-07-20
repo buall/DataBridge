@@ -279,8 +279,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .task-summary-card span { color: var(--muted); font-size: 11px; font-weight: 600; }.task-summary-card strong { font-size: 27px; }.task-summary-card small { color: var(--muted); font-size: 10px; }
 .migration-list-table { min-width: 1180px; }
 .migration-list-table .table-row { grid-template-columns: minmax(190px, 1fr) minmax(360px, 1.5fr) .72fr .9fr .58fr 184px; }
-.backup-list-table { min-width: 1390px; }
-.backup-list-table .table-row { grid-template-columns: minmax(190px, 1fr) 86px 118px 118px minmax(190px, 1.05fr) minmax(190px, 1fr) .85fr .65fr 156px; }
+.backup-list-table { min-width: 1490px; }
+.backup-list-table .table-row { grid-template-columns: minmax(190px, 1fr) 86px 118px 118px minmax(190px, 1.05fr) minmax(190px, 1fr) .85fr .65fr 256px; }
 .migration-list-table .table-head > :last-child,
 .backup-list-table .table-head > :last-child,
 .migration-list-table .task-table-desktop > :last-child,
@@ -314,12 +314,16 @@ h1, h2, h3, h4, p { margin: 0; }
 .row-actions { display: inline-flex; align-items: center; justify-content: flex-start; gap: 10px; min-width: 0; }
 .row-action,
 .row-trigger,
+.row-schedule,
 .row-delete { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .row-action { color: var(--blue) !important; }
 .row-trigger { color: #4338ca !important; cursor: pointer; }
 .row-trigger:hover { color: #3730a3 !important; }
+.row-schedule { color: #1d4ed8 !important; cursor: pointer; }
+.row-schedule:hover { color: #1e40af !important; }
 .row-delete { color: var(--red); cursor: pointer; }
 .row-trigger.disabled,
+.row-schedule.disabled,
 .row-delete.disabled { color: #98a2b3; cursor: not-allowed; pointer-events: none; }
 .log-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .log-summary-card { min-height: 94px; padding: 18px; display: grid; align-content: center; gap: 7px; border-left: 4px solid #94a3b8; }
@@ -1170,7 +1174,7 @@ h1, h2, h3, h4, p { margin: 0; }
   .event-row,
   .backup-run-head { min-height: auto; padding-top: 16px; padding-bottom: 16px; }
   .migration-list-table { min-width: 920px; }
-  .backup-list-table { min-width: 1390px; }
+  .backup-list-table { min-width: 1490px; }
   .table-selection-actions { justify-content: stretch; }
   .wizard-page { min-height: calc(100vh - 112px); padding-bottom: 112px; }
   .wizard-card,

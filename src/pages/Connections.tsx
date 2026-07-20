@@ -421,7 +421,7 @@ export function Connections({
                 <span className="connection-version-line" data-tooltip-mode="always" data-tooltip-content={`${connection.type} · ${versionTitle}`}>
                   <DatabaseTypeIcon type={connection.type} />{connection.type}<em className="version-tag" data-tooltip-mode="always" data-tooltip-content={versionTitle}>{versionLabel}</em>
                   {scheduledBackups.length > 0 && (
-                    <span className="connection-schedule-pill" data-tooltip-mode="always" data-tooltip-content={scheduledBackups.map((job) => `${job.name} · ${scheduleLabel(job)}`).join("\n")}>
+                    <span className="connection-schedule-pill" data-tooltip-mode="always" data-tooltip-content={scheduledBackups.map((job) => `${job.name} · ${job.schedulePaused ? "已暂停 · " : ""}${scheduleLabel(job)}`).join("\n")}>
                       <CalendarClock size={12} />
                       {scheduledBackups.length} 个定时任务
                     </span>

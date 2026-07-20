@@ -369,6 +369,7 @@ export interface BackupJob {
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  schedulePaused?: boolean;
   retentionDays?: number;
   retentionMonths?: number;
   notificationEnabled?: boolean;

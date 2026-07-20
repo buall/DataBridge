@@ -238,6 +238,10 @@ export const api = {
     normalizeBackup(await request<BackupJob>(`/backups/${id}${compact ? "?compact=1" : ""}`)),
   triggerBackup: async (id: string) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}/trigger`, { method: "POST" })),
+  pauseBackupSchedule: async (id: string) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}/pause`, { method: "POST" })),
+  resumeBackupSchedule: async (id: string) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}/resume`, { method: "POST" })),
   restoreBackup: async (id: string, config: RestoreBackupConfig) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}/restore`, { method: "POST", body: JSON.stringify(config) })),
   restorePrecheck: (id: string, config: RestoreBackupConfig) =>

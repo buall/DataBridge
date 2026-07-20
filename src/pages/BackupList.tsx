@@ -1,4 +1,4 @@
-import { Archive, Download, Play, Plus, Search, Trash2 } from "lucide-react";
+import { Archive, Download, PauseCircle, Play, PlayCircle, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupJob, DatabaseType } from "../types";
@@ -11,17 +11,20 @@ export function BackupList({
   onOpen,
   onDelete,
   onTrigger,
+  onSetSchedulePaused,
 }: {
   backups: BackupJob[];
   onCreate: () => void;
   onOpen: (job: BackupJob) => void;
   onDelete: (job: BackupJob) => Promise<void>;
   onTrigger: (job: BackupJob) => Promise<void>;
+  onSetSchedulePaused: (job: BackupJob, paused: boolean) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [triggeringId, setTriggeringId] = useState("");
+  const [updatingScheduleId, setUpdatingScheduleId] = useState("");
   const [error, setError] = useState("");
   async function exportSchedules() {
     try {
@@ -45,7 +48,8 @@ export function BackupList({
     );
   }, [backups, query]);
   const running = backups.filter((item) => item.status === "running" || item.status === "pending").length;
-  const scheduled = backups.filter((item) => item.status === "scheduled").length;
+  const scheduled = backups.filter((item) => item.status === "scheduled" && !item.schedulePaused).length;
+  const paused = backups.filter((item) => item.scheduleMode === "scheduled" && item.schedulePaused).length;
   const completed = backups.filter((item) => item.status === "completed").length;
   const totalBytes = backups.reduce((sum, item) => sum + (item.artifactSize ?? 0), 0);
   async function triggerJob(job: BackupJob) {
@@ -59,6 +63,17 @@ export function BackupList({
       setTriggeringId("");
     }
   }
+  async function setSchedulePaused(job: BackupJob) {
+    setUpdatingScheduleId(job.id);
+    setError("");
+    try {
+      await onSetSchedulePaused(job, !job.schedulePaused);
+    } catch (scheduleError) {
+      setError(scheduleError instanceof Error ? scheduleError.message : "更新调度状态失败");
+    } finally {
+      setUpdatingScheduleId("");
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -69,7 +84,7 @@ export function BackupList({
       <div className="task-summary-grid">
         <TaskSummary title="全部任务" value={backups.length} detail="任务记录已保存" />
         <TaskSummary title="进行中" value={running} detail="可查看实时进度" tone="blue" />
-        <TaskSummary title="定时计划" value={scheduled} detail="到点自动执行" tone="orange" />
+        <TaskSummary title="定时计划" value={scheduled} detail={paused ? `${paused} 个计划已暂停` : "到点自动执行"} tone="orange" />
         <TaskSummary title="已完成" value={completed} detail={`累计 ${formatBytes(totalBytes)}`} tone="green" />
       </div>
       <Card className="task-table-card">
@@ -84,6 +99,8 @@ export function BackupList({
               const deleteDisabled = job.status === "running" || job.status === "pending";
               const triggerVisible = job.scheduleMode === "scheduled" || job.status === "scheduled";
               const triggerDisabled = deleteDisabled || triggeringId === job.id;
+              const scheduleActionVisible = job.scheduleMode === "scheduled";
+              const scheduleActionDisabled = updatingScheduleId === job.id;
               const lastScheduleTime = lastScheduleLabel(job);
               return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
@@ -94,10 +111,11 @@ export function BackupList({
                   <time className="task-time" data-tooltip-content={lastScheduleTime}>{lastScheduleTime}</time>
                   <SourceRoute job={job} />
                   <span className="task-name task-meta task-destination" data-tooltip-content={job.destination}>{job.destination}</span>
-                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
-                  <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.schedulePaused ? "调度已暂停" : job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
+                  <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
                   <span className="row-actions">
                     {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
+                    {scheduleActionVisible && <span role="button" tabIndex={scheduleActionDisabled ? -1 : 0} aria-disabled={scheduleActionDisabled} data-tooltip-content={job.schedulePaused ? "恢复按计划自动执行" : "暂停后将不再自动执行"} className={`row-schedule ${scheduleActionDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); } }}>{job.schedulePaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}{scheduleActionDisabled ? "处理中" : job.schedulePaused ? "恢复调度" : "暂停调度"}</span>}
                     <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                   </span>
                 </div>
@@ -129,16 +147,17 @@ export function BackupList({
                     </div>
                     <div className="task-mobile-row">
                       <span>{job.status === "scheduled" ? "下次执行" : "进度"}</span>
-                      <strong>{job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</strong>
+                      <strong>{job.schedulePaused ? "调度已暂停" : job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</strong>
                     </div>
                   </div>
                   <div className="task-mobile-progress">
                     <i style={{ width: `${job.progress}%` }} />
                   </div>
                   <div className="task-mobile-foot">
-                    <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                    <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
                     <span className="row-actions">
                       {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
+                      {scheduleActionVisible && <span role="button" tabIndex={scheduleActionDisabled ? -1 : 0} aria-disabled={scheduleActionDisabled} data-tooltip-content={job.schedulePaused ? "恢复按计划自动执行" : "暂停后将不再自动执行"} className={`row-schedule ${scheduleActionDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); } }}>{job.schedulePaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}{scheduleActionDisabled ? "处理中" : job.schedulePaused ? "恢复调度" : "暂停调度"}</span>}
                       <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                     </span>
                   </div>
