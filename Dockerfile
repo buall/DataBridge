@@ -19,18 +19,13 @@ WORKDIR /src
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG DATABRIDGE_VERSION=1.0.0
-ARG DATABRIDGE_LICENSE_PUBLIC_KEY
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
-RUN test -n "${DATABRIDGE_LICENSE_PUBLIC_KEY}" && \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
-      -ldflags="-s -w -X main.version=${DATABRIDGE_VERSION} -X main.licensePublicKey=${DATABRIDGE_LICENSE_PUBLIC_KEY}" \
-      -o /out/databridge-api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/databridge-api ./cmd/api
 
 FROM debian:bookworm-slim AS runtime
 
@@ -42,7 +37,6 @@ ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
 ENV DATABRIDGE_ADDR=:8081 \
     DATABRIDGE_DB_PATH=/data/databridge.db \
     DATABRIDGE_KEY_PATH=/data/databridge.key \
-    DATABRIDGE_LICENSE_DIR=/data/license \
     DATABRIDGE_BACKUP_WORK_DIR=/data/tmp \
     TZ=Asia/Shanghai \
     DATABRIDGE_PG_JOBS=4

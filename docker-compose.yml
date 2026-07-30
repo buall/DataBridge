@@ -9,8 +9,6 @@ services:
       DATABRIDGE_ADDR: ":8081"
       DATABRIDGE_DB_PATH: /data/databridge.db
       DATABRIDGE_KEY_PATH: /data/databridge.key
-      DATABRIDGE_LICENSE_DIR: /data/license
-      DATABRIDGE_LICENSE_SERVER_URL: ${DATABRIDGE_LICENSE_SERVER_URL:-}
       DATABRIDGE_BACKUP_WORK_DIR: /data/tmp
       TZ: Asia/Shanghai
       DATABRIDGE_AUTH_USER: ${DATABRIDGE_AUTH_USER:-admin}

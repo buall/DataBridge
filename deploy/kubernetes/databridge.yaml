@@ -66,11 +66,6 @@ spec:
               value: /data/databridge.db
             - name: DATABRIDGE_KEY_PATH
               value: /data/databridge.key
-            - name: DATABRIDGE_LICENSE_DIR
-              value: /data/license
-            # Optional: set this to the one-time activation endpoint.
-            # - name: DATABRIDGE_LICENSE_SERVER_URL
-            #   value: https://license.example.com/v1/activate
             - name: DATABRIDGE_BACKUP_WORK_DIR
               value: /data/tmp
             - name: DATABRIDGE_PG_JOBS

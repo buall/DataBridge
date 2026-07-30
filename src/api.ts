@@ -31,23 +31,6 @@ export type AuthSession = {
   configured: boolean;
 };
 
-export type LicenseStatus = {
-  activated: boolean;
-  state: "active" | "unlicensed" | "invalid" | "expired";
-  message: string;
-  deploymentId: string;
-  productVersion: string;
-  onlineActivation: boolean;
-  licenseId?: string;
-  customerId?: string;
-  customerName?: string;
-  edition?: string;
-  features?: string[];
-  maxVersion?: string;
-  issuedAt?: string;
-  expiresAt?: string;
-};
-
 export type MigrationsResponse = {
   migrations: MigrationJob[];
   auditLogs?: AuditLogEntry[];
@@ -161,11 +144,6 @@ function downloadFileName(disposition: string | null) {
 }
 
 export const api = {
-  licenseStatus: () => request<LicenseStatus>("/license/status"),
-  licenseRequest: () => requestBlob("/license/request"),
-  activateLicense: (activationCode: string) =>
-    request<LicenseStatus>("/license/activate", { method: "POST", body: JSON.stringify({ activationCode }) }),
-  importLicense: (file: File) => requestForm<LicenseStatus>("/license/import", importForm(file)),
   session: () => request<AuthSession>("/auth/session"),
   login: (username: string, password: string) =>
     request<AuthSession>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),

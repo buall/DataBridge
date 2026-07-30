@@ -28,7 +28,6 @@ import (
 
 	"databridge/internal/backup"
 	"databridge/internal/etcd"
-	"databridge/internal/license"
 	"databridge/internal/migrate"
 	"databridge/internal/model"
 	"databridge/internal/mongo"
@@ -69,7 +68,6 @@ type Server struct {
 	geoMu     sync.Mutex
 	geoCache  map[string]string
 	auth      authConfig
-	license   *license.Manager
 }
 
 var appLocation = mustLoadLocation("Asia/Shanghai")
@@ -84,14 +82,6 @@ func mustLoadLocation(name string) *time.Location {
 }
 
 func New(appStore *store.Store) http.Handler {
-	return newServer(appStore, nil)
-}
-
-func NewWithLicense(appStore *store.Store, licenseManager *license.Manager) http.Handler {
-	return newServer(appStore, licenseManager)
-}
-
-func newServer(appStore *store.Store, licenseManager *license.Manager) http.Handler {
 	server := &Server{
 		store:     appStore,
 		engine:    migrate.New(),
@@ -99,18 +89,11 @@ func newServer(appStore *store.Store, licenseManager *license.Manager) http.Hand
 		geoClient: &http.Client{Timeout: 2 * time.Second},
 		geoCache:  make(map[string]string),
 		auth:      loadAuthConfig(),
-		license:   licenseManager,
 	}
-	if server.licenseActive() {
-		server.reconcileScheduledBackupRuns()
-	}
+	server.reconcileScheduledBackupRuns()
 	server.startBackupScheduler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", server.health)
-	mux.HandleFunc("GET /api/license/status", server.licenseStatus)
-	mux.HandleFunc("GET /api/license/request", server.licenseRequest)
-	mux.HandleFunc("POST /api/license/activate", server.activateLicense)
-	mux.HandleFunc("POST /api/license/import", server.importLicense)
 	mux.HandleFunc("GET /api/auth/session", server.authSession)
 	mux.HandleFunc("POST /api/auth/login", server.login)
 	mux.HandleFunc("POST /api/auth/logout", server.logout)
@@ -171,11 +154,7 @@ func newServer(appStore *store.Store, licenseManager *license.Manager) http.Hand
 	protected.HandleFunc("DELETE /api/backups/{id}/artifacts/{database}", server.deleteBackupArtifact)
 	protected.HandleFunc("DELETE /api/backups/{id}", server.deleteBackup)
 	protected.HandleFunc("GET /api/backups", server.listBackups)
-	var businessAPI http.Handler = server.auth.authMiddleware(protected)
-	if server.license != nil {
-		businessAPI = server.licenseMiddleware(businessAPI)
-	}
-	mux.Handle("/api/", businessAPI)
+	mux.Handle("/api/", server.auth.authMiddleware(protected))
 	mux.Handle("/", staticHandler())
 	return recoverMiddleware(server.loggingMiddleware(corsMiddleware(mux)))
 }
@@ -2114,9 +2093,6 @@ func (s *Server) startBackupScheduler() {
 }
 
 func (s *Server) runDueBackups() {
-	if !s.licenseActive() {
-		return
-	}
 	s.reconcileScheduledBackupRuns()
 	items, err := s.store.Backups()
 	if err != nil {
@@ -2135,9 +2111,6 @@ func (s *Server) runDueBackups() {
 }
 
 func (s *Server) reconcileScheduledBackupRuns() {
-	if !s.licenseActive() {
-		return
-	}
 	items, err := s.store.Backups()
 	if err != nil {
 		log.Printf("backup scheduler reconcile list failed: %v", err)
