@@ -310,6 +310,7 @@ npm run build
 启动 Go API 和生产前端静态服务，默认端口为 `8081`：
 
 ```bash
+DATABRIDGE_LICENSE_PUBLIC_KEY="$(tr -d '\n' < .local-license/signing-public.key)" \
 DATABRIDGE_AUTH_PASSWORD='替换为高强度密码' \
 DATABRIDGE_SESSION_SECRET='替换为至少32字节的随机字符串' \
 npm run dev:api
@@ -335,6 +336,7 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:9000 npm run dev
 如果前端开发服务器和 API 分开运行，并且浏览器需要跨端口携带登录 Cookie，请在启动 API 时允许 Vite 来源：
 
 ```bash
+DATABRIDGE_LICENSE_PUBLIC_KEY="$(tr -d '\n' < .local-license/signing-public.key)" \
 DATABRIDGE_AUTH_PASSWORD='替换为高强度密码' \
 DATABRIDGE_SESSION_SECRET='替换为至少32字节的随机字符串' \
 DATABRIDGE_CORS_ORIGIN=http://127.0.0.1:5173 \
@@ -351,6 +353,35 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 - `DATABRIDGE_COOKIE_SECURE`：HTTPS 部署时设置为 `true`
 
 未设置 `DATABRIDGE_AUTH_PASSWORD` 时，服务只允许本机回环地址访问业务 API，方便本地开发，但不适合公网部署。
+
+## 部署许可证
+
+DataBridge 启动时会在 `DATABRIDGE_LICENSE_DIR`（容器内默认为 `/data/license`）生成部署身份。没有有效许可证时，控制台只显示激活页面，业务 API 和定时备份调度保持停用。
+
+许可证使用 Ed25519 签名。签发私钥只应保存在授权管理环境中，镜像仅嵌入公钥。首次使用时生成签发密钥：
+
+```bash
+go run ./cmd/license keygen
+```
+
+离线激活流程：
+
+1. 在激活页面下载 `databridge-license-request-*.json`。
+2. 使用签发 CLI 生成绑定当前部署的许可证：
+
+```bash
+go run ./cmd/license sign \
+  --request databridge-license-request-DEPLOYMENT_ID.json \
+  --days 365
+```
+
+许可证编号会自动生成，并默认授权全部功能。签发结果自动保存到申请文件所在目录，文件名为 `databridge-license-DEPLOYMENT_ID.json`。
+
+3. 在激活页面导入生成的许可证。许可证写入 `/data/license/license.json`，容器重启和镜像升级时继续有效。
+
+在线激活使用同一许可证格式。设置 `DATABRIDGE_LICENSE_SERVER_URL` 后，后端会向该地址发送一次性激活码和签名部署申请，并接收 `{"license": {"payload": "...", "signature": "..."}}` 响应。签发服务需要自行记录激活码的未使用/已兑换状态。
+
+本地 `go run` 使用 `DATABRIDGE_LICENSE_PUBLIC_KEY` 读取验证公钥；正式 Docker 镜像必须通过 `DATABRIDGE_LICENSE_PUBLIC_KEY` build arg 将公钥编译进二进制。已嵌入公钥的镜像不会使用运行时环境变量替换它。
 
 ## Docker 镜像
 
@@ -369,7 +400,10 @@ Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 exp
 本地构建当前架构镜像：
 
 ```bash
-docker build -t databridge:local .
+docker build \
+  --build-arg DATABRIDGE_LICENSE_PUBLIC_KEY="$(tr -d '\n' < .local-license/signing-public.key)" \
+  --build-arg DATABRIDGE_VERSION=1.0.0 \
+  -t databridge:local .
 ```
 
 运行容器：
@@ -401,6 +435,7 @@ docker run --rm \
 
 - SQLite 数据库：`/data/databridge.db`
 - 凭证密钥：`/data/databridge.key`
+- 部署身份和许可证：`/data/license/`
 
 请务必挂载 `/data` volume。删除该 volume 会导致已保存连接和加密凭证密钥丢失。
 
@@ -419,6 +454,8 @@ docker compose up -d
 docker buildx create --use --name databridge-builder
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
+  --build-arg DATABRIDGE_LICENSE_PUBLIC_KEY="$(tr -d '\n' < .local-license/signing-public.key)" \
+  --build-arg DATABRIDGE_VERSION=1.0.0 \
   -t your-registry/databridge:latest \
   --push .
 ```

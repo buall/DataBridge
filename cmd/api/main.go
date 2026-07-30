@@ -8,12 +8,19 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"databridge/internal/api"
 	"databridge/internal/backup"
+	"databridge/internal/license"
 	"databridge/internal/store"
+)
+
+var (
+	version          = "dev"
+	licensePublicKey = ""
 )
 
 func main() {
@@ -28,13 +35,29 @@ func main() {
 	addr := env("DATABRIDGE_ADDR", ":8081")
 	databasePath := env("DATABRIDGE_DB_PATH", "data/databridge.db")
 	keyPath := env("DATABRIDGE_KEY_PATH", "data/databridge.key")
+	licenseDirectory := env("DATABRIDGE_LICENSE_DIR", filepath.Join(filepath.Dir(databasePath), "license"))
+	verificationKey := licensePublicKey
+	if verificationKey == "" {
+		verificationKey = os.Getenv("DATABRIDGE_LICENSE_PUBLIC_KEY")
+	}
+	licenseManager, err := license.New(license.Config{
+		Directory:      licenseDirectory,
+		ProductVersion: version,
+		PublicKey:      verificationKey,
+		ActivationURL:  os.Getenv("DATABRIDGE_LICENSE_SERVER_URL"),
+	})
+	if err != nil {
+		log.Fatalf("initialize license manager: %v", err)
+	}
 	appStore, err := store.New(databasePath, keyPath)
 	if err != nil {
 		log.Fatalf("initialize persistent store: %v", err)
 	}
 	defer appStore.Close()
 	log.Printf("SQLite persistence: %s", databasePath)
-	handler := api.New(appStore)
+	licenseStatus := licenseManager.Status()
+	log.Printf("DataBridge %s deployment: %s (license: %s)", version, licenseStatus.DeploymentID, licenseStatus.State)
+	handler := api.NewWithLicense(appStore, licenseManager)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,

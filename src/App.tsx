@@ -5,6 +5,7 @@ import { BackupArtifacts } from "./pages/BackupArtifacts";
 import { BackupMonitoring } from "./pages/BackupMonitoring";
 import { BackupRestore } from "./pages/BackupRestore";
 import { BackupWizard } from "./pages/BackupWizard";
+import { Activation } from "./pages/Activation";
 import { Layout } from "./components/Layout";
 import { Connections } from "./pages/Connections";
 import { Login } from "./pages/Login";
@@ -17,6 +18,7 @@ import { Report } from "./pages/Report";
 import { Settings } from "./pages/Settings";
 import { Storages } from "./pages/Storages";
 import type { AuditLogEntry, BatchImportResult } from "./types";
+import type { LicenseStatus } from "./api";
 import type { AppView, BackupConfig, BackupJob, DatabaseConnection, MigrationConfig, MigrationJob, MigrationStage, RemoteStorage } from "./types";
 
 type AppRoute = {
@@ -103,6 +105,8 @@ export default function App() {
   const [backups, setBackups] = useState<BackupJob[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [authChecked, setAuthChecked] = useState(false);
+  const [licenseChecked, setLicenseChecked] = useState(false);
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
   const [authConfigured, setAuthConfigured] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -268,17 +272,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api.session()
-      .then((session) => {
+    Promise.all([api.licenseStatus(), api.session()])
+      .then(([currentLicense, session]) => {
+        setLicenseStatus(currentLicense);
         setAuthenticated(session.authenticated);
         setAuthConfigured(session.configured);
       })
-      .catch(() => setAuthenticated(false))
-      .finally(() => setAuthChecked(true));
+      .catch((error) => {
+        setAuthenticated(false);
+        setLoadError(error instanceof Error ? error.message : "无法读取系统状态");
+      })
+      .finally(() => {
+        setLicenseChecked(true);
+        setAuthChecked(true);
+      });
   }, []);
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (!authenticated || !licenseStatus?.activated) return;
     Promise.all([api.connections(), api.storages(), api.migrations(), api.backups()])
       .then(([connectionItems, storageItems, migrationItems, backupItems]) => {
         setConnections(connectionItems);
@@ -293,10 +304,10 @@ export default function App() {
         }
         setLoadError(error.message);
       });
-  }, [authenticated]);
+  }, [authenticated, licenseStatus?.activated]);
 
   useEffect(() => {
-    if (!authenticated || route.view !== "logs") return;
+    if (!authenticated || !licenseStatus?.activated || route.view !== "logs") return;
     api.logs()
       .then((data) => {
         setAuditLogs(data.auditLogs);
@@ -306,14 +317,14 @@ export default function App() {
         }));
       })
       .catch((error) => setLoadError(error.message));
-  }, [authenticated, route.view]);
+  }, [authenticated, licenseStatus?.activated, route.view]);
 
   useEffect(() => {
-    if (!authenticated || route.view !== "migrations" || route.stage !== "report" || !route.jobId) return;
+    if (!authenticated || !licenseStatus?.activated || route.view !== "migrations" || route.stage !== "report" || !route.jobId) return;
     api.migration(route.jobId)
       .then((detail) => setMigrations((current) => [detail, ...current.filter((item) => item.id !== detail.id)]))
       .catch((error) => setLoadError(error.message));
-  }, [authenticated, route.view, route.stage, route.jobId]);
+  }, [authenticated, licenseStatus?.activated, route.view, route.stage, route.jobId]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -488,8 +499,14 @@ export default function App() {
     setAuthenticated(false);
   }
 
-  if (!authChecked) {
-    return <main className="login-page"><div className="loading-copy">正在检查登录状态...</div></main>;
+  if (!licenseChecked || !authChecked) {
+    return <main className="login-page"><div className="loading-copy">正在检查部署状态...</div></main>;
+  }
+  if (!licenseStatus) {
+    return <main className="login-page"><section className="login-panel"><div className="error-banner">{loadError || "无法读取许可证状态"}</div></section></main>;
+  }
+  if (!licenseStatus.activated) {
+    return <Activation status={licenseStatus} onActivated={(activated) => { setLicenseStatus(activated); setLoadError(""); }} />;
   }
   if (!authenticated) {
     return <Login configured={authConfigured} onLogin={login} />;

@@ -39,6 +39,38 @@ func TestRemoteStorageErrorsUseStorageSpecificMessages(t *testing.T) {
 	}
 }
 
+func TestBackupRuntimeErrorsUseSpecificMessages(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "mongo auth", err: errors.New("mongodump: exit status 1: authentication failed"), want: "数据库认证失败，请确认用户名、密码和授权范围是否正确"},
+		{name: "mongo permission", err: errors.New("mongodump: exit status 1: not authorized on iot to execute command"), want: "当前数据库账号权限不足，请确认具备所需操作权限"},
+		{name: "work disk full", err: errors.New("mongodump: exit status 1: no space left on device"), want: "备份临时目录空间不足，请清理磁盘或扩容后重试"},
+		{name: "process killed", err: errors.New("mongodump: signal: killed"), want: "备份进程被系统终止，通常是容器内存不足，请检查 Pod OOM 记录和内存限制"},
+		{name: "connection closed", err: errors.New("mongodump: exit status 1: socket was unexpectedly closed: EOF"), want: "备份期间数据库连接意外中断，请检查数据库节点切换、网络抖动和服务端日志"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := userFacingErrorMessage(errorContextBackupRuntime, test.err); got != test.want {
+				t.Fatalf("message = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTruncateEventMessageKeepsContextAndFailureTail(t *testing.T) {
+	message := "mongodump started\n" + strings.Repeat("progress\n", maxStoredEventMessage) + "root cause at the end"
+	got := truncateEventMessage(message)
+	if len([]rune(got)) > maxStoredEventMessage {
+		t.Fatalf("truncated event length = %d, want <= %d", len([]rune(got)), maxStoredEventMessage)
+	}
+	if !strings.HasPrefix(got, "mongodump started") || !strings.Contains(got, "中间内容已截断") || !strings.HasSuffix(got, "root cause at the end") {
+		t.Fatalf("truncated event did not preserve context and failure tail: %q", got)
+	}
+}
+
 func TestNextBackupRunUsesAppTimezone(t *testing.T) {
 	request := model.BackupRequest{
 		ScheduleMode:      "scheduled",

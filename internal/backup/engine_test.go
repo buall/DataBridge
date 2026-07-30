@@ -179,6 +179,34 @@ func TestCommandOutputBufferHandlesWritesLargerThanLimit(t *testing.T) {
 	}
 }
 
+func TestRunCommandReturnsStderrAndReportsFailure(t *testing.T) {
+	binDir := t.TempDir()
+	tool := filepath.Join(binDir, "failing-backup-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\necho 'specific database failure' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var events []Progress
+	err := runCommand(context.Background(), "failing-backup-tool", nil, os.Environ(), "export", func(progress Progress) {
+		events = append(events, progress)
+	})
+	if err == nil || !strings.Contains(err.Error(), "specific database failure") {
+		t.Fatalf("command error should include stderr, got %v", err)
+	}
+	if len(events) != 1 || events[0].EventLevel != "ERROR" || !strings.Contains(events[0].EventMessage, "specific database failure") {
+		t.Fatalf("failure output should be reported as ERROR: %#v", events)
+	}
+}
+
+func TestCommandExecutionErrorKeepsFailureTail(t *testing.T) {
+	output := "command started\n" + strings.Repeat("progress\n", maxCommandErrorDetailRunes) + "root cause at the end"
+	err := commandExecutionError("mongodump", errors.New("exit status 1"), output)
+	if !strings.Contains(err.Error(), "错误输出前部已截断") || !strings.HasSuffix(err.Error(), "root cause at the end") {
+		t.Fatalf("command error did not preserve the failure tail: %q", err)
+	}
+}
+
 func TestCompressBackupWithSystemTarIncludesNestedFiles(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "dump")

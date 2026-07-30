@@ -5,6 +5,7 @@ bin/
 data/
 backups/
 outputs/
+.local-license/
 *.tsbuildinfo
 .DS_Store
 scripts/compatibility/reports/*

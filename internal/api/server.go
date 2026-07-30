@@ -28,6 +28,7 @@ import (
 
 	"databridge/internal/backup"
 	"databridge/internal/etcd"
+	"databridge/internal/license"
 	"databridge/internal/migrate"
 	"databridge/internal/model"
 	"databridge/internal/mongo"
@@ -68,6 +69,7 @@ type Server struct {
 	geoMu     sync.Mutex
 	geoCache  map[string]string
 	auth      authConfig
+	license   *license.Manager
 }
 
 var appLocation = mustLoadLocation("Asia/Shanghai")
@@ -82,6 +84,14 @@ func mustLoadLocation(name string) *time.Location {
 }
 
 func New(appStore *store.Store) http.Handler {
+	return newServer(appStore, nil)
+}
+
+func NewWithLicense(appStore *store.Store, licenseManager *license.Manager) http.Handler {
+	return newServer(appStore, licenseManager)
+}
+
+func newServer(appStore *store.Store, licenseManager *license.Manager) http.Handler {
 	server := &Server{
 		store:     appStore,
 		engine:    migrate.New(),
@@ -89,11 +99,18 @@ func New(appStore *store.Store) http.Handler {
 		geoClient: &http.Client{Timeout: 2 * time.Second},
 		geoCache:  make(map[string]string),
 		auth:      loadAuthConfig(),
+		license:   licenseManager,
 	}
-	server.reconcileScheduledBackupRuns()
+	if server.licenseActive() {
+		server.reconcileScheduledBackupRuns()
+	}
 	server.startBackupScheduler()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", server.health)
+	mux.HandleFunc("GET /api/license/status", server.licenseStatus)
+	mux.HandleFunc("GET /api/license/request", server.licenseRequest)
+	mux.HandleFunc("POST /api/license/activate", server.activateLicense)
+	mux.HandleFunc("POST /api/license/import", server.importLicense)
 	mux.HandleFunc("GET /api/auth/session", server.authSession)
 	mux.HandleFunc("POST /api/auth/login", server.login)
 	mux.HandleFunc("POST /api/auth/logout", server.logout)
@@ -154,7 +171,11 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("DELETE /api/backups/{id}/artifacts/{database}", server.deleteBackupArtifact)
 	protected.HandleFunc("DELETE /api/backups/{id}", server.deleteBackup)
 	protected.HandleFunc("GET /api/backups", server.listBackups)
-	mux.Handle("/api/", server.auth.authMiddleware(protected))
+	var businessAPI http.Handler = server.auth.authMiddleware(protected)
+	if server.license != nil {
+		businessAPI = server.licenseMiddleware(businessAPI)
+	}
+	mux.Handle("/api/", businessAPI)
 	mux.Handle("/", staticHandler())
 	return recoverMiddleware(server.loggingMiddleware(corsMiddleware(mux)))
 }
@@ -2093,6 +2114,9 @@ func (s *Server) startBackupScheduler() {
 }
 
 func (s *Server) runDueBackups() {
+	if !s.licenseActive() {
+		return
+	}
 	s.reconcileScheduledBackupRuns()
 	items, err := s.store.Backups()
 	if err != nil {
@@ -2111,6 +2135,9 @@ func (s *Server) runDueBackups() {
 }
 
 func (s *Server) reconcileScheduledBackupRuns() {
+	if !s.licenseActive() {
+		return
+	}
 	items, err := s.store.Backups()
 	if err != nil {
 		log.Printf("backup scheduler reconcile list failed: %v", err)
@@ -3300,12 +3327,14 @@ func truncateEventMessage(message string) string {
 	if len(runes) <= maxStoredEventMessage {
 		return message
 	}
-	const suffix = "\n...输出已截断"
-	limit := maxStoredEventMessage - len([]rune(suffix))
-	if limit < 0 {
-		limit = maxStoredEventMessage
+	const marker = "\n...中间内容已截断，已保留开头和末尾...\n"
+	markerLength := len([]rune(marker))
+	headLength := maxStoredEventMessage / 4
+	tailLength := maxStoredEventMessage - headLength - markerLength
+	if tailLength <= 0 {
+		return string(runes[len(runes)-maxStoredEventMessage:])
 	}
-	return strings.TrimSpace(string(runes[:limit])) + suffix
+	return strings.TrimSpace(string(runes[:headLength])) + marker + strings.TrimSpace(string(runes[len(runes)-tailLength:]))
 }
 
 func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
@@ -5235,8 +5264,18 @@ func userFacingErrorMessage(context errorContext, err error) string {
 		return "连接数据库超时，请确认网络连通性、防火墙规则和数据库服务状态"
 	case strings.Contains(lower, "no such host"), strings.Contains(lower, "lookup "):
 		return "无法解析数据库主机地址，请确认填写的主机名或 IP 是否正确"
-	case strings.Contains(lower, "access denied"), strings.Contains(lower, "password authentication failed"), strings.Contains(lower, "using password: yes"):
+	case strings.Contains(lower, "authentication failed"), strings.Contains(lower, "unable to authenticate"), strings.Contains(lower, "access denied"), strings.Contains(lower, "password authentication failed"), strings.Contains(lower, "using password: yes"):
 		return "数据库认证失败，请确认用户名、密码和授权范围是否正确"
+	case context == errorContextBackupRuntime && strings.Contains(lower, "no space left on device"):
+		return "备份临时目录空间不足，请清理磁盘或扩容后重试"
+	case context == errorContextBackupRuntime && (strings.Contains(lower, "signal: killed") || strings.Contains(lower, "out of memory") || strings.Contains(lower, "oomkilled")):
+		return "备份进程被系统终止，通常是容器内存不足，请检查 Pod OOM 记录和内存限制"
+	case context == errorContextBackupRuntime && (strings.Contains(lower, "socket was unexpectedly closed") || strings.Contains(lower, "connection closed") || strings.Contains(lower, "connection reset") || strings.Contains(lower, "unexpected eof")):
+		return "备份期间数据库连接意外中断，请检查数据库节点切换、网络抖动和服务端日志"
+	case strings.Contains(lower, "not authorized"), strings.Contains(lower, "unauthorized"):
+		return "当前数据库账号权限不足，请确认具备所需操作权限"
+	case context == errorContextBackupRuntime && (strings.Contains(lower, "tls handshake") || strings.Contains(lower, "ssl handshake") || strings.Contains(lower, "certificate signed by unknown authority") || strings.Contains(lower, "certificate is not valid")):
+		return "数据库 TLS 握手或证书校验失败，请检查 TLS 模式、CA 证书和连接地址"
 	case strings.Contains(lower, "unknown database"), strings.Contains(lower, "database does not exist"):
 		return "指定的数据库不存在，请先确认数据库名称是否正确"
 	case strings.Contains(lower, "table ") && strings.Contains(lower, "not found"):

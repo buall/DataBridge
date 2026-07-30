@@ -990,10 +990,14 @@ func runCommand(ctx context.Context, name string, args []string, env []string, s
 		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stdout.String()})
 	}
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
+		report(Progress{Stage: stage, EventLevel: commandOutputLevel(err), EventMessage: stderr.String()})
 	}
 	if err != nil {
-		return err
+		output := stderr.String()
+		if strings.TrimSpace(output) == "" {
+			output = stdout.String()
+		}
+		return commandExecutionError(name, err, output)
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
@@ -1014,10 +1018,10 @@ func runCommandToWriterEnv(ctx context.Context, name string, args []string, env 
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
+		report(Progress{Stage: stage, EventLevel: commandOutputLevel(err), EventMessage: stderr.String()})
 	}
 	if err != nil {
-		return err
+		return commandExecutionError(name, err, stderr.String())
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
@@ -1037,16 +1041,45 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	cmd.Stderr = &stderr
 	err = cmd.Run()
 	if stderr.Len() > 0 {
-		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stderr.String()})
+		report(Progress{Stage: stage, EventLevel: commandOutputLevel(err), EventMessage: stderr.String()})
 	}
 	if err != nil {
-		return err
+		return commandExecutionError(name, err, stderr.String())
 	}
 	report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: name + " 执行完成"})
 	return nil
 }
 
-const maxCommandOutputBytes = 64 * 1024
+const (
+	maxCommandOutputBytes      = 64 * 1024
+	maxCommandErrorDetailRunes = 3072
+)
+
+func commandOutputLevel(err error) string {
+	if err != nil {
+		return "ERROR"
+	}
+	return "INFO"
+}
+
+func commandExecutionError(name string, cause error, output string) error {
+	detail := commandErrorDetail(output)
+	if detail == "" {
+		return fmt.Errorf("%s: %w", name, cause)
+	}
+	return fmt.Errorf("%s: %w\n%s", name, cause, detail)
+}
+
+func commandErrorDetail(output string) string {
+	output = strings.TrimSpace(output)
+	runes := []rune(output)
+	if len(runes) <= maxCommandErrorDetailRunes {
+		return output
+	}
+	const marker = "...错误输出前部已截断，仅保留末尾...\n"
+	limit := maxCommandErrorDetailRunes - len([]rune(marker))
+	return marker + string(runes[len(runes)-limit:])
+}
 
 type commandOutputBuffer struct {
 	data      []byte
