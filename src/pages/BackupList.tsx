@@ -87,39 +87,41 @@ export function BackupList({
         <TaskSummary title="定时计划" value={scheduled} detail={paused ? `${paused} 个计划已暂停` : "到点自动执行"} tone="orange" />
         <TaskSummary title="已完成" value={completed} detail={`累计 ${formatBytes(totalBytes)}`} tone="green" />
       </div>
-      <Card className="task-table-card">
+      <Card className="task-table-card backup-list-card">
         <div className="section-title compact">
           <div><h3>任务列表</h3><p>备份完成后可查看文件名、大小和目标位置。</p></div>
           <label className="search-box small"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务或数据库" /></label>
         </div>
         {filtered.length ? (
-          <div className="task-table backup-list-table">
-            <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>创建时间</span><span>上一次调度</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>状态</span><span>操作</span></div>
-            {filtered.map((job) => {
-              const deleteDisabled = job.status === "running" || job.status === "pending";
-              const triggerVisible = job.scheduleMode === "scheduled" || job.status === "scheduled";
-              const triggerDisabled = deleteDisabled || triggeringId === job.id;
-              const scheduleActionVisible = job.scheduleMode === "scheduled";
-              const scheduleActionDisabled = updatingScheduleId === job.id;
-              const lastScheduleTime = lastScheduleLabel(job);
-              return (
-              <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
-                <div className="task-table-desktop">
+          <div className="backup-list-scroll">
+            <div className="task-table backup-list-table">
+              <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>状态</span><span>上次调度</span><span>下次调度</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>操作</span></div>
+              {filtered.map((job) => {
+                const deleteDisabled = job.status === "running" || job.status === "pending";
+                const triggerVisible = job.scheduleMode === "scheduled" || job.status === "scheduled";
+                const triggerDisabled = deleteDisabled || triggeringId === job.id;
+                const scheduleActionVisible = job.scheduleMode === "scheduled";
+                const scheduleActionDisabled = updatingScheduleId === job.id;
+                const lastScheduleTime = lastScheduleLabel(job);
+                const nextScheduleTime = nextScheduleLabel(job);
+                return (
+                <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
+                  <div className="task-table-desktop">
                   <strong className="task-name" data-tooltip-content={job.name}>{job.name}</strong>
                   <TaskTypeTag job={job} />
-                  <time className="task-time">{formatTaskTime(job.startedAt)}</time>
+                  <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
                   <time className="task-time" data-tooltip-content={lastScheduleTime}>{lastScheduleTime}</time>
+                  <time className="task-time" data-tooltip-content={nextScheduleTime}>{nextScheduleTime}</time>
                   <SourceRoute job={job} />
                   <span className="task-name task-meta task-destination" data-tooltip-content={job.destination}>{job.destination}</span>
-                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.schedulePaused ? "调度已暂停" : job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</small></div>
-                  <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
+                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
                   <span className="row-actions">
                     {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
                     {scheduleActionVisible && <span role="button" tabIndex={scheduleActionDisabled ? -1 : 0} aria-disabled={scheduleActionDisabled} data-tooltip-content={job.schedulePaused ? "恢复按计划自动执行" : "暂停后将不再自动执行"} className={`row-schedule ${scheduleActionDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); } }}>{job.schedulePaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}{scheduleActionDisabled ? "处理中" : job.schedulePaused ? "恢复调度" : "暂停调度"}</span>}
                     <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                   </span>
-                </div>
-                <div className="task-mobile-card">
+                  </div>
+                  <div className="task-mobile-card">
                   <div className="task-mobile-head">
                     <span className="task-mobile-icon"><Archive size={18} /></span>
                     <div className="task-mobile-copy">
@@ -134,36 +136,40 @@ export function BackupList({
                       <TaskTypeTag job={job} />
                     </div>
                     <div className="task-mobile-row">
-                      <span>创建时间</span>
-                      <strong>{formatTaskTime(job.startedAt)}</strong>
+                      <span>状态</span>
+                      <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
                     </div>
                     <div className="task-mobile-row">
-                      <span>上一次调度</span>
+                      <span>上次调度</span>
                       <strong data-tooltip-content={lastScheduleTime}>{lastScheduleTime}</strong>
+                    </div>
+                    <div className="task-mobile-row">
+                      <span>下次调度</span>
+                      <strong data-tooltip-content={nextScheduleTime}>{nextScheduleTime}</strong>
                     </div>
                     <div className="task-mobile-row">
                       <span>目标存储</span>
                       <strong data-tooltip-content={job.destination}>{job.destination}</strong>
                     </div>
                     <div className="task-mobile-row">
-                      <span>{job.status === "scheduled" ? "下次执行" : "进度"}</span>
-                      <strong>{job.schedulePaused ? "调度已暂停" : job.status === "scheduled" ? nextRunLabel(job.nextRunAt) : `${job.progress}%`}</strong>
+                      <span>进度</span>
+                      <strong>{job.progress}%</strong>
                     </div>
                   </div>
                   <div className="task-mobile-progress">
                     <i style={{ width: `${job.progress}%` }} />
                   </div>
                   <div className="task-mobile-foot">
-                    <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
                     <span className="row-actions">
                       {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
                       {scheduleActionVisible && <span role="button" tabIndex={scheduleActionDisabled ? -1 : 0} aria-disabled={scheduleActionDisabled} data-tooltip-content={job.schedulePaused ? "恢复按计划自动执行" : "暂停后将不再自动执行"} className={`row-schedule ${scheduleActionDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); } }}>{job.schedulePaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}{scheduleActionDisabled ? "处理中" : job.schedulePaused ? "恢复调度" : "暂停调度"}</span>}
                       <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
                     </span>
                   </div>
-                </div>
-              </button>
-            );})}
+                  </div>
+                </button>
+              );})}
+            </div>
           </div>
         ) : (
           <div className="inline-empty">
@@ -233,6 +239,13 @@ function lastScheduleLabel(job: BackupJob) {
   if (job.lastRunAt) return formatTaskTime(job.lastRunAt);
   if (job.finishedAt && (job.scheduleMode === "scheduled" || job.status === "scheduled")) return formatTaskTime(job.finishedAt);
   return "尚未执行";
+}
+
+function nextScheduleLabel(job: BackupJob) {
+  if (job.scheduleMode !== "scheduled" && job.status !== "scheduled") return "-";
+  if (job.schedulePaused) return "调度已暂停";
+  if (job.status === "running" || job.status === "pending") return "执行后更新";
+  return nextRunLabel(job.nextRunAt);
 }
 
 function nextRunLabel(value?: string) {
