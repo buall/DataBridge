@@ -109,9 +109,10 @@ RUN set -eux; \
       *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mc_name="mc.${MC_VERSION}"; \
-    mc_base="https://dl.min.io/client/mc/release/linux-${mc_arch}/archive"; \
-    curl -fsSL "${mc_base}/${mc_name}" -o "/tmp/${mc_name}"; \
-    curl -fsSL "${mc_base}/${mc_name}.sha256sum" -o "/tmp/${mc_name}.sha256sum"; \
+    mc_base="https://github.com/minio/mc/releases/download/${MC_VERSION}"; \
+    mc_asset_name="mc.linux-${mc_arch}.${MC_VERSION}"; \
+    curl -fsSL "${mc_base}/${mc_asset_name}" -o "/tmp/${mc_name}"; \
+    curl -fsSL "${mc_base}/${mc_asset_name}.sha256sum" -o "/tmp/${mc_name}.sha256sum"; \
     cd /tmp; \
     sha256sum -c "${mc_name}.sha256sum"; \
     install -m 0755 "/tmp/${mc_name}" /usr/local/bin/mc; \
