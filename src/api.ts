@@ -167,6 +167,8 @@ export const api = {
     requestForm<BatchImportResult>("/imports/excel", importForm(file)),
   exportExcel: (scope: "connections" | "schedules") =>
     requestBlob(`/exports/excel?scope=${scope}`),
+  backupRecords: (id: string) =>
+    requestBlob(`/backups/${id}/records/export`),
   databases: (connectionId: string) =>
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`),
   createDatabase: (connectionId: string, name: string) =>

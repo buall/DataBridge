@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,8 +88,46 @@ func (s *Server) exportExcel(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (s *Server) exportBackupRecords(w http.ResponseWriter, r *http.Request) {
+	job, err := s.store.Backup(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "backup not found")
+		return
+	}
+	if job.ScheduleMode != "scheduled" && job.Status != model.StatusScheduled {
+		writeError(w, http.StatusBadRequest, "invalid_request", "仅定时备份任务支持导出备份记录")
+		return
+	}
+	template, err := readBackupRecordTemplate()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "export_failed", "读取备份记录 Excel 模板失败")
+		return
+	}
+	rows := backupRecordExportRows(job)
+	data, err := fillExportTemplate(template, "xl/worksheets/sheet1.xml", rows[1:])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "export_failed", "生成备份记录 Excel 文件失败")
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="databridge-backup-records-%s.xlsx"`, time.Now().Format("20060102-150405")))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func readBatchImportTemplate() ([]byte, error) {
 	for _, name := range []string{"dist/databridge-batch-import-template.xlsx", "public/databridge-batch-import-template.xlsx", "../../public/databridge-batch-import-template.xlsx"} {
+		data, err := os.ReadFile(name)
+		if err == nil {
+			return data, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+func readBackupRecordTemplate() ([]byte, error) {
+	for _, name := range []string{"dist/databridge-backup-record-template.xlsx", "public/databridge-backup-record-template.xlsx", "../../public/databridge-backup-record-template.xlsx"} {
 		data, err := os.ReadFile(name)
 		if err == nil {
 			return data, nil
@@ -232,6 +271,105 @@ func scheduleExportRows(jobs []model.BackupJob, storages []model.RemoteStorage, 
 		})
 	}
 	return rows
+}
+
+func backupRecordExportRows(job model.BackupJob) [][]string {
+	rows := [][]string{{"任务名称", "任务 ID", "记录 ID", "开始时间", "结束时间", "执行时长", "状态", "备份产物", "产物总大小", "目标位置", "失败原因"}}
+	versions := append([]model.BackupArtifactVersion(nil), job.ArtifactVersions...)
+	sort.SliceStable(versions, func(left, right int) bool {
+		return versions[left].StartedAt.After(versions[right].StartedAt)
+	})
+	for _, version := range versions {
+		finishedAt := ""
+		if version.FinishedAt != nil {
+			finishedAt = formatBackupRecordTime(*version.FinishedAt)
+		}
+		artifacts, size := backupRecordArtifacts(version.Artifacts)
+		rows = append(rows, []string{
+			job.Name,
+			job.ID,
+			version.ID,
+			formatBackupRecordTime(version.StartedAt),
+			finishedAt,
+			formatBackupRecordDuration(version.StartedAt, version.FinishedAt),
+			backupRecordStatusLabel(version.Status),
+			artifacts,
+			formatBytes(size),
+			job.Destination,
+			version.Error,
+		})
+	}
+	return rows
+}
+
+func backupRecordArtifacts(artifacts []model.BackupArtifact) (string, int64) {
+	items := make([]string, 0, len(artifacts))
+	var totalSize int64
+	for _, artifact := range artifacts {
+		name := artifact.Name
+		size := artifact.Size
+		if name == "" {
+			for _, copy := range artifact.Copies {
+				if copy.Name == "" {
+					continue
+				}
+				name = copy.Name
+				size = copy.Size
+				break
+			}
+		}
+		if name == "" {
+			continue
+		}
+		if artifact.Database != "" {
+			items = append(items, artifact.Database+": "+name)
+		} else {
+			items = append(items, name)
+		}
+		totalSize += size
+	}
+	return strings.Join(items, "\n"), totalSize
+}
+
+func formatBackupRecordTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.In(appLocation).Format("2006-01-02 15:04:05")
+}
+
+func formatBackupRecordDuration(startedAt time.Time, finishedAt *time.Time) string {
+	if startedAt.IsZero() || finishedAt == nil || finishedAt.Before(startedAt) {
+		return ""
+	}
+	duration := finishedAt.Sub(startedAt).Round(time.Second)
+	hours := int(duration / time.Hour)
+	minutes := int(duration%time.Hour) / int(time.Minute)
+	seconds := int(duration%time.Minute) / int(time.Second)
+	if hours > 0 {
+		return fmt.Sprintf("%d小时%d分%d秒", hours, minutes, seconds)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%d分%d秒", minutes, seconds)
+	}
+	return fmt.Sprintf("%d秒", seconds)
+}
+
+func backupRecordStatusLabel(status model.MigrationStatus) string {
+	switch status {
+	case model.StatusCompleted:
+		return "成功"
+	case model.StatusFailed:
+		return "失败"
+	case model.StatusCancelled:
+		return "已取消"
+	case model.StatusRunning:
+		return "执行中"
+	case model.StatusPending:
+		return "排队中"
+	default:
+		return string(status)
+	}
 }
 
 func exportWeekday(day int) string {

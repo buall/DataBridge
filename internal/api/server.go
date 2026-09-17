@@ -157,6 +157,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/backups", server.createBackup)
 	protected.HandleFunc("POST /api/backups/notification-test", server.testBackupNotification)
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
+	protected.HandleFunc("GET /api/backups/{id}/records/export", server.exportBackupRecords)
 	protected.HandleFunc("PUT /api/backups/{id}", server.updateBackup)
 	protected.HandleFunc("POST /api/backups/{id}/trigger", server.triggerBackup)
 	protected.HandleFunc("POST /api/backups/{id}/pause", server.pauseBackupSchedule)

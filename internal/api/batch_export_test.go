@@ -1,9 +1,17 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"databridge/internal/model"
+	"databridge/internal/store"
 )
 
 func TestConnectionExportXLSXCanBeParsed(t *testing.T) {
@@ -84,4 +92,113 @@ func TestScheduleExportOnlyIncludesScheduledJobs(t *testing.T) {
 	if rows[1][0] != "每日备份" || rows[1][3] != "本地归档" || rows[1][4] != "每天" {
 		t.Fatalf("unexpected schedule row: %#v", rows[1])
 	}
+}
+
+func TestBackupRecordExportRowsIncludeEveryExecution(t *testing.T) {
+	started := time.Date(2026, 9, 17, 2, 30, 0, 0, appLocation)
+	finished := started.Add(2*time.Minute + 3*time.Second)
+	rows := backupRecordExportRows(model.BackupJob{
+		ID: "backup-1", Name: "每日生产备份", Destination: "生产归档",
+		ArtifactVersions: []model.BackupArtifactVersion{
+			{ID: "failed", StartedAt: started.Add(-time.Hour), Status: model.StatusFailed, Error: "对象存储不可用"},
+			{ID: "completed", StartedAt: started, FinishedAt: &finished, Status: model.StatusCompleted, Artifacts: []model.BackupArtifact{
+				{Database: "orders", Name: "orders.tar.gz", Size: 1024},
+				{Database: "users", Copies: []model.BackupArtifactCopy{{Name: "users.tar.gz", Size: 2048}}},
+			}},
+		},
+	})
+	if len(rows) != 3 {
+		t.Fatalf("record rows = %d, want 3: %#v", len(rows), rows)
+	}
+	if got, want := rows[1][2], "completed"; got != want {
+		t.Fatalf("latest record id = %q, want %q", got, want)
+	}
+	if rows[1][5] != "2分3秒" || rows[1][6] != "成功" || rows[1][8] != "3.0 KB" {
+		t.Fatalf("unexpected completed record: %#v", rows[1])
+	}
+	if !strings.Contains(rows[1][7], "orders: orders.tar.gz") || !strings.Contains(rows[1][7], "users: users.tar.gz") {
+		t.Fatalf("artifacts missing from record: %#v", rows[1])
+	}
+	if rows[2][6] != "失败" || rows[2][10] != "对象存储不可用" {
+		t.Fatalf("unexpected failed record: %#v", rows[2])
+	}
+}
+
+func TestExportBackupRecordsForScheduledJob(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	started := time.Date(2026, 9, 17, 2, 30, 0, 0, appLocation)
+	finished := started.Add(45 * time.Second)
+	job := model.BackupJob{
+		ID: store.NewID(), Name: "每日生产备份", Status: model.StatusScheduled, ScheduleMode: "scheduled", Destination: "生产归档",
+		ArtifactVersions: []model.BackupArtifactVersion{{
+			ID: "record-1", StartedAt: started, FinishedAt: &finished, Status: model.StatusCompleted,
+			Artifacts: []model.BackupArtifact{{Database: "orders", Name: "orders.tar.gz", Size: 1024}},
+		}},
+	}
+	if err := appStore.AddBackup(job, nil); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/backups/"+job.ID+"/records/export", nil)
+	request.SetPathValue("id", job.ID)
+	response := httptest.NewRecorder()
+	server.exportBackupRecords(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Header().Get("Content-Disposition"), "databridge-backup-records-") {
+		t.Fatalf("unexpected content disposition: %q", response.Header().Get("Content-Disposition"))
+	}
+	workbook, err := parseXLSX(response.Body.Bytes())
+	if err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+	rows := workbook.Sheets["备份记录"]
+	if len(rows) < 5 || rows[0][0] != "DataBridge 备份记录" || rows[3][0] != "任务名称" || rows[4][0] != "每日生产备份" || rows[4][6] != "成功" {
+		t.Fatalf("unexpected exported rows: %#v", rows)
+	}
+	sheetXML := xlsxEntry(t, response.Body.Bytes(), "xl/worksheets/sheet1.xml")
+	stylesXML := xlsxEntry(t, response.Body.Bytes(), "xl/styles.xml")
+	if !strings.Contains(sheetXML, "conditionalFormatting") || !strings.Contains(sheetXML, "width=\"42\"") || !strings.Contains(sheetXML, "ht=\"34\"") || !strings.Contains(stylesXML, "FFEAF8EF") || !strings.Contains(stylesXML, "FFFDECEC") {
+		t.Fatal("backup record export should preserve template formatting")
+	}
+}
+
+func TestExportBackupRecordsRejectsNonScheduledJob(t *testing.T) {
+	appStore, server, _ := newTestServer(t)
+	job := model.BackupJob{ID: store.NewID(), Name: "手动备份", Status: model.StatusCompleted, ScheduleMode: "once"}
+	if err := appStore.AddBackup(job, nil); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/backups/"+job.ID+"/records/export", nil)
+	request.SetPathValue("id", job.ID)
+	response := httptest.NewRecorder()
+	server.exportBackupRecords(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "仅定时备份任务支持") {
+		t.Fatalf("unexpected response: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func xlsxEntry(t *testing.T, data []byte, name string) string {
+	t.Helper()
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("open xlsx: %v", err)
+	}
+	for _, file := range reader.File {
+		if file.Name != name {
+			continue
+		}
+		input, err := file.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", name, err)
+		}
+		contents, err := io.ReadAll(input)
+		_ = input.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(contents)
+	}
+	t.Fatalf("xlsx entry not found: %s", name)
+	return ""
 }
