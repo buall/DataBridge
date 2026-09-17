@@ -211,6 +211,8 @@ export const api = {
     request<{ ok: boolean }>(`/storages/${storageId}`, { method: "DELETE" }),
   testStorage: (storageId: string) =>
     request<{ storage: RemoteStorage; message: string }>(`/storages/${storageId}/test`, { method: "POST" }),
+  authorizeOneDrive: (storageId: string) =>
+    request<{ url: string; redirectUri: string }>(`/storages/${storageId}/onedrive/authorize`, { method: "POST" }),
   tables: (connectionId: string, database: string) =>
     request<TableInfo[]>(`/connections/${connectionId}/databases/${encodeURIComponent(database)}/tables`),
   createMigration: async (config: MigrationConfig) =>

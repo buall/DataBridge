@@ -232,8 +232,18 @@ NEO4J_apoc_import_file_use__neo4j__config=false
 - MySQL 支持原生工具迁移：`mysqldump` 导出，`mysql` 导入。
 - MongoDB 支持原生工具迁移：`mongodump` 导出，`mongorestore` 导入。
 - Neo4j 支持原生工具迁移：APOC stream 导出，`cypher-shell` 导入。
-- 支持本地目录和对象存储备份，支持 PostgreSQL / MySQL / MongoDB / Neo4j 备份。
+- 支持本地目录、对象存储、WebDAV 和 OneDrive 备份，支持 PostgreSQL / MySQL / MongoDB / Neo4j 备份。
 - 支持从备份产物恢复 PostgreSQL / MySQL / MongoDB / Neo4j。
+
+### OneDrive 备份节点
+
+OneDrive 节点通过 Microsoft Graph OAuth 接入，支持普通上传、大文件分片上传、下载、删除和备份恢复。新增节点时填写 Graph 端点（公有云使用 `https://graph.microsoft.com/v1.0`，世纪互联使用 `https://microsoftgraph.chinacloudapi.cn/v1.0`）、Entra ID 应用程序 ID 和客户端密钥，保存后点击“开始授权”。应用注册需要添加委托权限 `Files.ReadWrite.All`、`offline_access`，并将以下回调地址登记为 Web 重定向 URI：
+
+```text
+https://<DataBridge 公网地址>/api/storages/<存储 ID>/onedrive/callback
+```
+
+反向代理或公网部署时建议设置 `DATABRIDGE_PUBLIC_URL`，确保 OAuth 回调地址与 Entra ID 中登记的地址完全一致。
 - 支持冲突策略：`backup`、`overwrite`、`skip`。
 - 展示任务列表、任务进度、运行日志和校验报告。
 - 将迁移任务、事件、表级校验结果和报告持久化到 SQLite。

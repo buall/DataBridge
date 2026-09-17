@@ -38,6 +38,7 @@ export function Storages({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [authorizing, setAuthorizing] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RemoteStorage | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [bucketTarget, setBucketTarget] = useState<RemoteStorage | null>(null);
@@ -183,6 +184,19 @@ export function Storages({
     }
   }
 
+  async function authorizeOneDrive(storage: RemoteStorage) {
+    setOpenMenu(null);
+    setAuthorizing(storage.id);
+    setPageError("");
+    try {
+      const result = await api.authorizeOneDrive(storage.id);
+      window.location.assign(result.url);
+    } catch (reason) {
+      setPageError(reason instanceof Error ? reason.message : "启动 OneDrive 授权失败");
+      setAuthorizing(null);
+    }
+  }
+
   async function remove(storage: RemoteStorage) {
     setOpenMenu(null);
     setDeleteTarget(storage);
@@ -309,6 +323,7 @@ export function Storages({
       ...current,
       type,
       provider: defaultProvider(type),
+      endpoint: type === "one_drive" ? "https://graph.microsoft.com/v1.0" : type === "object" || type === "webdav" ? current.endpoint : "",
       authMode: defaultAuthMode(type),
     }));
     setBucketOptions([]);
@@ -389,6 +404,7 @@ export function Storages({
                     {storage.type === "object" && <button type="button" onClick={() => openBucketCreate(storage)}><Plus size={15} /><span>创建 Bucket</span></button>}
                     {storage.type === "object" && <button type="button" onClick={() => openBucketList(storage)}><FolderOpen size={15} /><span>查看 Bucket</span></button>}
                     {storage.type === "webdav" && <button type="button" onClick={() => openWebDAVDirectory(storage)}><FolderOpen size={15} /><span>查看目录</span></button>}
+                    {storage.type === "one_drive" && <button type="button" onClick={() => authorizeOneDrive(storage)} disabled={authorizing === storage.id}><KeyRound size={15} /><span>{authorizing === storage.id ? "跳转授权中" : "开始授权"}</span></button>}
                     <button type="button" onClick={() => test(storage)} disabled={testing === storage.id}>{testing === storage.id ? <RefreshCw size={15} className="spin" /> : <RefreshCw size={15} />}<span>测试配置</span></button>
                     <button type="button" className="danger-action" onClick={() => remove(storage)}><Trash2 size={15} /><span>删除存储</span></button>
                   </div>
@@ -562,9 +578,21 @@ export function Storages({
             )}
             {(form.type === "google_drive" || form.type === "one_drive") && (
               <>
-                <SelectField label="授权方式" value={form.authMode ?? "oauth"} onChange={(authMode) => setForm({ ...form, authMode })}><option value="oauth">OAuth 授权</option><option value="service_account">服务账号</option></SelectField>
+                {form.type === "one_drive" ? (
+                  <>
+                    <SelectField label="Microsoft Graph 端点" value={form.endpoint ?? "https://graph.microsoft.com/v1.0"} onChange={(endpoint) => setForm({ ...form, endpoint, verified: false })}>
+                      <option value="https://graph.microsoft.com/v1.0">公有云（国际版）</option>
+                      <option value="https://microsoftgraph.chinacloudapi.cn/v1.0">世纪互联（中国区）</option>
+                    </SelectField>
+                    <label className="field"><span>应用程序（客户端）ID</span><input required value={form.accessKey} onChange={(event) => setForm({ ...form, accessKey: event.target.value, verified: false })} placeholder="来自 Microsoft Entra ID 应用注册" /></label>
+                    <label className="field"><span>客户端密钥</span><input type="password" required={!editTarget} value={form.secretKey} onChange={(event) => setForm({ ...form, secretKey: event.target.value, verified: false })} placeholder={editTarget ? "留空则保持当前密钥" : "来自证书和密码"} /></label>
+                    <p className="field-hint">在 Entra ID 应用中添加 Web 重定向 URI：<code>{window.location.origin}/api/storages/&lt;存储 ID&gt;/onedrive/callback</code>，并授予委托权限 Files.ReadWrite.All、offline_access。</p>
+                  </>
+                ) : (
+                  <SelectField label="授权方式" value={form.authMode ?? "oauth"} onChange={(authMode) => setForm({ ...form, authMode })}><option value="oauth">OAuth 授权</option><option value="service_account">服务账号</option></SelectField>
+                )}
                 <label className="field"><span>默认目录</span><input value={form.path} onChange={(event) => setForm({ ...form, path: event.target.value })} placeholder="DataBridge Backups" /></label>
-                <p className="field-hint">当前先保存授权目标配置，真实登录授权和文件上传会在下一步接入。</p>
+                {form.type === "google_drive" && <p className="field-hint">Google Drive 授权暂未接入。</p>}
               </>
             )}
             {form.type === "local" && <label className="field"><span>本地目录</span><input required value={form.path} onChange={(event) => setForm({ ...form, path: event.target.value })} placeholder="/secure/backups" /></label>}

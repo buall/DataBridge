@@ -428,6 +428,8 @@ func destinationForStorage(storage model.RemoteStorage, target model.BackupTarge
 		return objectDestination{storage: storage, target: target}, nil
 	case "webdav":
 		return webDAVDestination{storage: storage, target: target}, nil
+	case "one_drive":
+		return oneDriveDestination{storage: storage, target: target}, nil
 	case "local":
 		return localDestination{directory: storage.Path, storage: storage, target: target}, nil
 	default:
@@ -508,6 +510,21 @@ func (d objectDestination) upload(ctx context.Context, filePath, objectKey strin
 type webDAVDestination struct {
 	storage model.RemoteStorage
 	target  model.BackupTarget
+}
+
+type oneDriveDestination struct {
+	storage model.RemoteStorage
+	target  model.BackupTarget
+}
+
+func (d oneDriveDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	remoteKey := path.Join(d.storage.Path, objectKey)
+	size, err := remotestorage.UploadOneDrive(ctx, d.storage, remoteKey, filePath)
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到 OneDrive", d.storage), ArtifactName: remoteKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, remoteKey, size, "", "")})
+	return nil
 }
 
 func (d webDAVDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {

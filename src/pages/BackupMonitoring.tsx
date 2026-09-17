@@ -278,7 +278,7 @@ export function hasBackupArtifact(job: BackupJob) {
 }
 
 function backupDestinationSupportsArtifacts(job: BackupJob) {
-  return job.destinationType === "local" || job.destinationType === "object" || job.destinationType === "webdav" || job.destinationType === "multi";
+  return job.destinationType === "local" || job.destinationType === "object" || job.destinationType === "webdav" || job.destinationType === "one_drive" || job.destinationType === "multi";
 }
 
 function restoreUnavailableHint(job: BackupJob) {
@@ -351,6 +351,7 @@ export function storageTypeLabel(value: string) {
   if (value === "local") return "本地目录";
   if (value === "object") return "对象存储";
   if (value === "webdav") return "WebDAV";
+  if (value === "one_drive") return "OneDrive";
   if (value === "restore") return "恢复任务";
   return value || "备份目标";
 }
@@ -602,7 +603,7 @@ function ScheduleEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const { recipients, loadingRecipients } = useNotificationRecipients();
-  const writableStorages = storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local");
+  const writableStorages = storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local" || (item.type === "one_drive" && item.status === "connected"));
   const initialSource = connections.find((item) => item.name === job.sourceName && item.type === job.sourceType) ?? connections.find((item) => item.name === job.sourceName) ?? connections[0];
   const initialTargets = initialBackupTargets(job, writableStorages);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);

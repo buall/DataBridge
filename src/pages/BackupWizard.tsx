@@ -16,7 +16,7 @@ export function BackupWizard({
   storages: RemoteStorage[];
   onStart: (config: BackupConfig) => Promise<void>;
 }) {
-  const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local"), [storages]);
+  const writableStorages = useMemo(() => storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local" || (item.type === "one_drive" && item.status === "connected")), [storages]);
   const backupableConnections = useMemo(() => connections.filter((item) => item.type === "PostgreSQL" || item.type === "MySQL" || item.type === "MongoDB" || item.type === "Neo4j" || item.type === "etcd"), [connections]);
   const [step, setStep] = useState(0);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
@@ -618,6 +618,7 @@ function storageTypeLabel(storage?: RemoteStorage) {
   if (!storage) return "未选择";
   if (storage.type === "object") return "对象存储";
   if (storage.type === "webdav") return "WebDAV";
+  if (storage.type === "one_drive") return "OneDrive";
   if (storage.type === "local") return "本地目录";
   return storage.provider;
 }

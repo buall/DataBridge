@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +70,13 @@ type Server struct {
 	geoMu     sync.Mutex
 	geoCache  map[string]string
 	auth      authConfig
+	oauthMu   sync.Mutex
+	oauth     map[string]oneDriveOAuthState
+}
+
+type oneDriveOAuthState struct {
+	StorageID string
+	ExpiresAt time.Time
 }
 
 var appLocation = mustLoadLocation("Asia/Shanghai")
@@ -89,6 +98,7 @@ func New(appStore *store.Store) http.Handler {
 		geoClient: &http.Client{Timeout: 2 * time.Second},
 		geoCache:  make(map[string]string),
 		auth:      loadAuthConfig(),
+		oauth:     make(map[string]oneDriveOAuthState),
 	}
 	server.reconcileScheduledBackupRuns()
 	server.startBackupScheduler()
@@ -97,6 +107,9 @@ func New(appStore *store.Store) http.Handler {
 	mux.HandleFunc("GET /api/auth/session", server.authSession)
 	mux.HandleFunc("POST /api/auth/login", server.login)
 	mux.HandleFunc("POST /api/auth/logout", server.logout)
+	// OAuth providers redirect back without DataBridge's session context. The
+	// single-use, expiring state token protects this callback from CSRF.
+	mux.HandleFunc("GET /api/storages/{id}/onedrive/callback", server.oneDriveCallback)
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/connections", server.listConnections)
 	protected.HandleFunc("POST /api/imports/excel/preview", server.previewBatchImport)
@@ -124,6 +137,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("PUT /api/storages/{id}", server.updateStorage)
 	protected.HandleFunc("DELETE /api/storages/{id}", server.deleteStorage)
 	protected.HandleFunc("POST /api/storages/{id}/test", server.testStorage)
+	protected.HandleFunc("POST /api/storages/{id}/onedrive/authorize", server.authorizeOneDrive)
 	protected.HandleFunc("POST /api/migrations", server.createMigration)
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
@@ -1072,8 +1086,20 @@ func (s *Server) testStorage(w http.ResponseWriter, r *http.Request) {
 			message = "WebDAV 存储测试通过"
 		}
 	case "google_drive", "one_drive":
-		status = "needs_auth"
-		message = "该存储需要完成 OAuth 授权后才能测试"
+		if item.Type == "one_drive" {
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+			defer cancel()
+			if err := remotestorage.TestOneDrive(ctx, item); err != nil {
+				status = "warning"
+				message = userFacingErrorMessage(errorContextRemoteStorage, err)
+				log.Printf("remote storage[%s] onedrive test failed: %v", item.ID, err)
+			} else {
+				message = "OneDrive 存储测试通过"
+			}
+		} else {
+			status = "needs_auth"
+			message = "该存储需要完成 OAuth 授权后才能测试"
+		}
 	default:
 		status = "warning"
 		message = "当前存储类型暂不支持在线测试"
@@ -1084,6 +1110,102 @@ func (s *Server) testStorage(w http.ResponseWriter, r *http.Request) {
 	}
 	item.Status = status
 	writeJSON(w, http.StatusOK, map[string]any{"storage": redactStorageSecret(item), "message": message})
+}
+
+func (s *Server) authorizeOneDrive(w http.ResponseWriter, r *http.Request) {
+	storage, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if storage.Type != "one_drive" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 OneDrive 存储支持 OAuth 授权")
+		return
+	}
+	stateBytes := make([]byte, 24)
+	if _, err := rand.Read(stateBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "oauth_error", "生成 OAuth 状态失败")
+		return
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
+	redirectURI := s.oneDriveRedirectURI(r, storage.ID)
+	authorizeURL, err := remotestorage.OneDriveAuthorizeURL(storage, redirectURI, state)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "oauth_error", err.Error())
+		return
+	}
+	s.oauthMu.Lock()
+	s.oauth[state] = oneDriveOAuthState{StorageID: storage.ID, ExpiresAt: time.Now().Add(10 * time.Minute)}
+	s.oauthMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL, "redirectUri": redirectURI})
+}
+
+func (s *Server) oneDriveCallback(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	s.oauthMu.Lock()
+	oauthState, ok := s.oauth[state]
+	if ok {
+		delete(s.oauth, state)
+	}
+	s.oauthMu.Unlock()
+	if !ok || oauthState.ExpiresAt.Before(time.Now()) || oauthState.StorageID != r.PathValue("id") {
+		http.Error(w, "OneDrive OAuth state is invalid or expired", http.StatusBadRequest)
+		return
+	}
+	if oauthError := strings.TrimSpace(r.URL.Query().Get("error")); oauthError != "" {
+		http.Error(w, "OneDrive OAuth failed: "+oauthError, http.StatusBadRequest)
+		return
+	}
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		http.Error(w, "OneDrive OAuth code is missing", http.StatusBadRequest)
+		return
+	}
+	storage, err := s.store.Storage(oauthState.StorageID)
+	if err != nil {
+		http.Error(w, "OneDrive storage not found", http.StatusNotFound)
+		return
+	}
+	credential, err := remotestorage.OneDriveExchangeCode(r.Context(), storage, code, s.oneDriveRedirectURI(r, storage.ID))
+	if err != nil {
+		http.Error(w, "OneDrive OAuth failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	secret, err := remotestorage.EncodeOneDriveCredential(credential)
+	if err != nil {
+		http.Error(w, "save OneDrive credential failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	updated, err := s.store.UpdateStorage(storage.ID, model.UpdateStorageInput{
+		Type: storage.Type, Name: storage.Name, Provider: storage.Provider, Endpoint: storage.Endpoint,
+		Bucket: storage.Bucket, Region: storage.Region, AccessKey: storage.AccessKey, SecretKey: secret,
+		Path: storage.Path, AuthMode: "oauth", Note: storage.Note, Verified: true,
+	})
+	if err != nil {
+		http.Error(w, "save OneDrive credential failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = updated
+	http.Redirect(w, r, strings.TrimRight(s.publicBaseURL(r), "/")+"/storages?onedrive=authorized", http.StatusFound)
+}
+
+func (s *Server) oneDriveRedirectURI(r *http.Request, storageID string) string {
+	return strings.TrimRight(s.publicBaseURL(r), "/") + "/api/storages/" + url.PathEscape(storageID) + "/onedrive/callback"
+}
+
+func (s *Server) publicBaseURL(r *http.Request) string {
+	if configured := strings.TrimSpace(os.Getenv("DATABRIDGE_PUBLIC_URL")); configured != "" {
+		return strings.TrimRight(configured, "/")
+	}
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		proto = "http"
+	}
+	host := r.Host
+	if host == "" {
+		host = "localhost:8081"
+	}
+	return proto + "://" + host
 }
 
 func (s *Server) createMigration(w http.ResponseWriter, r *http.Request) {
@@ -1566,7 +1688,7 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 	}
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	var objectStorage *model.RemoteStorage
-	if job.DestinationType == "object" || job.DestinationType == "webdav" {
+	if job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive" {
 		storage, err := s.backupArtifactStorage(*job)
 		if err != nil {
 			log.Printf("backup[%s] retention cleanup storage lookup failed: %v", job.ID, err)
@@ -1642,6 +1764,11 @@ func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.Back
 			return fmt.Errorf("未找到备份目标 WebDAV 存储")
 		}
 		return remotestorage.DeleteWebDAV(ctx, *objectStorage, artifact.Name)
+	case "one_drive":
+		if objectStorage == nil {
+			return fmt.Errorf("未找到备份目标 OneDrive 存储")
+		}
+		return remotestorage.DeleteOneDrive(ctx, *objectStorage, artifact.Name)
 	default:
 		return fmt.Errorf("该备份目标暂不支持清理备份文件")
 	}
@@ -1695,6 +1822,23 @@ func (s *Server) deleteExpiredBackupArtifactCopy(ctx context.Context, job model.
 			name = artifact.Name
 		}
 		return remotestorage.DeleteWebDAV(ctx, *storage, name)
+	case "one_drive":
+		storage := fallbackObjectStorage
+		if strings.TrimSpace(copy.StorageID) != "" {
+			loaded, err := s.store.Storage(copy.StorageID)
+			if err != nil {
+				return fmt.Errorf("%s：未找到备份目标 OneDrive 存储", backupCopyLabel(copy))
+			}
+			storage = &loaded
+		}
+		if storage == nil {
+			return fmt.Errorf("%s：未找到备份目标 OneDrive 存储", backupCopyLabel(copy))
+		}
+		name := copy.Name
+		if name == "" {
+			name = artifact.Name
+		}
+		return remotestorage.DeleteOneDrive(ctx, *storage, name)
 	default:
 		return fmt.Errorf("%s：该备份目标暂不支持清理备份文件", backupCopyLabel(copy))
 	}
@@ -2317,7 +2461,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 		if err != nil {
 			return nil, fmt.Errorf("未找到备份目标存储，请重新选择")
 		}
-		if storage.Type != "object" && storage.Type != "webdav" && storage.Type != "local" {
+		if storage.Type != "object" && storage.Type != "webdav" && storage.Type != "one_drive" && storage.Type != "local" {
 			return nil, fmt.Errorf("存储 %q 暂不支持备份写入", storage.Name)
 		}
 		targets[index].StorageID = storage.ID
@@ -2331,7 +2475,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 	if len(storages) == 1 {
 		storage := storages[0]
 		request.DestinationType = storage.Type
-		if storage.Type == "object" || storage.Type == "webdav" {
+		if storage.Type == "object" || storage.Type == "webdav" || storage.Type == "one_drive" {
 			request.Storage = &storage
 		}
 		return storages, nil
@@ -4032,6 +4176,20 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 			return restoreSource{}, fmt.Errorf("未找到备份目标 WebDAV 存储")
 		}
 		return restoreSource{Type: "webdav", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
+	case "one_drive":
+		request, err := s.backfillBackupRequest(job)
+		if err != nil {
+			return restoreSource{}, err
+		}
+		objectName := restoreArtifactObject(job)
+		if request.Destination == "" || objectName == "" {
+			return restoreSource{}, fmt.Errorf("未找到 OneDrive 备份位置")
+		}
+		storage, err := s.store.Storage(request.Destination)
+		if err != nil {
+			return restoreSource{}, fmt.Errorf("未找到备份目标 OneDrive 存储")
+		}
+		return restoreSource{Type: "one_drive", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
 	case "multi":
 		copies := s.restoreCopyMap(job)
 		if len(copies) == 0 {
@@ -4077,7 +4235,7 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			if path != "" {
 				result = append(result, restoreArtifactCopy{Type: "local", Path: path, Label: backupCopyLabel(copy)})
 			}
-		case "object", "webdav":
+		case "object", "webdav", "one_drive":
 			if strings.TrimSpace(copy.Name) == "" {
 				continue
 			}
@@ -4087,7 +4245,7 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			}
 			result = append(result, restoreArtifactCopy{Type: copy.Type, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
 		default:
-			if (job.DestinationType == "object" || job.DestinationType == "webdav") && strings.TrimSpace(copy.Name) != "" {
+			if (job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive") && strings.TrimSpace(copy.Name) != "" {
 				storage, err := s.backupArtifactStorage(job)
 				if err == nil {
 					result = append(result, restoreArtifactCopy{Type: job.DestinationType, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
@@ -4317,7 +4475,7 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	if source.Type == "local" {
 		return source.Path, nil, nil
 	}
-	if (source.Type != "object" && source.Type != "webdav") || source.Storage == nil {
+	if (source.Type != "object" && source.Type != "webdav" && source.Type != "one_drive") || source.Storage == nil {
 		return "", nil, fmt.Errorf("unsupported restore source %q", source.Type)
 	}
 	tempDir, err := backup.MkdirTemp("databridge-restore-artifact-*")
@@ -4350,7 +4508,7 @@ func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []
 			} else {
 				failures = append(failures, fmt.Sprintf("%s：本地备份文件不可用", copy.Label))
 			}
-		case "object", "webdav":
+		case "object", "webdav", "one_drive":
 			if copy.Storage == nil || copy.Object == "" {
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
@@ -4415,7 +4573,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 		if _, err := io.Copy(w, file); err != nil {
 			log.Printf("backup artifact download failed: %v", err)
 		}
-	case "object", "webdav":
+	case "object", "webdav", "one_drive":
 		storage, err := s.backupArtifactStorage(item)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
@@ -4463,7 +4621,7 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 				log.Printf("backup artifact download failed: %v", err)
 			}
 			return
-		case "object", "webdav":
+		case "object", "webdav", "one_drive":
 			if copy.Storage == nil || copy.Object == "" {
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
@@ -4495,12 +4653,18 @@ func downloadRemoteBackupArtifact(ctx context.Context, storageType string, stora
 	if storageType == "webdav" {
 		return remotestorage.DownloadWebDAV(ctx, storage, objectName, targetPath)
 	}
+	if storageType == "one_drive" {
+		return remotestorage.DownloadOneDrive(ctx, storage, objectName, targetPath)
+	}
 	return remotestorage.DownloadObject(ctx, storage, objectName, targetPath)
 }
 
 func remoteStorageTypeLabel(storageType string) string {
 	if storageType == "webdav" {
 		return "WebDAV"
+	}
+	if storageType == "one_drive" {
+		return "OneDrive"
 	}
 	return "对象存储"
 }
@@ -4919,6 +5083,10 @@ func validateStorage(w http.ResponseWriter, input model.StorageInput) bool {
 		writeError(w, http.StatusBadRequest, "invalid_storage", "WebDAV 需要填写 Endpoint、用户名和密码")
 		return false
 	}
+	if storageType == "one_drive" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "" || input.SecretKey == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "OneDrive 需要填写 Graph 端点、应用程序 ID 和客户端密钥")
+		return false
+	}
 	return true
 }
 
@@ -4938,6 +5106,10 @@ func validateStorageUpdate(w http.ResponseWriter, input model.UpdateStorageInput
 	}
 	if storageType == "webdav" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "") {
 		writeError(w, http.StatusBadRequest, "invalid_storage", "WebDAV 需要填写 Endpoint 和用户名")
+		return false
+	}
+	if storageType == "one_drive" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "") {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "OneDrive 需要填写 Graph 端点和应用程序 ID")
 		return false
 	}
 	return true
