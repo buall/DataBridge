@@ -182,23 +182,27 @@ func fillExportTemplate(template []byte, sheetPath string, rows [][]string) ([]b
 
 func fillTemplateWorksheet(sheet string, rows [][]string) string {
 	const firstDataRow = 5
+	const lastTemplateRow = 104
+	templateStyles := make([]string, 0)
+	if len(rows) > lastTemplateRow-firstDataRow+1 {
+		templateStyles = templateWorksheetRowStyles(sheet, lastTemplateRow, len(rows[0]))
+	}
 	for rowOffset, row := range rows {
 		rowNumber := firstDataRow + rowOffset
-		if rowNumber <= 104 {
+		if rowNumber <= lastTemplateRow {
 			for columnIndex, value := range row {
 				cellRef := xlsxColumnName(columnIndex) + strconv.Itoa(rowNumber)
-				pattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"([^>]*)\s*/>`)
-				sheet = pattern.ReplaceAllStringFunc(sheet, func(cell string) string {
-					return strings.TrimSuffix(strings.TrimSpace(cell), "/>") + ` t="inlineStr"><x:is><x:t xml:space="preserve">` + xmlEscape(value) + `</x:t></x:is></x:c>`
-				})
+				sheet = replaceTemplateWorksheetCell(sheet, cellRef, value)
 			}
 			continue
 		}
 		var extra strings.Builder
 		extra.WriteString(fmt.Sprintf(`<x:row r="%d" ht="24" customHeight="1">`, rowNumber))
 		for columnIndex, value := range row {
-			style := "37"
-			if columnIndex == len(row)-1 {
+			style := "37" // Compatibility fallback for templates without a formatted final row.
+			if columnIndex < len(templateStyles) && templateStyles[columnIndex] != "" {
+				style = templateStyles[columnIndex]
+			} else if columnIndex == len(row)-1 {
 				style = "38"
 			}
 			extra.WriteString(fmt.Sprintf(`<x:c r="%s%d" s="%s" t="inlineStr"><x:is><x:t xml:space="preserve">%s</x:t></x:is></x:c>`, xlsxColumnName(columnIndex), rowNumber, style, xmlEscape(value)))
@@ -207,6 +211,42 @@ func fillTemplateWorksheet(sheet string, rows [][]string) string {
 		sheet = strings.Replace(sheet, `</x:sheetData>`, extra.String()+`</x:sheetData>`, 1)
 	}
 	return sheet
+}
+
+func replaceTemplateWorksheetCell(sheet, cellRef, value string) string {
+	cellPattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"[^>]*(?:/>|>(?s:.*?)</x:c>)`)
+	attributePattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"([^>]*)>`)
+	typePattern := regexp.MustCompile(`\s+t="[^"]*"`)
+	return cellPattern.ReplaceAllStringFunc(sheet, func(cell string) string {
+		attributeMatch := attributePattern.FindStringSubmatch(cell)
+		attributes := ""
+		if len(attributeMatch) == 2 {
+			attributes = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(attributeMatch[1]), "/"))
+			attributes = strings.TrimSpace(typePattern.ReplaceAllString(attributes, ""))
+		}
+		if attributes != "" {
+			attributes = " " + attributes
+		}
+		return `<x:c r="` + cellRef + `"` + attributes + ` t="inlineStr"><x:is><x:t xml:space="preserve">` + xmlEscape(value) + `</x:t></x:is></x:c>`
+	})
+}
+
+func templateWorksheetRowStyles(sheet string, rowNumber, columnCount int) []string {
+	styles := make([]string, columnCount)
+	stylePattern := regexp.MustCompile(`\bs="([0-9]+)"`)
+	for columnIndex := range styles {
+		cellRef := xlsxColumnName(columnIndex) + strconv.Itoa(rowNumber)
+		cellPattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"([^>]*)`)
+		cellMatch := cellPattern.FindStringSubmatch(sheet)
+		if len(cellMatch) < 2 {
+			continue
+		}
+		styleMatch := stylePattern.FindStringSubmatch(cellMatch[1])
+		if len(styleMatch) == 2 {
+			styles[columnIndex] = styleMatch[1]
+		}
+	}
+	return styles
 }
 
 func connectionExportRows(items []model.Connection) [][]string {

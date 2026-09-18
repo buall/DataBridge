@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -125,6 +126,37 @@ func TestBackupRecordExportRowsIncludeEveryExecution(t *testing.T) {
 	}
 }
 
+func TestBackupRecordExportPreservesStylesPastTemplateRows(t *testing.T) {
+	template, err := readBackupRecordTemplate()
+	if err != nil {
+		t.Fatalf("read backup record template: %v", err)
+	}
+	records := make([][]string, 101)
+	for index := range records {
+		records[index] = []string{"task", "task-id", "record-id", "2026-09-17 04:00:27", "", "52秒", "成功", "artifact.tar.gz", "1.0 MB", "destination", ""}
+	}
+	data, err := fillExportTemplate(template, "xl/worksheets/sheet1.xml", records)
+	if err != nil {
+		t.Fatalf("fill template: %v", err)
+	}
+	sheetXML := xlsxEntry(t, data, "xl/worksheets/sheet1.xml")
+	for _, column := range []string{"A", "D", "H", "I", "K"} {
+		if got, want := templateCellStyle(t, sheetXML, column+"104"), templateCellStyle(t, sheetXML, column+"105"); got != want {
+			t.Errorf("%s105 style = %q, want template %s104 style %q", column, want, column, got)
+		}
+	}
+}
+
+func templateCellStyle(t *testing.T, sheetXML, cellRef string) string {
+	t.Helper()
+	pattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"[^>]*\bs="([0-9]+)"`)
+	match := pattern.FindStringSubmatch(sheetXML)
+	if len(match) != 2 {
+		t.Fatalf("style not found for %s", cellRef)
+	}
+	return match[1]
+}
+
 func TestExportBackupRecordsForScheduledJob(t *testing.T) {
 	appStore, server, _ := newTestServer(t)
 	started := time.Date(2026, 9, 17, 2, 30, 0, 0, appLocation)
@@ -160,7 +192,7 @@ func TestExportBackupRecordsForScheduledJob(t *testing.T) {
 	}
 	sheetXML := xlsxEntry(t, response.Body.Bytes(), "xl/worksheets/sheet1.xml")
 	stylesXML := xlsxEntry(t, response.Body.Bytes(), "xl/styles.xml")
-	if !strings.Contains(sheetXML, "conditionalFormatting") || !strings.Contains(sheetXML, "width=\"42\"") || !strings.Contains(sheetXML, "ht=\"34\"") || !strings.Contains(stylesXML, "FFEAF8EF") || !strings.Contains(stylesXML, "FFFDECEC") {
+	if !strings.Contains(sheetXML, "conditionalFormatting") || !strings.Contains(sheetXML, "width=\"42\"") || !strings.Contains(sheetXML, "ht=\"34\"") || !strings.Contains(stylesXML, "FFEAF8EF") || !strings.Contains(stylesXML, "FFFDECEC") || strings.Contains(stylesXML, "FF15803D") || strings.Contains(stylesXML, "FFB91C1C") {
 		t.Fatal("backup record export should preserve template formatting")
 	}
 }
