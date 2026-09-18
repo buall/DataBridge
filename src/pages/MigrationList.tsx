@@ -1,4 +1,4 @@
-import { Activity, ArrowRight, FileCheck2, Plus, Search, Trash2 } from "lucide-react";
+import { Activity, ArrowRight, FileCheck2, Plus, Search, Star, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { DatabaseConnection, DatabaseType, MigrationJob } from "../types";
@@ -12,6 +12,7 @@ export function MigrationList({
   onCreate,
   onOpen,
   onDelete,
+  onToggleFavorite,
 }: {
   title?: string;
   description?: string;
@@ -20,23 +21,37 @@ export function MigrationList({
   onCreate: () => void;
   onOpen: (job: MigrationJob) => void;
   onDelete: (job: MigrationJob) => Promise<void>;
+  onToggleFavorite: (job: MigrationJob) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<MigrationJob | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [favoritingId, setFavoritingId] = useState("");
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return migrations;
-    return migrations.filter((item) =>
+    const matching = !keyword ? migrations : migrations.filter((item) =>
       `${item.name} ${item.sourceDatabase} ${item.targetDatabase} ${item.sourceName} ${item.targetName}`
         .toLowerCase()
         .includes(keyword),
     );
+    return [...matching].sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
   }, [migrations, query]);
 
   const running = migrations.filter((item) => item.status === "running" || item.status === "pending").length;
   const completed = migrations.filter((item) => item.status === "completed").length;
+
+  async function toggleFavorite(job: MigrationJob) {
+    setFavoritingId(job.id);
+    setError("");
+    try {
+      await onToggleFavorite(job);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "更新收藏失败");
+    } finally {
+      setFavoritingId("");
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -58,12 +73,13 @@ export function MigrationList({
         </div>
         {filtered.length ? (
           <div className="task-table migration-list-table">
-            <div className="table-row table-head"><span>任务名称</span><span>源端 / 目标端</span><span>开始时间</span><span>进度</span><span>状态</span><span>操作</span></div>
+            <div className="table-row table-head"><span aria-hidden="true" /><span>任务名称</span><span>源端 / 目标端</span><span>开始时间</span><span>进度</span><span>状态</span><span>操作</span></div>
             {filtered.map((job) => {
               const deleteDisabled = job.status === "running" || job.status === "pending";
               return (
               <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                 <div className="task-table-desktop">
+                  <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite task-favorite-cell ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
                   <strong className="task-name" data-tooltip-content={displayTaskName(job)}>{displayTaskName(job)}</strong>
                   <MigrationRoute job={job} connections={connections} />
                   <span className="task-meta task-started-at">{formatDate(job.startedAt)}</span>
@@ -96,7 +112,10 @@ export function MigrationList({
                     <i style={{ width: `${job.progress}%` }} />
                   </div>
                   <div className="task-mobile-foot">
-                    <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                    <span className="task-mobile-leading">
+                      <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
+                      <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+                    </span>
                     <span className="row-actions">
                       <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
                       <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>

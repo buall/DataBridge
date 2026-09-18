@@ -118,6 +118,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/connections/test", server.testConnection)
 	protected.HandleFunc("POST /api/connections", server.createConnection)
 	protected.HandleFunc("PUT /api/connections/{id}", server.updateConnection)
+	protected.HandleFunc("PUT /api/connections/{id}/favorite", server.updateConnectionFavorite)
 	protected.HandleFunc("DELETE /api/connections/{id}", server.deleteConnection)
 	protected.HandleFunc("POST /api/connections/{id}/duplicate", server.duplicateConnection)
 	protected.HandleFunc("POST /api/connections/{id}/refresh", server.refreshConnection)
@@ -135,6 +136,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("POST /api/storages/{id}/webdav/list", server.listWebDAVDirectory)
 	protected.HandleFunc("POST /api/storages/{id}/webdav/directories/create", server.createWebDAVDirectory)
 	protected.HandleFunc("PUT /api/storages/{id}", server.updateStorage)
+	protected.HandleFunc("PUT /api/storages/{id}/favorite", server.updateStorageFavorite)
 	protected.HandleFunc("DELETE /api/storages/{id}", server.deleteStorage)
 	protected.HandleFunc("POST /api/storages/{id}/test", server.testStorage)
 	protected.HandleFunc("POST /api/storages/{id}/onedrive/authorize", server.authorizeOneDrive)
@@ -142,6 +144,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)
 	protected.HandleFunc("DELETE /api/migrations/{id}", server.deleteMigration)
+	protected.HandleFunc("PUT /api/migrations/{id}/favorite", server.updateMigrationFavorite)
 	protected.HandleFunc("GET /api/migrations", server.listMigrations)
 	protected.HandleFunc("GET /api/logs", server.listLogs)
 	protected.HandleFunc("GET /api/settings/smtp", server.getSMTPSettings)
@@ -159,6 +162,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("GET /api/backups/{id}", server.getBackup)
 	protected.HandleFunc("GET /api/backups/{id}/records/export", server.exportBackupRecords)
 	protected.HandleFunc("PUT /api/backups/{id}", server.updateBackup)
+	protected.HandleFunc("PUT /api/backups/{id}/favorite", server.updateBackupFavorite)
 	protected.HandleFunc("POST /api/backups/{id}/trigger", server.triggerBackup)
 	protected.HandleFunc("POST /api/backups/{id}/pause", server.pauseBackupSchedule)
 	protected.HandleFunc("POST /api/backups/{id}/resume", server.resumeBackupSchedule)
@@ -353,6 +357,24 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	connection, err := s.store.UpdateConnection(current.ID, input, latency, version)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
+		return
+	}
+	connection.Region = s.connectionRegion(r.Context(), connection.Host)
+	writeJSON(w, http.StatusOK, connection)
+}
+
+func (s *Server) updateConnectionFavorite(w http.ResponseWriter, r *http.Request) {
+	var input model.FavoriteInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	connection, err := s.store.SetConnectionFavorite(r.PathValue("id"), input.Favorite)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "connection not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
 		return
 	}
 	connection.Region = s.connectionRegion(r.Context(), connection.Host)
@@ -1045,6 +1067,23 @@ func (s *Server) updateStorage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, redactStorageSecret(item))
 }
 
+func (s *Server) updateStorageFavorite(w http.ResponseWriter, r *http.Request) {
+	var input model.FavoriteInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	storage, err := s.store.SetStorageFavorite(r.PathValue("id"), input.Favorite)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "storage not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, redactStorageSecret(storage))
+}
+
 func (s *Server) deleteStorage(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteStorage(r.PathValue("id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1364,6 +1403,23 @@ func (s *Server) getMigration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) updateMigrationFavorite(w http.ResponseWriter, r *http.Request) {
+	var input model.FavoriteInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.store.SetMigrationFavorite(r.PathValue("id"), input.Favorite)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "migration not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, compactMigrationListJob(item))
 }
 
 func (s *Server) cancelMigration(w http.ResponseWriter, r *http.Request) {
@@ -4766,6 +4822,23 @@ func (s *Server) deleteBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) updateBackupFavorite(w http.ResponseWriter, r *http.Request) {
+	var input model.FavoriteInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	item, err := s.store.SetBackupFavorite(r.PathValue("id"), input.Favorite)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "backup not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "storage_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, compactBackupListJob(item))
 }
 
 func (s *Server) listBackups(w http.ResponseWriter, _ *http.Request) {

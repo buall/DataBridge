@@ -71,6 +71,7 @@ type Connection struct {
 	Password  string              `json:"-"`
 	TLSConfig ConnectionTLSConfig `json:"-"`
 	Endpoints []string            `json:"endpoints,omitempty"`
+	Favorite  bool                `json:"favorite"`
 }
 
 type StorageInput struct {
@@ -118,6 +119,11 @@ type RemoteStorage struct {
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
 	SecretKey string    `json:"-"`
+	Favorite  bool      `json:"favorite"`
+}
+
+type FavoriteInput struct {
+	Favorite bool `json:"favorite"`
 }
 
 type DatabaseInfo struct {
@@ -408,6 +414,7 @@ type Migration struct {
 	Results        []TableResult    `json:"results"`
 	Events         []Event          `json:"events"`
 	Request        MigrationRequest `json:"-"`
+	Favorite       bool             `json:"favorite"`
 }
 
 type BackupJob struct {
@@ -450,4 +457,5 @@ type BackupJob struct {
 	ArtifactVersions         []BackupArtifactVersion `json:"artifactVersions,omitempty"`
 	Events                   []Event                 `json:"events"`
 	Request                  BackupRequest           `json:"request,omitempty"`
+	Favorite                 bool                    `json:"favorite"`
 }

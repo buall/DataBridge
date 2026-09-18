@@ -18,6 +18,7 @@ export interface DatabaseConnection {
   version?: string;
   endpoints?: string[];
   createdAt: string;
+  favorite?: boolean;
 }
 
 export interface ConnectionTLSConfig {
@@ -118,6 +119,7 @@ export interface RemoteStorage {
   note?: string;
   status: RemoteStorageStatus;
   createdAt: string;
+  favorite?: boolean;
 }
 
 export interface RemoteStorageInput {
@@ -345,6 +347,7 @@ export interface MigrationJob {
   targetDatabase: string;
   results: TableResult[];
   events: MigrationEvent[];
+  favorite?: boolean;
 }
 
 export interface BackupJob {
@@ -385,4 +388,5 @@ export interface BackupJob {
   artifacts?: BackupArtifact[];
   artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: BackupArtifact[]; error?: string }>;
   events: MigrationEvent[];
+  favorite?: boolean;
 }

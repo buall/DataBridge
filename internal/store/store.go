@@ -375,8 +375,8 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at
-		FROM connections ORDER BY created_at`)
+		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at, favorite
+		FROM connections ORDER BY favorite DESC, created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
 	}
@@ -398,7 +398,7 @@ func (s *Store) Connections() ([]model.Connection, error) {
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at
+		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at, favorite
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
 }
@@ -423,6 +423,17 @@ func (s *Store) UpdateConnectionEndpoints(id string, endpoints []string) error {
 		return fmt.Errorf("update connection endpoints: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) SetConnectionFavorite(id string, favorite bool) (model.Connection, error) {
+	result, err := s.db.Exec(`UPDATE connections SET favorite = ? WHERE id = ?`, favorite, id)
+	if err != nil {
+		return model.Connection{}, fmt.Errorf("update connection favorite: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return model.Connection{}, ErrNotFound
+	}
+	return s.Connection(id)
 }
 
 func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, latency time.Duration, version string) (model.Connection, error) {
@@ -500,11 +511,11 @@ func (s *Store) AddStorage(input model.StorageInput) (model.RemoteStorage, error
 	}
 	if _, err := s.db.Exec(`
 		INSERT INTO remote_storages
-		(id, type, name, provider, endpoint, bucket, region, access_key, secret_key_encrypted, path, auth_mode, note, status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, type, name, provider, endpoint, bucket, region, access_key, secret_key_encrypted, path, auth_mode, note, status, created_at, favorite)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		storage.ID, storage.Type, storage.Name, storage.Provider, storage.Endpoint, storage.Bucket,
 		storage.Region, storage.AccessKey, encrypted, storage.Path, storage.AuthMode, storage.Note,
-		storage.Status, storage.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		storage.Status, storage.CreatedAt.Format(time.RFC3339Nano), storage.Favorite); err != nil {
 		return model.RemoteStorage{}, fmt.Errorf("save remote storage: %w", err)
 	}
 	return storage, nil
@@ -513,8 +524,8 @@ func (s *Store) AddStorage(input model.StorageInput) (model.RemoteStorage, error
 func (s *Store) Storages() ([]model.RemoteStorage, error) {
 	rows, err := s.db.Query(`
 		SELECT id, type, name, provider, endpoint, bucket, region, access_key,
-		       secret_key_encrypted, path, auth_mode, note, status, created_at
-		FROM remote_storages ORDER BY created_at`)
+		       secret_key_encrypted, path, auth_mode, note, status, created_at, favorite
+		FROM remote_storages ORDER BY favorite DESC, created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list remote storages: %w", err)
 	}
@@ -536,7 +547,7 @@ func (s *Store) Storages() ([]model.RemoteStorage, error) {
 func (s *Store) Storage(id string) (model.RemoteStorage, error) {
 	row := s.db.QueryRow(`
 		SELECT id, type, name, provider, endpoint, bucket, region, access_key,
-		       secret_key_encrypted, path, auth_mode, note, status, created_at
+		       secret_key_encrypted, path, auth_mode, note, status, created_at, favorite
 		FROM remote_storages WHERE id = ?`, id)
 	return s.scanStorage(row)
 }
@@ -594,6 +605,17 @@ func (s *Store) UpdateStorageStatus(id, status string) error {
 		return fmt.Errorf("update remote storage status: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) SetStorageFavorite(id string, favorite bool) (model.RemoteStorage, error) {
+	result, err := s.db.Exec(`UPDATE remote_storages SET favorite = ? WHERE id = ?`, favorite, id)
+	if err != nil {
+		return model.RemoteStorage{}, fmt.Errorf("update remote storage favorite: %w", err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return model.RemoteStorage{}, ErrNotFound
+	}
+	return s.Storage(id)
 }
 
 func (s *Store) AddAuditLog(entry AuditLog) error {
@@ -750,6 +772,13 @@ func (s *Store) UpdateMigration(id string, update func(*model.Migration)) error 
 	return nil
 }
 
+func (s *Store) SetMigrationFavorite(id string, favorite bool) (model.Migration, error) {
+	if err := s.UpdateMigration(id, func(value *model.Migration) { value.Favorite = favorite }); err != nil {
+		return model.Migration{}, err
+	}
+	return s.Migration(id)
+}
+
 func (s *Store) CancelMigration(id string) error {
 	if _, err := s.Migration(id); err != nil {
 		return err
@@ -862,6 +891,13 @@ func (s *Store) UpdateBackup(id string, update func(*model.BackupJob)) error {
 	return nil
 }
 
+func (s *Store) SetBackupFavorite(id string, favorite bool) (model.BackupJob, error) {
+	if err := s.UpdateBackup(id, func(value *model.BackupJob) { value.Favorite = favorite }); err != nil {
+		return model.BackupJob{}, err
+	}
+	return s.Backup(id)
+}
+
 func (s *Store) CancelBackup(id string) error {
 	if _, err := s.Backup(id); err != nil {
 		return err
@@ -929,7 +965,8 @@ func (s *Store) initialize() error {
 			status TEXT NOT NULL,
 			latency_ms INTEGER NOT NULL,
 			server_version TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL
+			created_at TEXT NOT NULL,
+			favorite INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS migrations (
 			id TEXT PRIMARY KEY,
@@ -950,7 +987,8 @@ func (s *Store) initialize() error {
 			auth_mode TEXT NOT NULL DEFAULT '',
 			note TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
-			created_at TEXT NOT NULL
+			created_at TEXT NOT NULL,
+			favorite INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE TABLE IF NOT EXISTS backups (
 			id TEXT PRIMARY KEY,
@@ -1001,6 +1039,12 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionEndpointsColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureConnectionFavoriteColumn(); err != nil {
+		return err
+	}
+	if err := s.ensureStorageFavoriteColumn(); err != nil {
+		return err
+	}
 	if err := s.ensureNotificationRecipientMessageTitleColumn(); err != nil {
 		return err
 	}
@@ -1046,6 +1090,26 @@ func (s *Store) ensureConnectionEndpointsColumn() error {
 			return nil
 		}
 		return fmt.Errorf("migrate connections.endpoints_json: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionFavoriteColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.favorite: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureStorageFavoriteColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE remote_storages ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate remote_storages.favorite: %w", err)
 	}
 	return nil
 }
@@ -1142,7 +1206,7 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var createdAt string
 	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
 		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &endpointsJSON, &item.Status, &item.LatencyMS,
-		&item.Version, &createdAt); err != nil {
+		&item.Version, &createdAt, &item.Favorite); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
 		}
@@ -1175,7 +1239,7 @@ func (s *Store) scanStorage(row scanner) (model.RemoteStorage, error) {
 	var createdAt string
 	if err := row.Scan(&item.ID, &item.Type, &item.Name, &item.Provider, &item.Endpoint, &item.Bucket,
 		&item.Region, &item.AccessKey, &encrypted, &item.Path, &item.AuthMode, &item.Note,
-		&item.Status, &createdAt); err != nil {
+		&item.Status, &createdAt, &item.Favorite); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.RemoteStorage{}, ErrNotFound
 		}

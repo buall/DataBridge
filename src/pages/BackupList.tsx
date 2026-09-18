@@ -1,4 +1,4 @@
-import { Archive, Download, PauseCircle, Play, PlayCircle, Plus, Search, Trash2 } from "lucide-react";
+import { Archive, Download, PauseCircle, Play, PlayCircle, Plus, Search, Star, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupJob, DatabaseType } from "../types";
@@ -12,6 +12,7 @@ export function BackupList({
   onDelete,
   onTrigger,
   onSetSchedulePaused,
+  onToggleFavorite,
 }: {
   backups: BackupJob[];
   onCreate: () => void;
@@ -19,6 +20,7 @@ export function BackupList({
   onDelete: (job: BackupJob) => Promise<void>;
   onTrigger: (job: BackupJob) => Promise<void>;
   onSetSchedulePaused: (job: BackupJob, paused: boolean) => Promise<void>;
+  onToggleFavorite: (job: BackupJob) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<BackupJob | null>(null);
@@ -26,6 +28,7 @@ export function BackupList({
   const [triggeringId, setTriggeringId] = useState("");
   const [updatingScheduleId, setUpdatingScheduleId] = useState("");
   const [error, setError] = useState("");
+  const [favoritingId, setFavoritingId] = useState("");
   async function exportSchedules() {
     try {
       setError("");
@@ -42,10 +45,10 @@ export function BackupList({
   }
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return backups;
-    return backups.filter((item) =>
+    const matching = !keyword ? backups : backups.filter((item) =>
       `${item.name} ${item.sourceName} ${item.sourceDatabase} ${item.destination} ${item.artifactName ?? ""}`.toLowerCase().includes(keyword),
     );
+    return [...matching].sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
   }, [backups, query]);
   const running = backups.filter((item) => item.status === "running" || item.status === "pending").length;
   const scheduled = backups.filter((item) => item.status === "scheduled" && !item.schedulePaused).length;
@@ -74,6 +77,17 @@ export function BackupList({
       setUpdatingScheduleId("");
     }
   }
+  async function toggleFavorite(job: BackupJob) {
+    setFavoritingId(job.id);
+    setError("");
+    try {
+      await onToggleFavorite(job);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "更新收藏失败");
+    } finally {
+      setFavoritingId("");
+    }
+  }
 
   return (
     <div className="page-stack">
@@ -95,7 +109,7 @@ export function BackupList({
         {filtered.length ? (
           <div className="backup-list-scroll">
             <div className="task-table backup-list-table">
-              <div className="table-row table-head"><span>任务名称</span><span>任务类型</span><span>状态</span><span>上次调度</span><span>下次调度</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>操作</span></div>
+              <div className="table-row table-head"><span aria-hidden="true" /><span>任务名称</span><span>任务类型</span><span>状态</span><span>上次调度</span><span>下次调度</span><span>源端 / 数据库</span><span>目标存储</span><span>进度</span><span>操作</span></div>
               {filtered.map((job) => {
                 const deleteDisabled = job.status === "running" || job.status === "pending";
                 const triggerVisible = job.scheduleMode === "scheduled" || job.status === "scheduled";
@@ -107,6 +121,7 @@ export function BackupList({
                 return (
                 <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
                   <div className="task-table-desktop">
+                  <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite task-favorite-cell ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
                   <strong className="task-name" data-tooltip-content={job.name}>{job.name}</strong>
                   <TaskTypeTag job={job} />
                   <Badge tone={job.schedulePaused ? "gray" : migrationStatusTone(job.status)}>{job.schedulePaused ? "已暂停" : migrationStatusLabel(job.status)}</Badge>
@@ -160,6 +175,7 @@ export function BackupList({
                     <i style={{ width: `${job.progress}%` }} />
                   </div>
                   <div className="task-mobile-foot">
+                    <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
                     <span className="row-actions">
                       {triggerVisible && <span role="button" tabIndex={triggerDisabled ? -1 : 0} aria-disabled={triggerDisabled} data-tooltip-content={triggerDisabled ? "任务执行中，请稍后触发" : "立即触发一次备份"} className={`row-trigger ${triggerDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!triggerDisabled) void triggerJob(job); } }}><Play size={14} />{triggeringId === job.id ? "触发中" : "立即触发"}</span>}
                       {scheduleActionVisible && <span role="button" tabIndex={scheduleActionDisabled ? -1 : 0} aria-disabled={scheduleActionDisabled} data-tooltip-content={job.schedulePaused ? "恢复按计划自动执行" : "暂停后将不再自动执行"} className={`row-schedule ${scheduleActionDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!scheduleActionDisabled) void setSchedulePaused(job); } }}>{job.schedulePaused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}{scheduleActionDisabled ? "处理中" : job.schedulePaused ? "恢复调度" : "暂停调度"}</span>}

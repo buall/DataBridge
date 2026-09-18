@@ -83,6 +83,77 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	}
 }
 
+func TestFavoritesPersistAndSortToFront(t *testing.T) {
+	directory := t.TempDir()
+	appStore, err := New(filepath.Join(directory, "databridge.db"), filepath.Join(directory, "databridge.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appStore.Close()
+
+	firstConnection, err := appStore.AddConnection(model.ConnectionInput{Name: "first", Host: "first.internal", Port: 5432, Username: "user", Password: "secret", SSLMode: "require"}, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondConnection, err := appStore.AddConnection(model.ConnectionInput{Name: "second", Host: "second.internal", Port: 5432, Username: "user", Password: "secret", SSLMode: "require"}, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.SetConnectionFavorite(secondConnection.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	connections, err := appStore.Connections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(connections) != 2 || connections[0].ID != secondConnection.ID || !connections[0].Favorite || connections[1].ID != firstConnection.ID {
+		t.Fatalf("connections were not ordered by favorite: %#v", connections)
+	}
+
+	firstStorage, err := appStore.AddStorage(model.StorageInput{Type: "local", Name: "first storage", Provider: "Local", Path: "/tmp/first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStorage, err := appStore.AddStorage(model.StorageInput{Type: "local", Name: "second storage", Provider: "Local", Path: "/tmp/second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.SetStorageFavorite(secondStorage.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	storages, err := appStore.Storages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storages) != 2 || storages[0].ID != secondStorage.ID || !storages[0].Favorite || storages[1].ID != firstStorage.ID {
+		t.Fatalf("storages were not ordered by favorite: %#v", storages)
+	}
+
+	migration := model.Migration{ID: NewID(), Name: "migration", Status: model.StatusCompleted, StartedAt: time.Now().UTC(), Results: []model.TableResult{}, Events: []model.Event{}}
+	if err := appStore.AddMigration(migration, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.SetMigrationFavorite(migration.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	loadedMigration, err := appStore.Migration(migration.ID)
+	if err != nil || !loadedMigration.Favorite {
+		t.Fatalf("migration favorite was not persisted: %#v, %v", loadedMigration, err)
+	}
+
+	backup := model.BackupJob{ID: NewID(), Name: "backup", Status: model.StatusCompleted, StartedAt: time.Now().UTC(), Events: []model.Event{}}
+	if err := appStore.AddBackup(backup, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appStore.SetBackupFavorite(backup.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	loadedBackup, err := appStore.Backup(backup.ID)
+	if err != nil || !loadedBackup.Favorite {
+		t.Fatalf("backup favorite was not persisted: %#v, %v", loadedBackup, err)
+	}
+}
+
 func TestStoreMarksRunningMigrationFailedAfterRestart(t *testing.T) {
 	directory := t.TempDir()
 	databasePath := filepath.Join(directory, "databridge.db")

@@ -1,4 +1,4 @@
-import { Check, Cloud, Edit3, FolderOpen, HardDrive, KeyRound, MoreHorizontal, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { Check, Cloud, Edit3, FolderOpen, HardDrive, KeyRound, MoreHorizontal, Plus, RefreshCw, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type WebDAVEntry } from "../api";
 import type { RemoteStorage, RemoteStorageInput, RemoteStorageType } from "../types";
@@ -26,11 +26,13 @@ export function Storages({
   onAdd,
   onUpdate,
   onDelete,
+  onToggleFavorite,
 }: {
   storages: RemoteStorage[];
   onAdd: (storage: RemoteStorage) => void;
   onUpdate: (storage: RemoteStorage) => void;
   onDelete: (storageId: string) => void;
+  onToggleFavorite: (storage: RemoteStorage) => Promise<void>;
 }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<StorageForm>(emptyForm);
@@ -60,6 +62,7 @@ export function Storages({
   const [webDAVDirectoryOptions, setWebDAVDirectoryOptions] = useState<WebDAVEntry[]>([]);
   const [webDAVDirectoryMenuOpen, setWebDAVDirectoryMenuOpen] = useState(false);
   const [pageError, setPageError] = useState("");
+  const [favoritingId, setFavoritingId] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
   const bucketPickerRef = useRef<HTMLDivElement | null>(null);
   const webDAVDirectoryPickerRef = useRef<HTMLDivElement | null>(null);
@@ -68,6 +71,7 @@ export function Storages({
     object: storages.filter((item) => item.type === "object").length,
     cloudDrive: storages.filter((item) => item.type === "webdav" || item.type === "google_drive" || item.type === "one_drive").length,
   }), [storages]);
+  const sortedStorages = useMemo(() => [...storages].sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite))), [storages]);
   useEffect(() => {
     if (!openMenu) return;
     const close = () => setOpenMenu(null);
@@ -388,7 +392,7 @@ export function Storages({
         <Summary title="网盘存储" value={summary.cloudDrive} detail="WebDAV / 云盘授权" tone="green" />
       </div>
       <div className="storage-grid">
-        {storages.map((storage) => (
+        {sortedStorages.map((storage) => (
           <Card className="storage-card" key={storage.id}>
             <div className="storage-card-head">
               <span className={`storage-icon ${storage.type}`}><StorageIcon type={storage.type} /></span>
@@ -397,6 +401,7 @@ export function Storages({
                 <span className="storage-card-subtitle">{typeLabel(storage.type)} · {storage.provider}</span>
               </div>
               <div className="connection-actions" onClick={(event) => event.stopPropagation()}>
+                <button type="button" className={`plain-icon favorite-trigger ${storage.favorite ? "active" : ""}`} aria-label={storage.favorite ? `取消收藏 ${storage.name}` : `收藏 ${storage.name}`} data-tooltip-mode="always" data-tooltip-content={storage.favorite ? "取消收藏" : "收藏并置顶"} disabled={favoritingId === storage.id} onClick={async () => { setFavoritingId(storage.id); setPageError(""); try { await onToggleFavorite(storage); } catch (error) { setPageError(error instanceof Error ? error.message : "更新收藏失败"); } finally { setFavoritingId(null); } }}><Star size={17} fill={storage.favorite ? "currentColor" : "none"} /></button>
                 <button type="button" className="plain-icon action-trigger" aria-label={`${storage.name} 更多操作`} onClick={() => setOpenMenu(openMenu === storage.id ? null : storage.id)}><MoreHorizontal size={18} /></button>
                 {openMenu === storage.id && (
                   <div className="connection-action-menu">

@@ -1,4 +1,4 @@
-import { AlertTriangle, CalendarClock, Check, Copy, Database, Download, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, ShieldCheck, Trash2, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Copy, Database, Download, Edit3, FileSpreadsheet, Info, MoreHorizontal, Play, Plus, RefreshCw, Search, ShieldCheck, Star, Trash2, WandSparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import type { BackupJob, BatchImportResult, ConnectionInput, ConnectionTLSConfig, DatabaseConnection, DatabaseInfo, DatabaseType, DuplicateConnectionInput, SeedDataResult } from "../types";
@@ -31,6 +31,7 @@ export function Connections({
   onAdd,
   onUpdate,
   onDelete,
+  onToggleFavorite,
   onCreateMigration,
   onBatchImported,
 }: {
@@ -39,6 +40,7 @@ export function Connections({
   onAdd: (connection: DatabaseConnection) => void;
   onUpdate: (connection: DatabaseConnection) => void;
   onDelete: (connectionId: string) => void;
+  onToggleFavorite: (connection: DatabaseConnection) => Promise<void>;
   onCreateMigration: (sourceId?: string) => void;
   onBatchImported: (result: BatchImportResult) => void;
 }) {
@@ -59,6 +61,7 @@ export function Connections({
   const [copied, setCopied] = useState<string | null>(null);
   const [manualCopyValue, setManualCopyValue] = useState("");
   const [actionError, setActionError] = useState("");
+  const [favoritingId, setFavoritingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState<ConnectionFormState>(emptyConnectionForm("PostgreSQL"));
   const [nameCustomized, setNameCustomized] = useState(false);
@@ -66,7 +69,9 @@ export function Connections({
   const [formError, setFormError] = useState("");
   const [formErrors, setFormErrors] = useState<ConnectionFormErrors>({});
   const scheduledBackupsByConnection = useMemo(() => groupScheduledBackupsByConnection(backups), [backups]);
-  const filtered = connections.filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = connections
+    .filter((item) => `${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(query.toLowerCase()))
+    .sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
   const formSecurityConfig = connectionSecurityConfig(form.type);
   const formCompatibilityHint = connectionCompatibilityHint(form.type);
 
@@ -385,6 +390,18 @@ export function Connections({
     }
   }
 
+  async function toggleFavorite(connection: DatabaseConnection) {
+    setFavoritingId(connection.id);
+    setActionError("");
+    try {
+      await onToggleFavorite(connection);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "更新收藏失败");
+    } finally {
+      setFavoritingId(null);
+    }
+  }
+
   return (
     <div className="page-stack">
       <div className="page-heading">
@@ -429,6 +446,7 @@ export function Connections({
                 </span>
               </div>
               <div className="connection-actions" onClick={(event) => event.stopPropagation()}>
+                <button type="button" className={`plain-icon favorite-trigger ${connection.favorite ? "active" : ""}`} aria-label={connection.favorite ? `取消收藏 ${connection.name}` : `收藏 ${connection.name}`} data-tooltip-mode="always" data-tooltip-content={connection.favorite ? "取消收藏" : "收藏并置顶"} disabled={favoritingId === connection.id} onClick={() => void toggleFavorite(connection)}><Star size={17} fill={connection.favorite ? "currentColor" : "none"} /></button>
                 <button className="plain-icon action-trigger" aria-label={`${connection.name} 更多操作`} aria-expanded={openMenu === connection.id} onClick={() => setOpenMenu(openMenu === connection.id ? null : connection.id)}><MoreHorizontal size={18} /></button>
                 {openMenu === connection.id && (
                   <div className="connection-action-menu">

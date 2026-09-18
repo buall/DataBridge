@@ -161,6 +161,8 @@ export const api = {
     request<DatabaseConnection>("/connections", { method: "POST", body: JSON.stringify(input) }),
   updateConnection: (connectionId: string, input: ConnectionInput & { password?: string }) =>
     request<DatabaseConnection>(`/connections/${connectionId}`, { method: "PUT", body: JSON.stringify(input) }),
+  setConnectionFavorite: (connectionId: string, favorite: boolean) =>
+    request<DatabaseConnection>(`/connections/${connectionId}/favorite`, { method: "PUT", body: JSON.stringify({ favorite }) }),
   duplicateConnection: (connectionId: string, input: DuplicateConnectionInput) =>
     request<DatabaseConnection>(`/connections/${connectionId}/duplicate`, { method: "POST", body: JSON.stringify(input) }),
   deleteConnection: (connectionId: string) =>
@@ -217,6 +219,8 @@ export const api = {
     }),
   updateStorage: (storageId: string, input: RemoteStorageInput) =>
     request<RemoteStorage>(`/storages/${storageId}`, { method: "PUT", body: JSON.stringify(input) }),
+  setStorageFavorite: (storageId: string, favorite: boolean) =>
+    request<RemoteStorage>(`/storages/${storageId}/favorite`, { method: "PUT", body: JSON.stringify({ favorite }) }),
   deleteStorage: (storageId: string) =>
     request<{ ok: boolean }>(`/storages/${storageId}`, { method: "DELETE" }),
   testStorage: (storageId: string) =>
@@ -232,6 +236,8 @@ export const api = {
     request<{ ok: boolean }>(`/migrations/${id}/cancel`, { method: "POST" }),
   deleteMigration: (id: string) =>
     request<{ ok: boolean }>(`/migrations/${id}`, { method: "DELETE" }),
+  setMigrationFavorite: async (id: string, favorite: boolean) =>
+    normalizeMigration(await request<MigrationJob>(`/migrations/${id}/favorite`, { method: "PUT", body: JSON.stringify({ favorite }) })),
   logs: async () => {
     const response = await request<MigrationsResponse>("/logs");
     const migrations = (Array.isArray(response) ? response : response.migrations).map(normalizeMigration);
@@ -244,6 +250,8 @@ export const api = {
     normalizeBackup(await request<BackupJob>("/backups", { method: "POST", body: JSON.stringify(config) })),
   updateBackup: async (id: string, config: BackupConfig) =>
     normalizeBackup(await request<BackupJob>(`/backups/${id}`, { method: "PUT", body: JSON.stringify(config) })),
+  setBackupFavorite: async (id: string, favorite: boolean) =>
+    normalizeBackup(await request<BackupJob>(`/backups/${id}/favorite`, { method: "PUT", body: JSON.stringify({ favorite }) })),
   testBackupNotification: (method: "webhook" | "email", target: string) =>
     request<{ message: string }>("/backups/notification-test", { method: "POST", body: JSON.stringify({ method, target }) }),
   backup: async (id: string, compact = false) =>
