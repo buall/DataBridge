@@ -139,6 +139,14 @@ function importForm(file: File) {
 }
 
 function downloadFileName(disposition: string | null) {
+  const encoded = disposition?.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch {
+      // Fall through to the plain filename parameter for malformed headers.
+    }
+  }
   const matched = disposition?.match(/filename="([^"]+)"/i);
   return matched?.[1] ? decodeURIComponent(matched[1]) : "databridge-backup.tar.gz";
 }

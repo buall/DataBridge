@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"regexp"
@@ -110,7 +111,7 @@ func (s *Server) exportBackupRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="databridge-backup-records-%s.xlsx"`, time.Now().Format("20060102-150405")))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": backupRecordExportFileName(job.Name)}))
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
@@ -370,6 +371,14 @@ func backupRecordStatusLabel(status model.MigrationStatus) string {
 	default:
 		return string(status)
 	}
+}
+
+func backupRecordExportFileName(jobName string) string {
+	name := sanitizeDownloadFileName(jobName)
+	if name == "databridge-backup.tar.gz" {
+		name = "databridge"
+	}
+	return fmt.Sprintf("%s-备份记录-%s.xlsx", name, time.Now().Format("20060102-150405"))
 }
 
 func exportWeekday(day int) string {

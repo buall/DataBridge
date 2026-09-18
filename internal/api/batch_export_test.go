@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,7 +146,8 @@ func TestExportBackupRecordsForScheduledJob(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Header().Get("Content-Disposition"), "databridge-backup-records-") {
+	mediaType, params, err := mime.ParseMediaType(response.Header().Get("Content-Disposition"))
+	if err != nil || mediaType != "attachment" || !strings.Contains(params["filename"], "每日生产备份-备份记录-") {
 		t.Fatalf("unexpected content disposition: %q", response.Header().Get("Content-Disposition"))
 	}
 	workbook, err := parseXLSX(response.Body.Bytes())
@@ -175,6 +177,13 @@ func TestExportBackupRecordsRejectsNonScheduledJob(t *testing.T) {
 	server.exportBackupRecords(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "仅定时备份任务支持") {
 		t.Fatalf("unexpected response: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestBackupRecordExportFileNameUsesSafeTaskName(t *testing.T) {
+	filename := backupRecordExportFileName(`生产/订单:每日?备份`)
+	if !strings.Contains(filename, "生产_订单_每日_备份-备份记录-") || !strings.HasSuffix(filename, ".xlsx") {
+		t.Fatalf("unexpected filename: %q", filename)
 	}
 }
 

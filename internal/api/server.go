@@ -4725,9 +4725,17 @@ func backupArtifactsForDisplay(job model.BackupJob) []model.BackupArtifact {
 }
 
 func sanitizeDownloadFileName(value string) string {
-	value = strings.ReplaceAll(value, `"`, "")
-	value = strings.ReplaceAll(value, "\\", "_")
-	value = strings.ReplaceAll(value, "/", "_")
+	value = strings.Map(func(character rune) rune {
+		switch character {
+		case '"', '\\', '/', ':', '*', '?', '<', '>', '|':
+			return '_'
+		case 0, '\n', '\r', '\t':
+			return -1
+		default:
+			return character
+		}
+	}, strings.TrimSpace(value))
+	value = strings.Trim(value, ". ")
 	if strings.TrimSpace(value) == "" {
 		return "databridge-backup.tar.gz"
 	}
