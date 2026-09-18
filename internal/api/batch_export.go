@@ -183,21 +183,26 @@ func fillExportTemplate(template []byte, sheetPath string, rows [][]string) ([]b
 func fillTemplateWorksheet(sheet string, rows [][]string) string {
 	const firstDataRow = 5
 	const lastTemplateRow = 104
-	templateStyles := make([]string, 0)
-	if len(rows) > lastTemplateRow-firstDataRow+1 {
-		templateStyles = templateWorksheetRowStyles(sheet, lastTemplateRow, len(rows[0]))
+	columnCount := 0
+	for _, row := range rows {
+		if len(row) > columnCount {
+			columnCount = len(row)
+		}
 	}
+	templateStyles := templateWorksheetRowStyles(sheet, lastTemplateRow, columnCount)
+	rowAttributes := templateWorksheetRowAttributes(sheet, firstDataRow)
+
+	// Replace the template's complete data area so example values and blank rows
+	// cannot be interleaved with the exported records.
+	for rowNumber := firstDataRow; rowNumber <= lastTemplateRow; rowNumber++ {
+		rowPattern := regexp.MustCompile(`<x:row r="` + strconv.Itoa(rowNumber) + `"[^>]*>(?s:.*?)</x:row>`)
+		sheet = rowPattern.ReplaceAllString(sheet, "")
+	}
+
+	var exportedRows strings.Builder
 	for rowOffset, row := range rows {
 		rowNumber := firstDataRow + rowOffset
-		if rowNumber <= lastTemplateRow {
-			for columnIndex, value := range row {
-				cellRef := xlsxColumnName(columnIndex) + strconv.Itoa(rowNumber)
-				sheet = replaceTemplateWorksheetCell(sheet, cellRef, value)
-			}
-			continue
-		}
-		var extra strings.Builder
-		extra.WriteString(fmt.Sprintf(`<x:row r="%d" ht="24" customHeight="1">`, rowNumber))
+		exportedRows.WriteString(fmt.Sprintf(`<x:row r="%d"%s>`, rowNumber, rowAttributes))
 		for columnIndex, value := range row {
 			style := "37" // Compatibility fallback for templates without a formatted final row.
 			if columnIndex < len(templateStyles) && templateStyles[columnIndex] != "" {
@@ -205,30 +210,20 @@ func fillTemplateWorksheet(sheet string, rows [][]string) string {
 			} else if columnIndex == len(row)-1 {
 				style = "38"
 			}
-			extra.WriteString(fmt.Sprintf(`<x:c r="%s%d" s="%s" t="inlineStr"><x:is><x:t xml:space="preserve">%s</x:t></x:is></x:c>`, xlsxColumnName(columnIndex), rowNumber, style, xmlEscape(value)))
+			exportedRows.WriteString(fmt.Sprintf(`<x:c r="%s%d" s="%s" t="inlineStr"><x:is><x:t xml:space="preserve">%s</x:t></x:is></x:c>`, xlsxColumnName(columnIndex), rowNumber, style, xmlEscape(value)))
 		}
-		extra.WriteString(`</x:row>`)
-		sheet = strings.Replace(sheet, `</x:sheetData>`, extra.String()+`</x:sheetData>`, 1)
+		exportedRows.WriteString(`</x:row>`)
 	}
-	return sheet
+	return strings.Replace(sheet, `</x:sheetData>`, exportedRows.String()+`</x:sheetData>`, 1)
 }
 
-func replaceTemplateWorksheetCell(sheet, cellRef, value string) string {
-	cellPattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"[^>]*(?:/>|>(?s:.*?)</x:c>)`)
-	attributePattern := regexp.MustCompile(`<x:c r="` + regexp.QuoteMeta(cellRef) + `"([^>]*)>`)
-	typePattern := regexp.MustCompile(`\s+t="[^"]*"`)
-	return cellPattern.ReplaceAllStringFunc(sheet, func(cell string) string {
-		attributeMatch := attributePattern.FindStringSubmatch(cell)
-		attributes := ""
-		if len(attributeMatch) == 2 {
-			attributes = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(attributeMatch[1]), "/"))
-			attributes = strings.TrimSpace(typePattern.ReplaceAllString(attributes, ""))
-		}
-		if attributes != "" {
-			attributes = " " + attributes
-		}
-		return `<x:c r="` + cellRef + `"` + attributes + ` t="inlineStr"><x:is><x:t xml:space="preserve">` + xmlEscape(value) + `</x:t></x:is></x:c>`
-	})
+func templateWorksheetRowAttributes(sheet string, rowNumber int) string {
+	pattern := regexp.MustCompile(`<x:row r="` + strconv.Itoa(rowNumber) + `"([^>]*)>`)
+	match := pattern.FindStringSubmatch(sheet)
+	if len(match) != 2 {
+		return ` ht="24" customHeight="1"`
+	}
+	return match[1]
 }
 
 func templateWorksheetRowStyles(sheet string, rowNumber, columnCount int) []string {
@@ -316,31 +311,142 @@ func scheduleExportRows(jobs []model.BackupJob, storages []model.RemoteStorage, 
 
 func backupRecordExportRows(job model.BackupJob) [][]string {
 	rows := [][]string{{"任务名称", "任务 ID", "记录 ID", "开始时间", "结束时间", "执行时长", "状态", "备份产物", "产物总大小", "目标位置", "失败原因"}}
-	versions := append([]model.BackupArtifactVersion(nil), job.ArtifactVersions...)
-	sort.SliceStable(versions, func(left, right int) bool {
-		return versions[left].StartedAt.After(versions[right].StartedAt)
-	})
-	for _, version := range versions {
+	for _, record := range backupRecordExportRecords(job) {
 		finishedAt := ""
-		if version.FinishedAt != nil {
-			finishedAt = formatBackupRecordTime(*version.FinishedAt)
+		if record.finishedAt != nil {
+			finishedAt = formatBackupRecordTime(*record.finishedAt)
 		}
-		artifacts, size := backupRecordArtifacts(version.Artifacts)
+		artifacts, size := backupRecordArtifacts(record.artifacts)
 		rows = append(rows, []string{
 			job.Name,
 			job.ID,
-			version.ID,
-			formatBackupRecordTime(version.StartedAt),
+			record.id,
+			formatBackupRecordTime(record.startedAt),
 			finishedAt,
-			formatBackupRecordDuration(version.StartedAt, version.FinishedAt),
-			backupRecordStatusLabel(version.Status),
+			formatBackupRecordDuration(record.startedAt, record.finishedAt),
+			backupRecordStatusLabel(record.status),
 			artifacts,
 			formatBytes(size),
 			job.Destination,
-			version.Error,
+			record.err,
 		})
 	}
 	return rows
+}
+
+type backupRecordExport struct {
+	id         string
+	startedAt  time.Time
+	finishedAt *time.Time
+	status     model.MigrationStatus
+	artifacts  []model.BackupArtifact
+	err        string
+}
+
+type backupRecordEventRun struct {
+	startedAt time.Time
+	events    []model.Event
+}
+
+// backupRecordExportRecords uses run-start events as the source of truth. Older
+// scheduled jobs can have fewer artifact versions than execution events, while
+// the event history still represents every user-visible run.
+func backupRecordExportRecords(job model.BackupJob) []backupRecordExport {
+	versions := append([]model.BackupArtifactVersion(nil), job.ArtifactVersions...)
+	events := append([]model.Event(nil), job.Events...)
+	sort.SliceStable(events, func(left, right int) bool {
+		return events[left].Time.Before(events[right].Time)
+	})
+
+	runs := make([]backupRecordEventRun, 0)
+	for _, event := range events {
+		if isBackupRecordRunStart(event) {
+			runs = append(runs, backupRecordEventRun{startedAt: event.Time})
+		}
+		if len(runs) > 0 {
+			runs[len(runs)-1].events = append(runs[len(runs)-1].events, event)
+		}
+	}
+
+	usedVersions := make([]bool, len(versions))
+	records := make([]backupRecordExport, 0, len(runs)+len(versions))
+	for _, run := range runs {
+		if versionIndex := matchBackupVersion(run.startedAt, versions, usedVersions); versionIndex >= 0 {
+			usedVersions[versionIndex] = true
+			version := versions[versionIndex]
+			records = append(records, backupRecordExport{
+				id: version.ID, startedAt: version.StartedAt, finishedAt: version.FinishedAt,
+				status: version.Status, artifacts: version.Artifacts, err: version.Error,
+			})
+			continue
+		}
+		records = append(records, backupRecordFromEvents(run))
+	}
+
+	for versionIndex, version := range versions {
+		if usedVersions[versionIndex] {
+			continue
+		}
+		records = append(records, backupRecordExport{
+			id: version.ID, startedAt: version.StartedAt, finishedAt: version.FinishedAt,
+			status: version.Status, artifacts: version.Artifacts, err: version.Error,
+		})
+	}
+	sort.SliceStable(records, func(left, right int) bool {
+		return records[left].startedAt.After(records[right].startedAt)
+	})
+	return records
+}
+
+func isBackupRecordRunStart(event model.Event) bool {
+	return strings.Contains(event.Message, "定时备份已触发") || strings.Contains(event.Message, "手动触发定时备份")
+}
+
+func matchBackupVersion(startedAt time.Time, versions []model.BackupArtifactVersion, used []bool) int {
+	const maximumStartDelay = 5 * time.Minute
+	bestIndex := -1
+	bestDelay := maximumStartDelay + 1
+	for index, version := range versions {
+		if used[index] || version.StartedAt.IsZero() {
+			continue
+		}
+		delay := version.StartedAt.Sub(startedAt)
+		if delay < 0 {
+			delay = -delay
+		}
+		if delay <= maximumStartDelay && delay < bestDelay {
+			bestIndex = index
+			bestDelay = delay
+		}
+	}
+	return bestIndex
+}
+
+func backupRecordFromEvents(run backupRecordEventRun) backupRecordExport {
+	record := backupRecordExport{
+		id:        "event-" + strconv.FormatInt(run.startedAt.UnixNano(), 10),
+		startedAt: run.startedAt,
+		status:    model.StatusRunning,
+	}
+	for _, event := range run.events {
+		finished := event.Time
+		switch {
+		case event.Level == "ERROR":
+			record.status = model.StatusFailed
+			record.finishedAt = &finished
+			record.err = event.Message
+		case strings.Contains(event.Message, "任务已取消"):
+			record.status = model.StatusCancelled
+			record.finishedAt = &finished
+			record.err = event.Message
+		case strings.Contains(event.Message, "备份任务完成"):
+			if record.status != model.StatusFailed && record.status != model.StatusCancelled {
+				record.status = model.StatusCompleted
+				record.finishedAt = &finished
+			}
+		}
+	}
+	return record
 }
 
 func backupRecordArtifacts(artifacts []model.BackupArtifact) (string, int64) {

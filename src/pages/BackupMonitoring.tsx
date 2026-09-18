@@ -173,6 +173,7 @@ export function BackupMonitoring({
   const currentStage = stageIndex(job.stage, stageItems);
   const eventRuns = groupBackupEvents(job);
   const lastError = latestErrorEvent(job);
+  const hasExportableRecords = Boolean(job.artifactVersions?.length || job.events.some((event) => event.message.includes("定时备份已触发") || event.message.includes("手动触发定时备份")));
 
   async function toggleRun(run: BackupEventRun, collapsed: boolean) {
     setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }));
@@ -199,7 +200,7 @@ export function BackupMonitoring({
       <div className="monitor-grid single">
         <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
       </div>
-      <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div>{scheduled && <Button variant="secondary" disabled={!job.artifactVersions?.length || exportingRecords} onClick={exportRecords}><Download size={15} />{exportingRecords ? "导出中..." : "导出备份记录"}</Button>}</div>{eventRuns.map((run) => {
+      <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div>{scheduled && <Button variant="secondary" disabled={!hasExportableRecords || exportingRecords} onClick={exportRecords}><Download size={15} />{exportingRecords ? "导出中..." : "导出备份记录"}</Button>}</div>{eventRuns.map((run) => {
         const collapsed = collapsedRuns[run.id] ?? scheduled;
         const detailEvents = !collapsed ? detailedEventsForRun(detailedJob, run) : run.events;
         const loadingThisRun = loadingRunId === run.id;

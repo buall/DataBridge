@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -126,6 +127,40 @@ func TestBackupRecordExportRowsIncludeEveryExecution(t *testing.T) {
 	}
 }
 
+func TestBackupRecordExportRowsIncludesEventRunsMissingArtifactVersions(t *testing.T) {
+	newer := time.Date(2026, 9, 17, 4, 0, 0, 0, appLocation)
+	middle := newer.AddDate(0, 0, -1)
+	older := newer.AddDate(0, 0, -2)
+	finished := newer.Add(4 * time.Second)
+	rows := backupRecordExportRows(model.BackupJob{
+		ID: "backup-1", Name: "每日生产备份", Destination: "生产归档",
+		ArtifactVersions: []model.BackupArtifactVersion{{
+			ID: "version-newer", StartedAt: newer.Add(12 * time.Second), FinishedAt: &finished, Status: model.StatusCompleted,
+			Artifacts: []model.BackupArtifact{{Database: "orders", Name: "orders.tar.gz", Size: 1024}},
+		}},
+		Events: []model.Event{
+			{Time: older, Level: "INFO", Message: "定时备份已触发"},
+			{Time: older.Add(3 * time.Second), Level: "INFO", Message: "备份任务完成"},
+			{Time: middle, Level: "INFO", Message: "定时备份已触发"},
+			{Time: middle.Add(2 * time.Second), Level: "ERROR", Message: "对象存储不可用"},
+			{Time: newer, Level: "INFO", Message: "定时备份已触发"},
+			{Time: finished, Level: "INFO", Message: "备份任务完成"},
+		},
+	})
+	if len(rows) != 4 {
+		t.Fatalf("record rows = %d, want header plus 3 executions: %#v", len(rows), rows)
+	}
+	if rows[1][2] != "version-newer" || rows[1][7] != "orders: orders.tar.gz" {
+		t.Fatalf("newer artifact version should retain its details: %#v", rows[1])
+	}
+	if rows[2][6] != "失败" || rows[2][10] != "对象存储不可用" {
+		t.Fatalf("missing-version failed run should be exported from events: %#v", rows[2])
+	}
+	if rows[3][6] != "成功" || rows[3][2] == "" {
+		t.Fatalf("missing-version completed run should be exported from events: %#v", rows[3])
+	}
+}
+
 func TestBackupRecordExportPreservesStylesPastTemplateRows(t *testing.T) {
 	template, err := readBackupRecordTemplate()
 	if err != nil {
@@ -144,6 +179,35 @@ func TestBackupRecordExportPreservesStylesPastTemplateRows(t *testing.T) {
 		if got, want := templateCellStyle(t, sheetXML, column+"104"), templateCellStyle(t, sheetXML, column+"105"); got != want {
 			t.Errorf("%s105 style = %q, want template %s104 style %q", column, want, column, got)
 		}
+	}
+}
+
+func TestBackupRecordExportWritesContiguousRowsWithoutTemplateResidue(t *testing.T) {
+	template, err := readBackupRecordTemplate()
+	if err != nil {
+		t.Fatalf("read backup record template: %v", err)
+	}
+	records := make([][]string, 20)
+	for index := range records {
+		records[index] = []string{"task", "task-id", fmt.Sprintf("record-%02d", index+1), "2026-09-17 04:00:27", "", "52秒", "成功", "artifact.tar.gz", "1.0 MB", "destination", ""}
+	}
+	data, err := fillExportTemplate(template, "xl/worksheets/sheet1.xml", records)
+	if err != nil {
+		t.Fatalf("fill template: %v", err)
+	}
+	workbook, err := parseXLSX(data)
+	if err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+	rows := workbook.Sheets["备份记录"]
+	for index := range records {
+		if got, want := rows[index+4][2], fmt.Sprintf("record-%02d", index+1); got != want {
+			t.Errorf("record %d is on row %d as %q, want %q", index+1, index+5, got, want)
+		}
+	}
+	sheetXML := xlsxEntry(t, data, "xl/worksheets/sheet1.xml")
+	if strings.Contains(sheetXML, `<x:row r="25"`) {
+		t.Fatal("export should not retain blank template rows after the last record")
 	}
 }
 
