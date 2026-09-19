@@ -295,6 +295,32 @@ export default function App() {
       });
   }, [authenticated]);
 
+  const hasRunningBackup = backups.some((job) => job.status === "pending" || job.status === "running");
+
+  useEffect(() => {
+    if (!authenticated || route.view !== "backups" || route.stage !== "list" || !hasRunningBackup) return;
+
+    let stopped = false;
+    let refreshing = false;
+    const refreshBackups = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const next = await api.backups();
+        if (!stopped) setBackups(next);
+      } catch {
+        // Keep the current progress visible and retry on the next interval.
+      } finally {
+        refreshing = false;
+      }
+    };
+    const timer = window.setInterval(refreshBackups, 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [authenticated, hasRunningBackup, route.stage, route.view]);
+
   useEffect(() => {
     if (!authenticated || route.view !== "logs") return;
     api.logs()
