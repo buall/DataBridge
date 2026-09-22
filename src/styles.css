@@ -776,6 +776,22 @@ h1, h2, h3, h4, p { margin: 0; }
 .retention-combobox.open button svg { color: var(--blue); transform: rotate(180deg); }
 .retention-combobox-menu { top: calc(100% + 8px); }
 .field-row { display: flex; gap: 12px; }.field.grow { flex: 1; }.field.port { width: 120px; }.modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 4px; }
+.schedule-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.oplog-guide-trigger { border: 0; background: transparent; color: var(--blue); display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.oplog-guide-trigger:hover { color: #174ea6; }
+.mongo-guide-backdrop { place-items: center; }
+.mongo-guide-modal { width: min(720px, calc(100vw - 48px)); }
+.mongo-guide-content { display: grid; gap: 18px; color: #344054; font-size: 12px; line-height: 1.7; }
+.mongo-guide-content section { display: grid; gap: 8px; }
+.mongo-guide-content h4 { color: #172033; font-size: 14px; }
+.mongo-guide-content p { margin: 0; }
+.mongo-guide-content dl { display: grid; gap: 7px; margin: 0; }
+.mongo-guide-content dl div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; padding-top: 7px; border-top: 1px solid #edf0f4; }
+.mongo-guide-content dt { color: #172033; font-weight: 700; }
+.mongo-guide-content dd { margin: 0; }
+.mongo-guide-content pre { overflow-x: auto; margin: 0; padding: 12px; border-radius: 7px; background: #f5f7fa; color: #172033; font-size: 11px; line-height: 1.55; }
+.mongo-guide-content code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.mongo-guide-content a { color: var(--blue); font-weight: 700; }
 
 .wizard-page { display: grid; min-height: calc(100vh - 138px); grid-template-rows: auto 1fr auto; gap: 22px; padding-bottom: 84px; }
 .stepper { display: flex; align-items: center; justify-content: center; padding: 0 40px 4px; }

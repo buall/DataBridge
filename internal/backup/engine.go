@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -25,17 +27,21 @@ import (
 	"databridge/internal/model"
 	dbmongo "databridge/internal/mongo"
 	"databridge/internal/remotestorage"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type Progress struct {
-	Stage        string
-	EventLevel   string
-	EventMessage string
-	Progress     int
-	ArtifactName string
-	ArtifactSize int64
-	ArtifactPath string
-	ArtifactCopy *model.BackupArtifactCopy
+	Stage           string
+	EventLevel      string
+	EventMessage    string
+	Progress        int
+	ArtifactName    string
+	ArtifactSize    int64
+	ArtifactPath    string
+	ArtifactCopy    *model.BackupArtifactCopy
+	BackupMode      string
+	MongoOplogStart *model.MongoOplogTimestamp
+	MongoOplogEnd   *model.MongoOplogTimestamp
 }
 
 type Reporter func(Progress)
@@ -101,6 +107,21 @@ func MkdirTemp(pattern string) (string, error) {
 		}
 	}
 	return os.MkdirTemp(baseDir, pattern)
+}
+
+func AvailableWorkBytes() (string, int64, error) {
+	baseDir := strings.TrimSpace(os.Getenv(backupWorkDirEnv))
+	if baseDir == "" {
+		baseDir = os.TempDir()
+	}
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return baseDir, 0, err
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(baseDir, &stat); err != nil {
+		return baseDir, 0, err
+	}
+	return baseDir, int64(stat.Bavail) * int64(stat.Bsize), nil
 }
 
 func (e *Engine) Run(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
@@ -255,6 +276,12 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 			return err
 		}
 	}
+	if request.BackupMode == "mongo_oplog" {
+		if request.MongoOplogStart != nil {
+			return e.runMongoOplogIncremental(ctx, source, request, report)
+		}
+		return e.runMongoOplogFull(ctx, source, request, report)
+	}
 	dest, err := newDestination(request)
 	if err != nil {
 		return err
@@ -270,15 +297,7 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 		return err
 	}
 	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在导出 MongoDB 数据库"})
-	args := []string{
-		"--host", source.Host,
-		"--port", fmt.Sprintf("%d", source.Port),
-		"--username", source.Username,
-		"--password", source.Password,
-		"--authenticationDatabase", "admin",
-		"--db", request.SourceDatabase,
-		"--out", tempDir,
-	}
+	args := mongoDumpArgs(source, "--db", request.SourceDatabase, "--out", tempDir)
 	if err := runCommand(ctx, "mongodump", args, os.Environ(), "export", report); err != nil {
 		return err
 	}
@@ -287,6 +306,122 @@ func (e *Engine) runMongo(ctx context.Context, source model.Connection, request 
 		return err
 	}
 	return dest.upload(ctx, archive, backupObjectKey(source, request.SourceDatabase, filepath.Base(archive)), report)
+}
+
+func (e *Engine) runMongoOplogFull(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	dest, err := newDestination(request)
+	if err != nil {
+		return err
+	}
+	baseline, err := dbmongo.IncrementalBackupInfo(ctx, source)
+	if err != nil {
+		return err
+	}
+	tempDir, err := MkdirTemp("databridge-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+	dumpDir := filepath.Join(tempDir, "replica-set")
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在导出 MongoDB 副本集全量基线"})
+	args := mongoDumpArgs(source, "--oplog", "--out", dumpDir)
+	if err := runCommand(ctx, "mongodump", args, os.Environ(), "export", report); err != nil {
+		return err
+	}
+	checkpoint := baseline.Newest
+	if last, ok, parseErr := mongoOplogLastTimestamp(filepath.Join(dumpDir, "oplog.bson")); parseErr != nil {
+		return parseErr
+	} else if ok {
+		checkpoint = last
+	}
+	archive, err := compressMongoBackup(ctx, tempDir, dumpDir, source, "replica-set", "full", report)
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "MongoDB 全量基线已生成，记录 oplog 位点", BackupMode: "full", MongoOplogEnd: &checkpoint})
+	return dest.upload(ctx, archive, backupObjectKey(source, "replica-set", filepath.Base(archive)), report)
+}
+
+func (e *Engine) runMongoOplogIncremental(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	start := *request.MongoOplogStart
+	window, err := dbmongo.IncrementalBackupInfo(ctx, source)
+	if err != nil {
+		return err
+	}
+	if dbmongo.OplogTimestampCompare(start, window.Oldest) < 0 {
+		return fmt.Errorf("oplog 已滚动，无法从位点 %d:%d 继续增量备份", start.Seconds, start.Increment)
+	}
+	end := window.Newest
+	dest, err := newDestination(request)
+	if err != nil {
+		return err
+	}
+	tempDir, err := MkdirTemp("databridge-backup-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tempDir)
+	dumpDir := filepath.Join(tempDir, "oplog")
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "正在导出 MongoDB oplog 增量"})
+	query := fmt.Sprintf(`{"ts":{"$gt":{"$timestamp":{"t":%d,"i":%d}},"$lte":{"$timestamp":{"t":%d,"i":%d}}}}`, start.Seconds, start.Increment, end.Seconds, end.Increment)
+	args := mongoDumpArgs(source, "--db", "local", "--collection", "oplog.rs", "--query", query, "--out", dumpDir)
+	if err := runCommand(ctx, "mongodump", args, os.Environ(), "export", report); err != nil {
+		return err
+	}
+	// mongorestore recognizes a root-level oplog.bson as replay-only input.
+	if err := os.Rename(filepath.Join(dumpDir, "local", "oplog.rs.bson"), filepath.Join(dumpDir, "oplog.bson")); err != nil {
+		return fmt.Errorf("prepare oplog increment: %w", err)
+	}
+	if err := os.RemoveAll(filepath.Join(dumpDir, "local")); err != nil {
+		return fmt.Errorf("prepare oplog increment: %w", err)
+	}
+	archive, err := compressMongoBackup(ctx, tempDir, dumpDir, source, "replica-set", "oplog", report)
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: "export", EventLevel: "INFO", EventMessage: "MongoDB oplog 增量已生成", BackupMode: "incremental", MongoOplogStart: &start, MongoOplogEnd: &end})
+	return dest.upload(ctx, archive, backupObjectKey(source, "replica-set", filepath.Base(archive)), report)
+}
+
+func mongoDumpArgs(source model.Connection, extra ...string) []string {
+	args := dbmongo.MongoToolArgs(source)
+	return append(args, extra...)
+}
+
+func mongoOplogLastTimestamp(path string) (model.MongoOplogTimestamp, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return model.MongoOplogTimestamp{}, false, err
+	}
+	defer file.Close()
+	var last model.MongoOplogTimestamp
+	found := false
+	for {
+		var sizeBytes [4]byte
+		if _, err := io.ReadFull(file, sizeBytes[:]); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return model.MongoOplogTimestamp{}, false, fmt.Errorf("read oplog.bson: %w", err)
+		}
+		size := int(binary.LittleEndian.Uint32(sizeBytes[:]))
+		if size < 5 {
+			return model.MongoOplogTimestamp{}, false, fmt.Errorf("read oplog.bson: invalid BSON document length %d", size)
+		}
+		data := make([]byte, size)
+		copy(data, sizeBytes[:])
+		if _, err := io.ReadFull(file, data[4:]); err != nil {
+			return model.MongoOplogTimestamp{}, false, fmt.Errorf("read oplog.bson: %w", err)
+		}
+		var entry struct {
+			Timestamp bson.Timestamp `bson:"ts"`
+		}
+		if err := bson.Unmarshal(data, &entry); err != nil {
+			return model.MongoOplogTimestamp{}, false, fmt.Errorf("decode oplog.bson: %w", err)
+		}
+		last = model.MongoOplogTimestamp{Seconds: entry.Timestamp.T, Increment: entry.Timestamp.I}
+		found = true
+	}
+	return last, found, nil
 }
 
 func (e *Engine) runNeo4j(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
@@ -600,8 +735,10 @@ func (d s3Destination) upload(ctx context.Context, filePath, objectKey string, r
 }
 
 type RestoreOptions struct {
-	Strategy       string
-	SourceDatabase string
+	Strategy        string
+	SourceDatabase  string
+	MongoReplicaSet bool
+	MongoOplogOnly  bool
 }
 
 func (e *Engine) Restore(ctx context.Context, target model.Connection, database, archivePath string, options RestoreOptions, report Reporter) error {
@@ -680,6 +817,9 @@ func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, data
 			return err
 		}
 	}
+	if options.MongoReplicaSet {
+		return e.restoreMongoReplicaSet(ctx, target, dumpPath, options, report)
+	}
 	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
 		if err := recreateMongoDatabase(ctx, target, database, report); err != nil {
 			return err
@@ -694,16 +834,11 @@ func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, data
 	if sourceDatabase == "" {
 		sourceDatabase = database
 	}
-	args := []string{
-		"--host", target.Host,
-		"--port", fmt.Sprintf("%d", target.Port),
-		"--username", target.Username,
-		"--password", target.Password,
-		"--authenticationDatabase", "admin",
-		"--nsFrom", sourceDatabase + ".*",
-		"--nsTo", database + ".*",
+	args := append(dbmongo.MongoToolArgs(target),
+		"--nsFrom", sourceDatabase+".*",
+		"--nsTo", database+".*",
 		restoreSourcePath,
-	}
+	)
 	if normalizeRestoreStrategy(options.Strategy) == "recreate" {
 		args = append([]string{"--drop"}, args...)
 	}
@@ -711,6 +846,26 @@ func (e *Engine) restoreMongo(ctx context.Context, target model.Connection, data
 		return fmt.Errorf("mongorestore restore: %w", err)
 	}
 	return nil
+}
+
+func (e *Engine) restoreMongoReplicaSet(ctx context.Context, target model.Connection, dumpPath string, options RestoreOptions, report Reporter) error {
+	report(Progress{Stage: "restore", EventLevel: "INFO", EventMessage: mongoRestoreProgressMessage(options)})
+	args := append(dbmongo.MongoToolArgs(target), "--oplogReplay")
+	if !options.MongoOplogOnly {
+		args = append(args, "--drop")
+	}
+	args = append(args, dumpPath)
+	if err := runCommand(ctx, "mongorestore", args, os.Environ(), "restore", report); err != nil {
+		return fmt.Errorf("mongorestore oplog replay: %w", err)
+	}
+	return nil
+}
+
+func mongoRestoreProgressMessage(options RestoreOptions) string {
+	if options.MongoOplogOnly {
+		return "正在重放 MongoDB oplog 增量"
+	}
+	return "正在恢复 MongoDB 副本集全量基线"
 }
 
 func (e *Engine) restoreNeo4j(ctx context.Context, target model.Connection, database, dumpFile string, options RestoreOptions, report Reporter) error {
@@ -1293,6 +1448,19 @@ func compressBackup(ctx context.Context, tempDir, dumpFile string, source model.
 		return "", fmt.Errorf("backup archive is empty")
 	}
 	return archive, nil
+}
+
+func compressMongoBackup(ctx context.Context, tempDir, dumpDir string, source model.Connection, database, kind string, report Reporter) (string, error) {
+	archive, err := compressBackup(ctx, tempDir, dumpDir, source, database, report)
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSuffix(filepath.Base(archive), ".tar.gz") + "_" + kind + ".tar.gz"
+	renamed := filepath.Join(filepath.Dir(archive), name)
+	if err := os.Rename(archive, renamed); err != nil {
+		return "", err
+	}
+	return renamed, nil
 }
 
 func backupObjectKey(source model.Connection, database, fileName string) string {

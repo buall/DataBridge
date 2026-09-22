@@ -361,10 +361,10 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO connections
-		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		connection.ID, connection.Name, connection.Note, connection.Type, connection.Host, connection.Port,
-		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, marshalStrings(connection.Endpoints), connection.Status,
+		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, marshalStrings(connection.Endpoints), nil, connection.Status,
 		connection.LatencyMS, connection.Version, connection.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return model.Connection{}, fmt.Errorf("save connection: %w", err)
@@ -375,7 +375,7 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at, favorite
+		       ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at, favorite
 		FROM connections ORDER BY favorite DESC, created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -398,7 +398,7 @@ func (s *Store) Connections() ([]model.Connection, error) {
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
 		SELECT id, name, note, type, host, port, username, password_encrypted,
-		       ssl_mode, tls_config_encrypted, endpoints_json, status, latency_ms, server_version, created_at, favorite
+		       ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at, favorite
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
 }
@@ -421,6 +421,17 @@ func (s *Store) UpdateConnectionHealth(id, status string, latency time.Duration,
 func (s *Store) UpdateConnectionEndpoints(id string, endpoints []string) error {
 	if _, err := s.db.Exec(`UPDATE connections SET endpoints_json = ? WHERE id = ?`, marshalStrings(endpoints), id); err != nil {
 		return fmt.Errorf("update connection endpoints: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateMongoBackupReadiness(id string, readiness model.MongoBackupReadiness) error {
+	data, err := json.Marshal(readiness)
+	if err != nil {
+		return fmt.Errorf("encode MongoDB backup readiness: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE connections SET mongo_backup_readiness_json = ? WHERE id = ?`, data, id); err != nil {
+		return fmt.Errorf("update MongoDB backup readiness: %w", err)
 	}
 	return nil
 }
@@ -962,6 +973,7 @@ func (s *Store) initialize() error {
 			ssl_mode TEXT NOT NULL,
 			tls_config_encrypted BLOB,
 			endpoints_json BLOB NOT NULL DEFAULT '[]',
+			mongo_backup_readiness_json BLOB,
 			status TEXT NOT NULL,
 			latency_ms INTEGER NOT NULL,
 			server_version TEXT NOT NULL DEFAULT '',
@@ -1039,6 +1051,9 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionEndpointsColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureConnectionMongoBackupReadinessColumn(); err != nil {
+		return err
+	}
 	if err := s.ensureConnectionFavoriteColumn(); err != nil {
 		return err
 	}
@@ -1090,6 +1105,16 @@ func (s *Store) ensureConnectionEndpointsColumn() error {
 			return nil
 		}
 		return fmt.Errorf("migrate connections.endpoints_json: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionMongoBackupReadinessColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN mongo_backup_readiness_json BLOB`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.mongo_backup_readiness_json: %w", err)
 	}
 	return nil
 }
@@ -1202,10 +1227,10 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var item model.Connection
 	var encrypted []byte
 	var encryptedTLSConfig []byte
-	var endpointsJSON []byte
+	var endpointsJSON, mongoBackupReadinessJSON []byte
 	var createdAt string
 	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
-		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &endpointsJSON, &item.Status, &item.LatencyMS,
+		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &endpointsJSON, &mongoBackupReadinessJSON, &item.Status, &item.LatencyMS,
 		&item.Version, &createdAt, &item.Favorite); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
@@ -1225,6 +1250,13 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 		if err := json.Unmarshal(endpointsJSON, &item.Endpoints); err != nil {
 			return model.Connection{}, fmt.Errorf("decode connection endpoints %s: %w", item.ID, err)
 		}
+	}
+	if len(mongoBackupReadinessJSON) > 0 {
+		var readiness model.MongoBackupReadiness
+		if err := json.Unmarshal(mongoBackupReadinessJSON, &readiness); err != nil {
+			return model.Connection{}, fmt.Errorf("decode MongoDB backup readiness %s: %w", item.ID, err)
+		}
+		item.MongoBackupReadiness = &readiness
 	}
 	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {

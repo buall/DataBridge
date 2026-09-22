@@ -8,7 +8,7 @@ import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normaliz
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
-export type BackupArtifactVersionOption = { id: string; label: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; artifacts: BackupArtifactItem[]; current?: boolean };
+export type BackupArtifactVersionOption = { id: string; label: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; artifacts: BackupArtifactItem[]; backupMode?: string; current?: boolean };
 
 const backupStages = [
   ["pending", "任务排队"],
@@ -334,7 +334,7 @@ export function artifactVersionsForRestore(job: BackupJob): BackupArtifactVersio
     .filter((version) => version.artifacts?.some((artifact) => artifact.name || artifact.copies?.some((copy) => copy.name)))
     .map((version): BackupArtifactVersionOption => ({
       id: version.id,
-      label: formatDateTime(version.finishedAt ?? version.startedAt),
+		label: `${version.backupMode === "incremental" ? "增量" : version.backupMode === "full" ? "全量" : "备份"} · ${formatDateTime(version.finishedAt ?? version.startedAt)}`,
       startedAt: version.startedAt,
       finishedAt: version.finishedAt,
       status: version.status,
@@ -347,6 +347,7 @@ export function artifactVersionsForRestore(job: BackupJob): BackupArtifactVersio
           path: artifact.path || primaryCopy?.path,
         };
       }).filter((artifact) => artifact.name),
+		backupMode: version.backupMode,
       current: false,
     }))
     .sort((left, right) => new Date(right.finishedAt ?? right.startedAt).getTime() - new Date(left.finishedAt ?? left.startedAt).getTime());
@@ -643,12 +644,17 @@ function ScheduleEditor({
     scheduleTime: job.scheduleTime ?? "02:00:00",
     scheduleWeekday: job.scheduleWeekday ?? 1,
     scheduleMonthDay: job.scheduleMonthDay ?? 1,
+    backupMode: job.backupMode as BackupConfig["backupMode"] ?? "full",
+    fullBackupIntervalDays: job.fullBackupIntervalDays ?? 7,
+    restoreDrillEnabled: job.restoreDrillEnabled ?? false,
+    restoreDrillTargetId: job.restoreDrillTargetId ?? "",
     retentionDays: retentionDaysFromJob(job),
     notificationEnabled: job.notificationEnabled ?? false,
     notificationRecipientIds: job.notificationRecipientIds ?? [],
     notificationTrigger: job.notificationTrigger ?? "all",
   });
   const source = connections.find((item) => item.id === form.sourceId);
+  const mongoRestoreDrillTargets = connections.filter((item) => item.type === "MongoDB" && item.id !== form.sourceId);
   const selectedTargetIds = selectedBackupTargetIds(form, writableStorages);
   const primaryDestinationId = selectedTargetIds.includes(form.primaryDestinationId ?? "") ? form.primaryDestinationId ?? "" : selectedTargetIds[0] ?? "";
 
@@ -703,6 +709,10 @@ function ScheduleEditor({
       setError("请至少选择一个通知接收者，或关闭备份通知");
       return;
     }
+	if (form.backupMode === "mongo_oplog" && form.restoreDrillEnabled && !form.restoreDrillTargetId) {
+		setError("请为全量后恢复演练选择独立的目标副本集");
+		return;
+	}
     setSaving(true);
     setError("");
     try {
@@ -755,13 +765,14 @@ function ScheduleEditor({
         <div className="schedule-editor-section">
           <div className="section-title compact"><div><h3>执行计划</h3><p>调整定时频率、执行时间和备份保留期限。</p></div></div>
         <div className="schedule-grid compact">
-          <SelectField label="频率" value={form.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
+          <SelectField label="频率" value={form.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
           <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
           {form.scheduleFrequency === "weekly" && <SelectField label="每周" value={form.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
           {form.scheduleFrequency === "monthly" && <SelectField label="每月" value={form.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
           <RetentionDaysField value={form.retentionDays ?? 30} onChange={(retentionDays) => setForm({ ...form, retentionDays })} />
         </div>
         </div>
+		{form.backupMode === "mongo_oplog" && <div className="notification-panel modal-notification-panel"><button type="button" className="toggle-row" onClick={() => setForm({ ...form, restoreDrillEnabled: !form.restoreDrillEnabled })}><span className={`switch ${form.restoreDrillEnabled ? "on" : ""}`}><i /></span><div><strong>全量后恢复演练</strong><small>仅恢复到独立副本集，目标数据会被覆盖</small></div></button>{form.restoreDrillEnabled && <SelectField label="演练目标副本集" value={form.restoreDrillTargetId ?? ""} onChange={(restoreDrillTargetId) => setForm({ ...form, restoreDrillTargetId })}><option value="">选择独立 MongoDB 连接</option>{mongoRestoreDrillTargets.map((connection) => <option key={connection.id} value={connection.id}>{connection.name} · {connection.host}:{connection.port}</option>)}</SelectField>}</div>}
         <div className="notification-panel modal-notification-panel">
           <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled, notificationTrigger: form.notificationTrigger ?? "all" })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>选择定时任务结束后的通知发送范围</small></div></button>
           {form.notificationEnabled && (
@@ -797,6 +808,7 @@ function initialBackupTargets(job: BackupJob, storages: RemoteStorage[]) {
 }
 
 function scheduleLabel(job: BackupJob) {
+	if (job.scheduleFrequency === "hourly") return `每小时第 ${(job.scheduleTime ?? "02:00:00").slice(3)}`;
   if (job.scheduleFrequency === "weekly") return `每周${weekdays[job.scheduleWeekday ?? 1]} ${job.scheduleTime}`;
   if (job.scheduleFrequency === "monthly") return `每月 ${job.scheduleMonthDay ?? 1} 日 ${job.scheduleTime}`;
   return `每天 ${job.scheduleTime ?? "02:00:00"}`;

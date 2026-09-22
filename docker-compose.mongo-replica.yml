@@ -1,0 +1,158 @@
+services:
+  mongo-keyfile:
+    image: mongo:8.0
+    container_name: databridge-mongo-keyfile
+    user: "0"
+    restart: "no"
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        if [ ! -s /keyfile/keyfile ]; then
+          umask 077
+          openssl rand -base64 756 > /keyfile/keyfile
+        fi
+        chown 999:999 /keyfile/keyfile
+        chmod 400 /keyfile/keyfile
+    volumes:
+      - mongo-keyfile:/keyfile
+
+  mongodb-primary:
+    image: mongo:8.0
+    container_name: databridge-mongodb-primary
+    restart: unless-stopped
+    depends_on:
+      mongo-keyfile:
+        condition: service_completed_successfully
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in mongo-replica.env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in mongo-replica.env}
+    ports:
+      - "${MONGO_BIND_ADDRESS:?set MONGO_BIND_ADDRESS in mongo-replica.env}:27017:27017"
+    volumes:
+      - mongodb-primary-data:/data/db
+      - mongo-keyfile:/etc/mongo-keyfile:ro
+    networks:
+      - databridge-mongo
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username=$$MONGO_INITDB_ROOT_USERNAME --password=$$MONGO_INITDB_ROOT_PASSWORD --authenticationDatabase=admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  mongodb-secondary-1:
+    image: mongo:8.0
+    container_name: databridge-mongodb-secondary-1
+    restart: unless-stopped
+    depends_on:
+      mongo-keyfile:
+        condition: service_completed_successfully
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+    ports:
+      - "${MONGO_BIND_ADDRESS:?set MONGO_BIND_ADDRESS in mongo-replica.env}:27018:27017"
+    volumes:
+      - mongodb-secondary-1-data:/data/db
+      - mongo-keyfile:/etc/mongo-keyfile:ro
+    networks:
+      - databridge-mongo
+
+  mongodb-secondary-2:
+    image: mongo:8.0
+    container_name: databridge-mongodb-secondary-2
+    restart: unless-stopped
+    depends_on:
+      mongo-keyfile:
+        condition: service_completed_successfully
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth", "--keyFile", "/etc/mongo-keyfile/keyfile"]
+    ports:
+      - "${MONGO_BIND_ADDRESS:?set MONGO_BIND_ADDRESS in mongo-replica.env}:27019:27017"
+    volumes:
+      - mongodb-secondary-2-data:/data/db
+      - mongo-keyfile:/etc/mongo-keyfile:ro
+    networks:
+      - databridge-mongo
+
+  mongo-init:
+    image: mongo:8.0
+    container_name: databridge-mongo-init
+    restart: "no"
+    depends_on:
+      mongodb-primary:
+        condition: service_healthy
+      mongodb-secondary-1:
+        condition: service_started
+      mongodb-secondary-2:
+        condition: service_started
+    environment:
+      MONGO_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in mongo-replica.env}
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in mongo-replica.env}
+      MONGO_ADVERTISED_HOST: ${MONGO_ADVERTISED_HOST:?set MONGO_ADVERTISED_HOST in mongo-replica.env}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        mongo_shell() {
+          mongosh --host mongodb-primary --quiet \
+            --username "$$MONGO_ROOT_USERNAME" --password "$$MONGO_ROOT_PASSWORD" \
+            --authenticationDatabase admin "$$@"
+        }
+        if ! mongo_shell --eval 'db.hello().setName' | grep -qx rs0; then
+          mongo_shell --eval "
+            rs.initiate({
+              _id: 'rs0',
+              members: [
+                {_id: 0, host: '$${MONGO_ADVERTISED_HOST}:27017', priority: 2},
+                {_id: 1, host: '$${MONGO_ADVERTISED_HOST}:27018', priority: 1},
+                {_id: 2, host: '$${MONGO_ADVERTISED_HOST}:27019', priority: 1}
+              ]
+            })
+          "
+        fi
+        primary_ready=false
+        for attempt in $$(seq 1 60); do
+          if mongo_shell --eval 'db.hello().isWritablePrimary' | grep -qx true; then
+            primary_ready=true
+            break
+          fi
+          sleep 2
+        done
+        if [ "$$primary_ready" != true ]; then
+          echo "rs0 primary did not become ready" >&2
+          exit 1
+        fi
+        mongo_shell --eval "
+          const expected = ['$${MONGO_ADVERTISED_HOST}:27017', '$${MONGO_ADVERTISED_HOST}:27018', '$${MONGO_ADVERTISED_HOST}:27019'];
+          const current = rs.conf().members.map((member) => member.host);
+          const unexpected = current.filter((host) => !expected.includes(host));
+          if (unexpected.length) throw new Error('existing rs0 members do not match MONGO_ADVERTISED_HOST: ' + unexpected.join(', '));
+          if (!current.includes(expected[1])) rs.add({host: expected[1], priority: 1});
+          if (!current.includes(expected[2])) rs.add({host: expected[2], priority: 1});
+        "
+        ready=false
+        for attempt in $$(seq 1 60); do
+          if mongo_shell --eval "
+            const expected = ['$${MONGO_ADVERTISED_HOST}:27017', '$${MONGO_ADVERTISED_HOST}:27018', '$${MONGO_ADVERTISED_HOST}:27019'];
+            const states = new Map(rs.status().members.map((member) => [member.name, member.stateStr]));
+            expected.every((host) => states.get(host) === 'PRIMARY' || states.get(host) === 'SECONDARY')
+          " | grep -qx true; then
+            ready=true
+            break
+          fi
+          sleep 2
+        done
+        if [ "$$ready" != true ]; then
+          echo "rs0 members did not become healthy" >&2
+          exit 1
+        fi
+        echo "rs0 initialization complete"
+    networks:
+      - databridge-mongo
+
+volumes:
+  mongo-keyfile:
+  mongodb-primary-data:
+  mongodb-secondary-1-data:
+  mongodb-secondary-2-data:
+
+networks:
+  databridge-mongo:
+    name: databridge-mongo

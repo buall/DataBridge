@@ -2,8 +2,10 @@ package backup
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"databridge/internal/model"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestNormalizeNeo4jDumpForTargetUpgradesLegacyUniqueConstraint(t *testing.T) {
@@ -39,6 +42,38 @@ func TestNormalizeNeo4jDumpForTargetUpgradesLegacyUniqueConstraint(t *testing.T)
 		if !strings.Contains(output, want) {
 			t.Fatalf("normalized dump missing %q\n%s", want, output)
 		}
+	}
+}
+
+func TestMongoOplogLastTimestampReadsFinalEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oplog.bson")
+	entries := []struct {
+		Timestamp bson.Timestamp `bson:"ts"`
+	}{
+		{Timestamp: bson.Timestamp{T: 10, I: 2}},
+		{Timestamp: bson.Timestamp{T: 12, I: 1}},
+	}
+	var data bytes.Buffer
+	for _, entry := range entries {
+		document, err := bson.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if int(binary.LittleEndian.Uint32(document[:4])) != len(document) {
+			t.Fatal("invalid BSON test document")
+		}
+		data.Write(document)
+	}
+	if err := os.WriteFile(path, data.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	position, found, err := mongoOplogLastTimestamp(path)
+	if err != nil || !found {
+		t.Fatalf("mongoOplogLastTimestamp() = (%#v, %v, %v)", position, found, err)
+	}
+	if position != (model.MongoOplogTimestamp{Seconds: 12, Increment: 1}) {
+		t.Fatalf("position = %#v", position)
 	}
 }
 

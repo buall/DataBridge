@@ -62,6 +62,14 @@ const (
 	maxStoredEventMessage = 4096
 )
 
+const (
+	mongoOplogBackupMode               = "mongo_oplog"
+	mongoReplicaSetScope               = "整个副本集"
+	defaultMongoFullBackupIntervalDays = 7
+	minimumMongoOplogWindowHours       = 48
+	mongoOplogSafetyBufferHours        = 12
+)
+
 type Server struct {
 	store     *store.Store
 	engine    *migrate.Engine
@@ -255,10 +263,17 @@ func (s *Server) withConnectionRegions(ctx context.Context, items []model.Connec
 
 func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 	var input model.ConnectionInput
-	if !decodeJSON(w, r, &input) || !validateConnection(w, input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	input.Type = normalizeDatabaseType(input.Type)
+	if err := normalizeMongoConnectionEndpoints(input.Type, &input.Endpoints); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
+		return
+	}
+	if !validateConnection(w, input) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	latency, version, err := testConnection(ctx, input)
@@ -266,15 +281,26 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "latency": latency.Milliseconds(), "version": version})
+	response := map[string]any{"ok": true, "latency": latency.Milliseconds(), "version": version}
+	if input.Type == "MongoDB" {
+		response["mongoBackupReadiness"] = mongoBackupReadiness(ctx, connectionFromInput(input))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	var input model.ConnectionInput
-	if !decodeJSON(w, r, &input) || !validateConnection(w, input) {
+	if !decodeJSON(w, r, &input) {
 		return
 	}
 	input.Type = normalizeDatabaseType(input.Type)
+	if err := normalizeMongoConnectionEndpoints(input.Type, &input.Endpoints); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
+		return
+	}
+	if !validateConnection(w, input) {
+		return
+	}
 	shouldValidate := input.Validate == nil || *input.Validate
 	var latency time.Duration
 	var version string
@@ -302,6 +328,13 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
 	}
+	if connection.Type == "MongoDB" {
+		readiness := mongoBackupReadiness(r.Context(), connection)
+		if err := s.store.UpdateMongoBackupReadiness(connection.ID, readiness); err != nil {
+			log.Printf("connection[%s] MongoDB backup readiness persistence failed: %v", connection.ID, err)
+		}
+		connection.MongoBackupReadiness = &readiness
+	}
 	connection.Region = s.connectionRegion(r.Context(), connection.Host)
 	writeJSON(w, http.StatusCreated, connection)
 }
@@ -316,6 +349,12 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, current.Type, input) {
 		return
 	}
+	if input.Endpoints != nil {
+		if err := normalizeMongoConnectionEndpoints(current.Type, &input.Endpoints); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
+			return
+		}
+	}
 	password := current.Password
 	if strings.TrimSpace(input.Password) != "" {
 		password = input.Password
@@ -326,6 +365,10 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validateConnectionTLSConfig(w, current.Type, input.SSLMode, tlsConfig) {
 		return
+	}
+	endpoints := current.Endpoints
+	if input.Endpoints != nil {
+		endpoints = input.Endpoints
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
@@ -339,6 +382,7 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 		Password:  password,
 		SSLMode:   input.SSLMode,
 		TLSConfig: tlsConfig,
+		Endpoints: endpoints,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "connection_failed", userFacingErrorMessage(errorContextConnectionTest, err))
@@ -358,6 +402,13 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextConnectionTest, err))
 		return
+	}
+	if connection.Type == "MongoDB" {
+		readiness := mongoBackupReadiness(r.Context(), connection)
+		if err := s.store.UpdateMongoBackupReadiness(connection.ID, readiness); err != nil {
+			log.Printf("connection[%s] MongoDB backup readiness persistence failed: %v", connection.ID, err)
+		}
+		connection.MongoBackupReadiness = &readiness
 	}
 	connection.Region = s.connectionRegion(r.Context(), connection.Host)
 	writeJSON(w, http.StatusOK, connection)
@@ -412,6 +463,7 @@ func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
 		Password:  password,
 		SSLMode:   input.SSLMode,
 		TLSConfig: tlsConfig,
+		Endpoints: append([]string(nil), current.Endpoints...),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
@@ -465,6 +517,7 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 		Password:  connection.Password,
 		SSLMode:   connection.SSLMode,
 		TLSConfig: connection.TLSConfig,
+		Endpoints: connection.Endpoints,
 	})
 	if connection.Type == "etcd" {
 		latency, version, err = etcd.TestConnection(ctx, connection)
@@ -484,6 +537,13 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.UpdateConnectionEndpoints(connection.ID, endpoints)
 		}
 	}
+	if connection.Type == "MongoDB" {
+		readiness := mongoBackupReadiness(r.Context(), connection)
+		if err := s.store.UpdateMongoBackupReadiness(connection.ID, readiness); err != nil {
+			log.Printf("connection[%s] MongoDB backup readiness persistence failed: %v", connection.ID, err)
+		}
+		connection.MongoBackupReadiness = &readiness
+	}
 	connection.Status = "connected"
 	connection.LatencyMS = latency.Milliseconds()
 	connection.Version = version
@@ -493,6 +553,47 @@ func (s *Server) refreshConnection(w http.ResponseWriter, r *http.Request) {
 
 func connectionFromInput(input model.ConnectionInput) model.Connection {
 	return model.Connection{Type: input.Type, Host: input.Host, Port: input.Port, Username: input.Username, Password: input.Password, SSLMode: input.SSLMode, TLSConfig: input.TLSConfig, Endpoints: input.Endpoints}
+}
+
+func normalizeMongoConnectionEndpoints(databaseType string, endpoints *[]string) error {
+	if databaseType != "MongoDB" {
+		if endpoints != nil {
+			*endpoints = nil
+		}
+		return nil
+	}
+	items, err := mongo.NormalizeReplicaSeeds(*endpoints)
+	if err != nil {
+		return err
+	}
+	*endpoints = items
+	return nil
+}
+
+func mongoBackupReadiness(ctx context.Context, connection model.Connection) model.MongoBackupReadiness {
+	readiness := model.MongoBackupReadiness{CheckedAt: time.Now().In(appLocation)}
+	info, err := mongo.IncrementalBackupInfo(ctx, connection)
+	if err != nil {
+		readiness.Status = "unavailable"
+		if strings.Contains(err.Error(), "不是 MongoDB 副本集") {
+			readiness.Message = "当前连接不是副本集，不能使用 oplog 增量备份"
+		} else {
+			readiness.Message = "无法读取副本集 oplog：" + userFacingErrorMessage(errorContextConnectionTest, err)
+		}
+		return readiness
+	}
+	readiness.ReplicaSet = info.ReplicaSetName
+	if info.Newest.Seconds >= info.Oldest.Seconds {
+		readiness.OplogWindowHours = float64(info.Newest.Seconds-info.Oldest.Seconds) / 3600
+	}
+	if readiness.OplogWindowHours >= minimumMongoOplogWindowHours {
+		readiness.Status = "ready"
+		readiness.Message = fmt.Sprintf("oplog 窗口 %.1f 小时，满足至少 %d 小时的增量备份要求", readiness.OplogWindowHours, minimumMongoOplogWindowHours)
+		return readiness
+	}
+	readiness.Status = "warning"
+	readiness.Message = fmt.Sprintf("oplog 窗口仅 %.1f 小时，低于至少 %d 小时的增量备份要求，请先扩容 oplog", readiness.OplogWindowHours, minimumMongoOplogWindowHours)
+	return readiness
 }
 
 func (s *Server) connectionRegion(ctx context.Context, host string) string {
@@ -739,7 +840,7 @@ func (s *Server) seedConnectionData(w http.ResponseWriter, r *http.Request) {
 	if request.Template == "" {
 		request.Template = "users"
 	}
-	if request.Template != "users" && request.Template != "orders" && request.Template != "products" {
+	if request.Template != "users" && request.Template != "orders" && request.Template != "products" && request.Template != "payload" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "请选择正确的写入模板")
 		return
 	}
@@ -1515,6 +1616,10 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", "未找到源端连接，请重新选择")
 		return
 	}
+	if err := s.normalizeMongoOplogBackupRequest(r.Context(), &request, source); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backup_mode", err.Error())
+		return
+	}
 	destinationLabel := request.Destination
 	targets, err := s.hydrateBackupTargets(&request)
 	if err != nil {
@@ -1549,6 +1654,9 @@ func (s *Server) createBackup(w http.ResponseWriter, r *http.Request) {
 		Request: request, ScheduleMode: request.ScheduleMode,
 		ScheduleFrequency: request.ScheduleFrequency, ScheduleTime: request.ScheduleTime,
 		ScheduleWeekday: request.ScheduleWeekday, ScheduleMonthDay: request.ScheduleMonthDay,
+		BackupMode: request.BackupMode, FullBackupIntervalDays: request.FullBackupIntervalDays,
+		MongoRPOHours: mongoRPOHours(request), MongoRequiredOplogHours: mongoOplogRequirementHours(request, 0),
+		RestoreDrillEnabled: request.RestoreDrillEnabled, RestoreDrillTargetID: request.RestoreDrillTargetID,
 		RetentionDays:   request.RetentionDays,
 		RetentionMonths: request.RetentionMonths,
 		Notification:    request.Notification, NotificationEnabled: request.Notification.Enabled,
@@ -1580,6 +1688,18 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 	log.Printf("backup[%s] started: %s/%s -> %s", id, source.Name, request.SourceDatabase, request.DestinationType)
 	started := time.Now()
 	versionID := store.NewID()
+	job, loadErr := s.store.Backup(id)
+	if loadErr != nil {
+		log.Printf("backup[%s] load failed: %v", id, loadErr)
+		return
+	}
+	mongoPlan, planErr := s.mongoOplogBackupPlan(ctx, job, request, source, versionID, started)
+	if planErr != nil {
+		mongoPlan = mongoOplogRunPlan{Enabled: true, Mode: "full", ChainID: versionID, Message: "无法确认 oplog 增量链，已回退为全量基线：" + planErr.Error()}
+	}
+	if mongoPlan.Enabled {
+		request.MongoOplogStart = mongoPlan.Start
+	}
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Status = model.StatusRunning
 		item.Stage = "export"
@@ -1588,17 +1708,34 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 		item.LastRunAt = &started
 		item.FinishedAt = nil
 		item.Error = ""
+		if mongoPlan.Enabled && mongoPlan.RequiredOplogHours > 0 {
+			item.MongoRPOHours = mongoPlan.RPOHours
+			item.MongoRequiredOplogHours = mongoPlan.RequiredOplogHours
+			item.MongoOplogWindowHours = mongoPlan.OplogWindowHours
+		}
 		item.Artifacts = nil
 		item.ArtifactVersions = append([]model.BackupArtifactVersion{{
-			ID:        versionID,
-			StartedAt: started,
-			Status:    model.StatusRunning,
-			Stage:     "export",
+			ID:              versionID,
+			StartedAt:       started,
+			Status:          model.StatusRunning,
+			Stage:           "export",
+			BackupMode:      mongoPlan.Mode,
+			ChainID:         mongoPlan.ChainID,
+			ParentID:        mongoPlan.ParentID,
+			MongoOplogStart: mongoPlan.Start,
 		}}, item.ArtifactVersions...)
-		if len(item.ArtifactVersions) > 20 {
+		// An oplog restore chain is only valid when every increment remains
+		// available. Do not truncate MongoDB versions by count; retention removes
+		// expired chains atomically instead.
+		if item.BackupMode != mongoOplogBackupMode && len(item.ArtifactVersions) > 20 {
 			item.ArtifactVersions = item.ArtifactVersions[:20]
 		}
 	})
+	if mongoPlan.Message != "" {
+		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+			appendJobEvent(&item.Events, model.Event{Time: started, Level: "INFO", Message: mongoPlan.Message})
+		})
+	}
 	reporter := func(progress backup.Progress) {
 		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 			item.Stage = progress.Stage
@@ -1617,7 +1754,13 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 	}
 	databases := backupDatabases(request)
 	var err error
+	if mongoPlan.Enabled && mongoPlan.Mode == "full" {
+		err = s.preflightMongoFullBackupWorkspace(ctx, source, reporter)
+	}
 	for index, database := range databases {
+		if err != nil {
+			break
+		}
 		current := request
 		current.SourceDatabase = database
 		reporter(backup.Progress{Stage: "export", EventLevel: "INFO", EventMessage: fmt.Sprintf("开始备份数据库 %s（%d/%d）", database, index+1, len(databases)), Progress: index * 90 / len(databases)})
@@ -1627,6 +1770,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			}
 			if progress.ArtifactName != "" {
 				s.recordBackupArtifact(id, versionID, database, progress)
+			}
+			if progress.MongoOplogEnd != nil {
+				s.recordMongoOplogVersionMetadata(id, versionID, progress)
 			}
 			reporter(progress)
 		}); runErr != nil {
@@ -1692,6 +1838,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
 				appendJobEvent(&item.Events, model.Event{Time: finished.Add(2 * time.Millisecond), Level: "INFO", Message: "备份任务完成"})
 			})
+			if mongoPlan.Enabled && mongoPlan.Mode == "full" && updatedJob.RestoreDrillEnabled {
+				s.startMongoRestoreDrill(updatedJob, versionID)
+			}
 		}
 	}
 	if updatedJob, loadErr := s.store.Backup(id); loadErr == nil && updatedJob.ScheduleMode == "scheduled" && backupNotificationShouldSend(updatedJob.Notification, err == nil) {
@@ -1706,6 +1855,89 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			})
 		}
 	}
+}
+
+func (s *Server) startMongoRestoreDrill(sourceJob model.BackupJob, versionID string) {
+	if !isMongoOplogBackup(sourceJob) || strings.TrimSpace(sourceJob.RestoreDrillTargetID) == "" {
+		return
+	}
+	plan, err := buildMongoOplogRestorePlan(sourceJob, model.RestoreBackupRequest{TargetID: sourceJob.RestoreDrillTargetID, ArtifactVersionID: versionID})
+	if err != nil {
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练未启动："+err.Error())
+		return
+	}
+	target, err := s.store.Connection(plan.TargetID)
+	if err != nil {
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练未启动：未找到目标副本集")
+		return
+	}
+	precheck := s.runRestorePrecheck(context.Background(), sourceJob, target, plan)
+	if !precheck.OK {
+		messages := make([]string, 0, len(precheck.Checks))
+		for _, check := range precheck.Checks {
+			if check.Status == "failed" {
+				messages = append(messages, check.Label+"："+check.Message)
+			}
+		}
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练预检未通过："+strings.Join(messages, "；"))
+		return
+	}
+	sources, err := s.restoreSourcesForPlan(sourceJob, plan)
+	if err != nil {
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练未启动："+err.Error())
+		return
+	}
+	restoreJob, err := backupJobForArtifactVersion(sourceJob, plan.ArtifactVersionID)
+	if err != nil {
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练未启动："+err.Error())
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Now().In(appLocation)
+	summary := restoreArtifactSummary(restoreJob)
+	value := model.BackupJob{
+		ID: store.NewID(), Name: fmt.Sprintf("恢复演练 %s 到 %s", sourceJob.Name, target.Name),
+		Status: model.StatusPending, Stage: "pending", StartedAt: now,
+		SourceName: sourceJob.SourceName, SourceID: sourceJob.SourceID, SourceType: "MongoDB", SourceDatabase: mongoReplicaSetScope,
+		DestinationType: "restore", Destination: target.Name + " / " + mongoReplicaSetScope,
+		ArtifactName: summary.Name, ArtifactSize: summary.Size, ArtifactPath: sources[len(sources)-1].Path,
+		Events: []model.Event{{Time: now, Level: "INFO", Message: "自动恢复演练已创建，来源备份任务 " + sourceJob.ID}, {Time: now, Level: "INFO", Message: "恢复备份版本：" + restoreVersionLabel(restoreJob, versionID)}},
+	}
+	if err := s.store.AddBackup(value, cancel); err != nil {
+		cancel()
+		s.recordMongoRestoreDrillEvent(sourceJob.ID, "WARN", "恢复演练任务创建失败："+err.Error())
+		return
+	}
+	s.recordMongoRestoreDrillEvent(sourceJob.ID, "INFO", "全量基线完成，已启动恢复演练："+target.Name)
+	go s.runRestore(ctx, value.ID, target, plan.SourceDatabases, plan.TargetDatabases, plan.Strategy, sources, true)
+}
+
+func (s *Server) recordMongoRestoreDrillEvent(backupID, level, message string) {
+	_ = s.store.UpdateBackup(backupID, func(job *model.BackupJob) {
+		appendJobEvent(&job.Events, model.Event{Time: time.Now().In(appLocation), Level: level, Message: message})
+	})
+}
+
+func (s *Server) preflightMongoFullBackupWorkspace(ctx context.Context, source model.Connection, reporter func(backup.Progress)) error {
+	databases, err := mongo.Databases(ctx, source)
+	if err != nil {
+		return fmt.Errorf("读取 MongoDB 数据库大小失败：%w", err)
+	}
+	var sourceBytes int64
+	for _, database := range databases {
+		sourceBytes += database.Size
+	}
+	const minimumBufferBytes int64 = 512 << 20
+	requiredBytes := sourceBytes*5/2 + minimumBufferBytes
+	workDir, availableBytes, err := backup.AvailableWorkBytes()
+	if err != nil {
+		return fmt.Errorf("读取备份工作目录可用空间失败：%w", err)
+	}
+	reporter(backup.Progress{Stage: "export", EventLevel: "INFO", EventMessage: fmt.Sprintf("MongoDB 全量空间预检：源端约 %s，工作目录至少需要 %s，当前可用 %s", formatBytes(sourceBytes), formatBytes(requiredBytes), formatBytes(availableBytes))})
+	if availableBytes < requiredBytes {
+		return fmt.Errorf("备份工作目录空间不足：%s 至少需要 %s，当前仅可用 %s，请扩容后重试", workDir, formatBytes(requiredBytes), formatBytes(availableBytes))
+	}
+	return nil
 }
 
 type expiredBackupArtifactCleanup struct {
@@ -1754,9 +1986,14 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 		}
 		objectStorage = &storage
 	}
+	mongoExpiredVersions := mongoExpiredBackupVersionIDs(*job, currentVersionID, cutoff)
 	for versionIndex := range job.ArtifactVersions {
 		version := &job.ArtifactVersions[versionIndex]
-		if version.ID == currentVersionID || version.Status != model.StatusCompleted || version.FinishedAt == nil || !version.FinishedAt.Before(cutoff) {
+		expired := version.FinishedAt != nil && version.FinishedAt.Before(cutoff)
+		if isMongoOplogBackup(*job) {
+			expired = mongoExpiredVersions[version.ID]
+		}
+		if version.ID == currentVersionID || version.Status != model.StatusCompleted || !expired {
 			continue
 		}
 		kept := version.Artifacts[:0]
@@ -1783,6 +2020,37 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 		}
 	}
 	return result
+}
+
+func mongoExpiredBackupVersionIDs(job model.BackupJob, currentVersionID string, cutoff time.Time) map[string]bool {
+	expired := map[string]bool{}
+	if !isMongoOplogBackup(job) {
+		return expired
+	}
+	currentChain := ""
+	chainBaseline := map[string]time.Time{}
+	for _, version := range job.ArtifactVersions {
+		if version.ID == currentVersionID {
+			currentChain = version.ChainID
+		}
+		if version.Status != model.StatusCompleted || version.ChainID == "" {
+			continue
+		}
+		if version.BackupMode == "full" {
+			if existing, ok := chainBaseline[version.ChainID]; !ok || version.StartedAt.Before(existing) {
+				chainBaseline[version.ChainID] = version.StartedAt
+			}
+		}
+	}
+	for _, version := range job.ArtifactVersions {
+		if version.Status != model.StatusCompleted || version.ChainID == "" || version.ChainID == currentChain {
+			continue
+		}
+		if baseline, ok := chainBaseline[version.ChainID]; ok && baseline.Before(cutoff) {
+			expired[version.ID] = true
+		}
+	}
+	return expired
 }
 
 func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.BackupJob, artifact model.BackupArtifact, objectStorage *model.RemoteStorage) error {
@@ -2023,6 +2291,109 @@ func (s *Server) recordBackupArtifact(id, versionID, database string, progress b
 		}
 		item.Artifacts = append(item.Artifacts, artifact)
 	})
+}
+
+func (s *Server) recordMongoOplogVersionMetadata(id, versionID string, progress backup.Progress) {
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		for index := range item.ArtifactVersions {
+			version := &item.ArtifactVersions[index]
+			if version.ID != versionID {
+				continue
+			}
+			if progress.BackupMode != "" {
+				version.BackupMode = progress.BackupMode
+			}
+			if progress.MongoOplogStart != nil {
+				value := *progress.MongoOplogStart
+				version.MongoOplogStart = &value
+			}
+			if progress.MongoOplogEnd != nil {
+				value := *progress.MongoOplogEnd
+				version.MongoOplogEnd = &value
+			}
+			return
+		}
+	})
+}
+
+type mongoOplogRunPlan struct {
+	Enabled            bool
+	Mode               string
+	ChainID            string
+	ParentID           string
+	Start              *model.MongoOplogTimestamp
+	RPOHours           float64
+	RequiredOplogHours float64
+	OplogWindowHours   float64
+	Message            string
+}
+
+func (s *Server) mongoOplogBackupPlan(ctx context.Context, job model.BackupJob, request model.BackupRequest, source model.Connection, versionID string, now time.Time) (mongoOplogRunPlan, error) {
+	if request.BackupMode != mongoOplogBackupMode || source.Type != "MongoDB" {
+		return mongoOplogRunPlan{}, nil
+	}
+	fullPlan := func(message string) mongoOplogRunPlan {
+		return mongoOplogRunPlan{Enabled: true, Mode: "full", ChainID: versionID, Message: message}
+	}
+	var latest *model.BackupArtifactVersion
+	for index := range job.ArtifactVersions {
+		candidate := &job.ArtifactVersions[index]
+		if candidate.Status != model.StatusCompleted || len(candidate.Artifacts) == 0 || candidate.MongoOplogEnd == nil || candidate.ChainID == "" {
+			continue
+		}
+		if latest == nil || candidate.StartedAt.After(latest.StartedAt) {
+			latest = candidate
+		}
+	}
+	if latest == nil {
+		return fullPlan("首次执行 MongoDB oplog 备份，正在创建全量基线"), nil
+	}
+	var baseline *model.BackupArtifactVersion
+	for index := range job.ArtifactVersions {
+		candidate := &job.ArtifactVersions[index]
+		if candidate.Status == model.StatusCompleted && candidate.ChainID == latest.ChainID && candidate.BackupMode == "full" {
+			if baseline == nil || candidate.StartedAt.Before(baseline.StartedAt) {
+				baseline = candidate
+			}
+		}
+	}
+	if baseline == nil {
+		return fullPlan("未找到完整 MongoDB 基线，正在创建新的全量基线"), nil
+	}
+	info, err := mongo.IncrementalBackupInfo(ctx, source)
+	if err != nil {
+		return mongoOplogRunPlan{}, err
+	}
+	fullDuration := time.Duration(0)
+	if baseline.FinishedAt != nil && baseline.FinishedAt.After(baseline.StartedAt) {
+		fullDuration = baseline.FinishedAt.Sub(baseline.StartedAt)
+	}
+	rpoHours := mongoRPOHours(request)
+	requiredHours := mongoOplogRequirementHours(request, fullDuration)
+	windowHours := mongoOplogWindowHours(info)
+	if windowHours < requiredHours {
+		plan := fullPlan(fmt.Sprintf("oplog 窗口 %.1f 小时低于目标 RPO 所需的 %.1f 小时，正在创建新的全量基线", windowHours, requiredHours))
+		plan.RPOHours, plan.RequiredOplogHours, plan.OplogWindowHours = rpoHours, requiredHours, windowHours
+		return plan, nil
+	}
+	interval := request.FullBackupIntervalDays
+	if interval <= 0 {
+		interval = defaultMongoFullBackupIntervalDays
+	}
+	if now.Sub(baseline.StartedAt) >= time.Duration(interval)*24*time.Hour {
+		return fullPlan("已达到全量基线周期，正在创建新的全量基线"), nil
+	}
+	if mongo.OplogTimestampCompare(*latest.MongoOplogEnd, info.Oldest) < 0 {
+		plan := fullPlan("oplog 保留窗口已越过上一备份位点，正在创建新的全量基线")
+		plan.RPOHours, plan.RequiredOplogHours, plan.OplogWindowHours = rpoHours, requiredHours, windowHours
+		return plan, nil
+	}
+	start := *latest.MongoOplogEnd
+	return mongoOplogRunPlan{
+		Enabled: true, Mode: "incremental", ChainID: latest.ChainID, ParentID: latest.ID, Start: &start,
+		RPOHours: rpoHours, RequiredOplogHours: requiredHours, OplogWindowHours: windowHours,
+		Message: "正在基于上一成功版本创建 MongoDB oplog 增量",
+	}, nil
 }
 
 func recordArtifactInVersion(item *model.BackupJob, versionID string, artifact model.BackupArtifact) {
@@ -2389,6 +2760,16 @@ func backupScheduleRequest(item model.BackupJob) model.BackupRequest {
 	if request.ScheduleMonthDay == 0 {
 		request.ScheduleMonthDay = item.ScheduleMonthDay
 	}
+	if request.BackupMode == "" {
+		request.BackupMode = item.BackupMode
+	}
+	if request.FullBackupIntervalDays == 0 {
+		request.FullBackupIntervalDays = item.FullBackupIntervalDays
+	}
+	if !request.RestoreDrillEnabled && request.RestoreDrillTargetID == "" {
+		request.RestoreDrillEnabled = item.RestoreDrillEnabled
+		request.RestoreDrillTargetID = item.RestoreDrillTargetID
+	}
 	if request.RetentionMonths == 0 {
 		request.RetentionMonths = item.RetentionMonths
 	}
@@ -2441,6 +2822,13 @@ func (s *Server) triggerScheduledBackup(item model.BackupJob, message string) (m
 			job.Stage = "failed"
 			job.Error = userFacingErrorMessage(errorContextCreateBackup, err)
 			appendJobEvent(&job.Events, model.Event{Time: now, Level: "ERROR", Message: err.Error()})
+		})
+		return item, err
+	}
+	if err := s.normalizeMongoOplogBackupRequest(context.Background(), &request, source); err != nil {
+		_ = s.store.UpdateBackup(item.ID, func(job *model.BackupJob) {
+			job.Error = err.Error()
+			appendJobEvent(&job.Events, model.Event{Time: now, Level: "WARN", Message: "定时增量备份未启动：" + err.Error()})
 		})
 		return item, err
 	}
@@ -2774,6 +3162,90 @@ func normalizeBackupSchedule(request *model.BackupRequest) {
 	request.NotificationTarget = request.Notification.Target
 	request.NotificationRecipientIDs = append([]string(nil), request.Notification.RecipientIDs...)
 	request.NotificationTrigger = request.Notification.Trigger
+}
+
+func (s *Server) normalizeMongoOplogBackupRequest(ctx context.Context, request *model.BackupRequest, source model.Connection) error {
+	request.BackupMode = strings.ToLower(strings.TrimSpace(request.BackupMode))
+	if request.BackupMode == "" || request.BackupMode == "full" {
+		request.BackupMode = ""
+		request.FullBackupIntervalDays = 0
+		return nil
+	}
+	if request.BackupMode != mongoOplogBackupMode {
+		return fmt.Errorf("不支持的备份策略")
+	}
+	if source.Type != "MongoDB" {
+		return fmt.Errorf("oplog 增量备份仅支持 MongoDB 副本集")
+	}
+	if request.ScheduleMode != "scheduled" {
+		return fmt.Errorf("MongoDB oplog 增量备份必须创建为定时任务")
+	}
+	if request.FullBackupIntervalDays <= 0 {
+		request.FullBackupIntervalDays = defaultMongoFullBackupIntervalDays
+	}
+	if request.FullBackupIntervalDays < 1 || request.FullBackupIntervalDays > 30 {
+		return fmt.Errorf("MongoDB 全量基线间隔必须在 1 到 30 天之间")
+	}
+	if request.RestoreDrillEnabled {
+		target, err := s.store.Connection(strings.TrimSpace(request.RestoreDrillTargetID))
+		if err != nil || target.Type != "MongoDB" || target.ID == source.ID {
+			return fmt.Errorf("恢复演练必须选择不同于源端的 MongoDB 目标副本集")
+		}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	info, err := mongo.IncrementalBackupInfo(checkCtx, source)
+	if err != nil {
+		return userFacingMongoOplogPrecheckError(err)
+	}
+	if mongo.OplogTimestampCompare(info.Oldest, info.Newest) >= 0 {
+		return fmt.Errorf("oplog 没有可用的时间窗口，请确认副本集处于正常写入状态")
+	}
+	if windowHours, requiredHours := mongoOplogWindowHours(info), mongoOplogRequirementHours(*request, 0); windowHours < requiredHours {
+		return fmt.Errorf("oplog 窗口仅 %.1f 小时，低于当前备份策略要求的 %.1f 小时；请扩容 oplog 后再启用增量备份", windowHours, requiredHours)
+	}
+	// MongoDB only guarantees replayable oplog backups for a complete replica
+	// set dump. Keep this explicit in the task metadata and the UI.
+	request.SourceDatabase = mongoReplicaSetScope
+	request.SourceDatabases = []string{mongoReplicaSetScope}
+	return nil
+}
+
+func userFacingMongoOplogPrecheckError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("MongoDB oplog 增量备份预检失败：%w", err)
+}
+
+func mongoRPOHours(request model.BackupRequest) float64 {
+	switch request.ScheduleFrequency {
+	case "hourly":
+		return 1
+	case "daily":
+		return 24
+	case "weekly":
+		return 7 * 24
+	case "monthly":
+		return 28 * 24
+	default:
+		return 24
+	}
+}
+
+func mongoOplogRequirementHours(request model.BackupRequest, fullDuration time.Duration) float64 {
+	required := mongoRPOHours(request) + fullDuration.Hours() + mongoOplogSafetyBufferHours
+	if required < minimumMongoOplogWindowHours {
+		return minimumMongoOplogWindowHours
+	}
+	return required
+}
+
+func mongoOplogWindowHours(info mongo.OplogBackupInfo) float64 {
+	if info.Newest.Seconds < info.Oldest.Seconds {
+		return 0
+	}
+	return float64(info.Newest.Seconds-info.Oldest.Seconds) / 3600
 }
 
 func normalizeBackupNotification(request *model.BackupRequest) {
@@ -3350,6 +3822,12 @@ func nextBackupRun(request model.BackupRequest, after time.Time) (time.Time, err
 	location := appLocation
 	candidate := time.Date(after.Year(), after.Month(), after.Day(), hour, minute, second, 0, location)
 	switch request.ScheduleFrequency {
+	case "hourly":
+		candidate = time.Date(after.Year(), after.Month(), after.Day(), after.Hour(), minute, second, 0, location)
+		if !candidate.After(after) {
+			candidate = candidate.Add(time.Hour)
+		}
+		return candidate, nil
 	case "daily":
 		if !candidate.After(after) {
 			candidate = candidate.AddDate(0, 0, 1)
@@ -3566,6 +4044,14 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 	request.ScheduleTime = input.ScheduleTime
 	request.ScheduleWeekday = input.ScheduleWeekday
 	request.ScheduleMonthDay = input.ScheduleMonthDay
+	if input.BackupMode != "" {
+		request.BackupMode = input.BackupMode
+	}
+	if input.FullBackupIntervalDays != 0 {
+		request.FullBackupIntervalDays = input.FullBackupIntervalDays
+	}
+	request.RestoreDrillEnabled = input.RestoreDrillEnabled
+	request.RestoreDrillTargetID = input.RestoreDrillTargetID
 	request.RetentionDays = input.RetentionDays
 	request.RetentionMonths = input.RetentionMonths
 	request.NotificationEnabled = input.NotificationEnabled
@@ -3586,6 +4072,10 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_source", "未找到源端连接，请重新选择")
 		return
 	}
+	if err := s.normalizeMongoOplogBackupRequest(r.Context(), &request, source); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_backup_mode", err.Error())
+		return
+	}
 	if err := s.store.UpdateBackup(id, func(item *model.BackupJob) {
 		item.Name = request.Name
 		item.SourceName = source.Name
@@ -3604,6 +4094,10 @@ func (s *Server) updateBackup(w http.ResponseWriter, r *http.Request) {
 		item.ScheduleTime = request.ScheduleTime
 		item.ScheduleWeekday = request.ScheduleWeekday
 		item.ScheduleMonthDay = request.ScheduleMonthDay
+		item.BackupMode = request.BackupMode
+		item.FullBackupIntervalDays = request.FullBackupIntervalDays
+		item.RestoreDrillEnabled = request.RestoreDrillEnabled
+		item.RestoreDrillTargetID = request.RestoreDrillTargetID
 		item.RetentionDays = request.RetentionDays
 		item.RetentionMonths = request.RetentionMonths
 		item.Notification = request.Notification
@@ -3727,11 +4221,12 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", backupArtifactUnavailableMessage(restoreJob))
 		return
 	}
-	restoreSource, err := s.restoreSource(restoreJob)
+	restoreSources, err := s.restoreSourcesForPlan(sourceJob, plan)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
 		return
 	}
+	restoreSource := restoreSources[len(restoreSources)-1]
 	target, err := s.store.Connection(plan.TargetID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_target", "未找到目标连接，请重新选择")
@@ -3766,8 +4261,41 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "storage_error", userFacingErrorMessage(errorContextCreateBackup, err))
 		return
 	}
-	go s.runRestore(ctx, value.ID, target, plan.SourceDatabases, plan.TargetDatabases, plan.Strategy, restoreSource)
+	go s.runRestore(ctx, value.ID, target, plan.SourceDatabases, plan.TargetDatabases, plan.Strategy, restoreSources, plan.MongoReplicaSet)
 	writeJSON(w, http.StatusAccepted, value)
+}
+
+func (s *Server) restoreSourcesForPlan(sourceJob model.BackupJob, plan restorePlan) ([]restoreSource, error) {
+	if !plan.MongoReplicaSet {
+		restoreJob, err := backupJobForArtifactVersion(sourceJob, plan.ArtifactVersionID)
+		if err != nil {
+			return nil, err
+		}
+		source, err := s.restoreSource(restoreJob)
+		if err != nil {
+			return nil, err
+		}
+		return []restoreSource{source}, nil
+	}
+	sources := make([]restoreSource, 0, len(plan.MongoVersionIDs))
+	for _, versionID := range plan.MongoVersionIDs {
+		versionJob, err := backupJobForArtifactVersion(sourceJob, versionID)
+		if err != nil {
+			return nil, err
+		}
+		if !backupArtifactRestorable(versionJob) {
+			return nil, fmt.Errorf("%s", backupArtifactUnavailableMessage(versionJob))
+		}
+		source, err := s.restoreSource(versionJob)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	if len(sources) == 0 {
+		return nil, fmt.Errorf("MongoDB 备份链没有可恢复产物")
+	}
+	return sources, nil
 }
 
 func (s *Server) restoreBackupPrecheck(w http.ResponseWriter, r *http.Request) {
@@ -3810,11 +4338,16 @@ type restorePlan struct {
 	TargetDatabases   map[string]string
 	Strategy          string
 	TargetLabel       string
+	MongoReplicaSet   bool
+	MongoVersionIDs   []string
 }
 
 func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.RestoreBackupRequest) (restorePlan, error) {
 	if sourceJob.SourceType == "etcd" {
 		return restorePlan{}, fmt.Errorf("etcd 快照暂不支持在 DataBridge 内自动恢复，请下载产物后按 etcdutl 离线恢复流程操作")
+	}
+	if isMongoOplogBackup(sourceJob) {
+		return buildMongoOplogRestorePlan(sourceJob, input)
 	}
 	strategy := normalizeRestoreStrategy(input.Strategy)
 	restoreJob, err := backupJobForArtifactVersion(sourceJob, strings.TrimSpace(input.ArtifactVersionID))
@@ -3845,6 +4378,79 @@ func (s *Server) buildRestorePlan(sourceJob model.BackupJob, input model.Restore
 		Strategy:          strategy,
 		TargetLabel:       restoreTargetLabel(selected, targetDatabases),
 	}, nil
+}
+
+func isMongoOplogBackup(job model.BackupJob) bool {
+	return job.SourceType == "MongoDB" && job.BackupMode == mongoOplogBackupMode
+}
+
+func buildMongoOplogRestorePlan(sourceJob model.BackupJob, input model.RestoreBackupRequest) (restorePlan, error) {
+	if strings.TrimSpace(input.TargetID) == "" {
+		return restorePlan{}, fmt.Errorf("请选择恢复目标连接")
+	}
+	if input.TargetID == sourceJob.SourceID {
+		return restorePlan{}, fmt.Errorf("MongoDB 副本集备份不能恢复到源端连接，请选择独立的目标副本集")
+	}
+	versions, selectedID, err := mongoOplogRestoreVersions(sourceJob, strings.TrimSpace(input.ArtifactVersionID))
+	if err != nil {
+		return restorePlan{}, err
+	}
+	return restorePlan{
+		TargetID:          strings.TrimSpace(input.TargetID),
+		ArtifactVersionID: selectedID,
+		SourceDatabases:   []string{mongoReplicaSetScope},
+		TargetDatabases:   map[string]string{mongoReplicaSetScope: mongoReplicaSetScope},
+		Strategy:          "recreate",
+		TargetLabel:       mongoReplicaSetScope,
+		MongoReplicaSet:   true,
+		MongoVersionIDs:   versions,
+	}, nil
+}
+
+func mongoOplogRestoreVersions(job model.BackupJob, requestedID string) ([]string, string, error) {
+	completed := make([]model.BackupArtifactVersion, 0, len(job.ArtifactVersions))
+	for _, version := range job.ArtifactVersions {
+		if version.Status == model.StatusCompleted && len(version.Artifacts) > 0 && version.ChainID != "" {
+			completed = append(completed, version)
+		}
+	}
+	if len(completed) == 0 {
+		return nil, "", fmt.Errorf("尚未找到完成的 MongoDB 全量基线或增量版本")
+	}
+	sort.Slice(completed, func(i, j int) bool { return completed[i].StartedAt.Before(completed[j].StartedAt) })
+	selected := completed[len(completed)-1]
+	if requestedID != "" && requestedID != "current" {
+		found := false
+		for _, version := range completed {
+			if version.ID == requestedID {
+				selected = version
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", fmt.Errorf("未找到选择的备份版本")
+		}
+	}
+	chain := make([]model.BackupArtifactVersion, 0)
+	for _, version := range completed {
+		if version.ChainID == selected.ChainID && !version.StartedAt.After(selected.StartedAt) {
+			chain = append(chain, version)
+		}
+	}
+	if len(chain) == 0 || chain[0].BackupMode != "full" {
+		return nil, "", fmt.Errorf("MongoDB 备份链缺少可恢复的全量基线")
+	}
+	ids := make([]string, 0, len(chain))
+	previous := ""
+	for index, version := range chain {
+		if index > 0 && (version.BackupMode != "incremental" || version.ParentID != previous) {
+			return nil, "", fmt.Errorf("MongoDB 备份链不连续，不能恢复")
+		}
+		ids = append(ids, version.ID)
+		previous = version.ID
+	}
+	return ids, selected.ID, nil
 }
 
 func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJob, target model.Connection, plan restorePlan) model.RestorePrecheckResult {
@@ -3878,6 +4484,20 @@ func (s *Server) runRestorePrecheck(ctx context.Context, sourceJob model.BackupJ
 		return restorePrecheckResult(checks)
 	}
 	add("target_connection", "目标连接", "passed", target.Name+" 连接可用")
+	if plan.MongoReplicaSet {
+		if _, err := s.restoreSourcesForPlan(sourceJob, plan); err != nil {
+			add("backup_chain", "备份链", "failed", err.Error())
+		} else {
+			add("backup_chain", "备份链", "passed", fmt.Sprintf("已找到全量基线和 %d 个前序增量", len(plan.MongoVersionIDs)-1))
+		}
+		if _, err := mongo.IncrementalBackupInfo(timeoutCtx, target); err != nil {
+			add("target_replica_set", "目标副本集", "failed", userFacingMongoOplogPrecheckError(err).Error())
+		} else {
+			add("target_replica_set", "目标副本集", "passed", "目标副本集和 oplog replay 所需访问已验证")
+		}
+		add("recreate_replica_set", "恢复策略", "warning", "将以副本集全量基线覆盖目标中的同名数据，并顺序重放增量日志")
+		return restorePrecheckResult(checks)
+	}
 	if warning := s.neo4jRestoreVersionWarning(timeoutCtx, sourceJob, target); warning != "" {
 		add("neo4j_version_compatibility", "版本兼容性", "warning", warning)
 	}
@@ -4388,7 +5008,18 @@ func backupArtifactMap(job model.BackupJob) map[string]model.BackupArtifact {
 	return items
 }
 
-func (s *Server) runRestore(ctx context.Context, id string, target model.Connection, sourceDatabases []string, targetDatabases map[string]string, strategy string, source restoreSource) {
+func (s *Server) runRestore(ctx context.Context, id string, target model.Connection, sourceDatabases []string, targetDatabases map[string]string, strategy string, sources []restoreSource, mongoReplicaSet bool) {
+	if mongoReplicaSet {
+		s.runMongoOplogRestore(ctx, id, target, sources)
+		return
+	}
+	if len(sources) == 0 {
+		return
+	}
+	s.runRestoreSingle(ctx, id, target, sourceDatabases, targetDatabases, strategy, sources[0])
+}
+
+func (s *Server) runRestoreSingle(ctx context.Context, id string, target model.Connection, sourceDatabases []string, targetDatabases map[string]string, strategy string, source restoreSource) {
 	defer s.store.ClearBackupCancel(id)
 	log.Printf("restore[%s] started: %s -> %s/%s", id, restoreSourceLabel(source), target.Name, restoreTargetLabel(sourceDatabases, targetDatabases))
 	started := time.Now()
@@ -4483,6 +5114,75 @@ func (s *Server) runRestore(ctx context.Context, id string, target model.Connect
 			item.Error = userFacingErrorMessage(errorContextBackupRuntime, err)
 			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: err.Error()})
 		}
+	})
+}
+
+func (s *Server) runMongoOplogRestore(ctx context.Context, id string, target model.Connection, sources []restoreSource) {
+	defer s.store.ClearBackupCancel(id)
+	started := time.Now()
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.Status = model.StatusRunning
+		item.Stage = "restore"
+		item.Progress = 15
+		item.StartedAt = started
+		item.LastRunAt = &started
+		item.FinishedAt = nil
+		item.Error = ""
+	})
+	reporter := func(progress backup.Progress) {
+		_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+			item.Stage = progress.Stage
+			item.Progress = backupProgress(progress.Stage, progress.Progress)
+			appendJobEvent(&item.Events, model.Event{Time: time.Now(), Level: progress.EventLevel, Message: progress.EventMessage})
+		})
+	}
+	var restoreErr error
+	for index, source := range sources {
+		step := "全量基线"
+		if index > 0 {
+			step = "oplog 增量"
+		}
+		reporter(backup.Progress{Stage: "restore", EventLevel: "INFO", EventMessage: fmt.Sprintf("正在恢复 MongoDB %s（%d/%d）", step, index+1, len(sources)), Progress: 20 + index*70/len(sources)})
+		artifactPath, cleanup, err := s.prepareRestoreArtifact(ctx, restoreArtifactForDatabase(source, mongoReplicaSetScope), reporter)
+		if err == nil {
+			err = s.backup.Restore(ctx, target, "", artifactPath, backup.RestoreOptions{Strategy: "recreate", MongoReplicaSet: true, MongoOplogOnly: index > 0}, reporter)
+		}
+		if cleanup != nil {
+			cleanup()
+		}
+		if err != nil {
+			restoreErr = err
+			break
+		}
+	}
+	if restoreErr == nil {
+		databases, err := mongo.Databases(ctx, target)
+		if err != nil {
+			restoreErr = fmt.Errorf("restore validation: %w", err)
+		} else {
+			reporter(backup.Progress{Stage: "validation", EventLevel: "INFO", EventMessage: fmt.Sprintf("MongoDB 副本集恢复校验完成，发现 %d 个业务数据库", len(databases)), Progress: 95})
+		}
+	}
+	finished := time.Now()
+	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {
+		item.FinishedAt = &finished
+		if restoreErr == nil {
+			item.Status = model.StatusCompleted
+			item.Stage = "completed"
+			item.Progress = 100
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "INFO", Message: "MongoDB 副本集恢复完成"})
+			return
+		}
+		if errors.Is(restoreErr, context.Canceled) {
+			item.Status = model.StatusCancelled
+			item.Stage = "cancelled"
+			appendJobEvent(&item.Events, model.Event{Time: finished, Level: "WARN", Message: "恢复任务已取消"})
+			return
+		}
+		item.Status = model.StatusFailed
+		item.Stage = "failed"
+		item.Error = userFacingErrorMessage(errorContextBackupRuntime, restoreErr)
+		appendJobEvent(&item.Events, model.Event{Time: finished, Level: "ERROR", Message: restoreErr.Error()})
 	})
 }
 

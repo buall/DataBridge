@@ -15,6 +15,8 @@ type ConnectionFormState = {
   password: string;
   sslMode: string;
   tlsConfig: ConnectionTLSConfig;
+  mongoMode: "direct" | "replica_set";
+  mongoSeeds: string;
 };
 
 type EditConnectionFormState = Omit<ConnectionFormState, "type">;
@@ -55,7 +57,7 @@ export function Connections({
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [databaseModal, setDatabaseModal] = useState<{ connection: DatabaseConnection; databases: DatabaseInfo[]; loading: boolean; error: string } | null>(null);
   const [createDatabaseModal, setCreateDatabaseModal] = useState<{ connection: DatabaseConnection; name: string; submitting: boolean; error: string } | null>(null);
-  const [seedDataModal, setSeedDataModal] = useState<{ connection: DatabaseConnection; database: string; rows: string; mode: "append" | "replace"; template: "users" | "orders" | "products"; databases: DatabaseInfo[]; loading: boolean; submitting: boolean; error: string; result: SeedDataResult | null } | null>(null);
+  const [seedDataModal, setSeedDataModal] = useState<{ connection: DatabaseConnection; database: string; rows: string; mode: "append" | "replace"; template: "users" | "orders" | "products" | "payload"; databases: DatabaseInfo[]; loading: boolean; submitting: boolean; error: string; result: SeedDataResult | null } | null>(null);
   const [seedDataConfirmOpen, setSeedDataConfirmOpen] = useState(false);
   const [deleteModal, setDeleteModal] = useState<{ connection: DatabaseConnection; submitting: boolean; error: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -134,7 +136,7 @@ export function Connections({
     setSubmittingAction(action);
     setFormError("");
     try {
-      const input: ConnectionInput = { ...form, port: Number(form.port), validate };
+      const input: ConnectionInput = { ...connectionInputFromForm(form), port: Number(form.port), validate };
       const connection = await api.createConnection(input);
       onAdd(connection);
       closeConnectionForm();
@@ -206,6 +208,8 @@ export function Connections({
         password: "",
         sslMode: connection.sslMode,
         tlsConfig: emptyTLSConfig(),
+        mongoMode: connection.type === "MongoDB" && (connection.endpoints?.length ?? 0) > 0 ? "replica_set" : "direct",
+        mongoSeeds: connection.endpoints?.join("\n") ?? "",
       },
       submitting: false,
       error: "",
@@ -233,6 +237,8 @@ export function Connections({
         password: "",
         sslMode: connection.sslMode,
         tlsConfig: emptyTLSConfig(),
+        mongoMode: connection.type === "MongoDB" && (connection.endpoints?.length ?? 0) > 0 ? "replica_set" : "direct",
+        mongoSeeds: connection.endpoints?.join("\n") ?? "",
       },
       submitting: false,
       error: "",
@@ -280,8 +286,7 @@ export function Connections({
     setEditModal({ ...editModal, submitting: true, error: "" });
     try {
       const updated = await api.updateConnection(editModal.connection.id, {
-        type: editModal.connection.type,
-        ...editModal.form,
+        ...connectionInputFromForm({ ...editModal.form, type: editModal.connection.type }),
         port: Number(editModal.form.port),
       });
       onUpdate(updated);
@@ -466,6 +471,7 @@ export function Connections({
               <div><dt>主机地址</dt><dd className="host-address-value"><button type="button" className="copy-inline" onClick={() => copyAddress(connection)} aria-label={`复制 ${connection.host}:${connection.port}`} data-tooltip-content={`${connection.host}:${connection.port}`}>{connection.host}:{connection.port}</button>{copied === connection.id && <span className="copy-inline-state" role="status" aria-live="polite"><Check size={12} />已复制</span>}</dd></div>
               <div><dt>连接用户</dt><dd>{connection.username || "未启用鉴权"}</dd></div>
               {connection.type === "etcd" ? <div><dt>集群成员</dt><dd data-tooltip-content={connection.endpoints?.join("\n")}>{connection.endpoints?.length ?? 0} 个已发现端点</dd></div> : <div><dt>节点地区</dt><dd className="region-value"><RegionFlag region={connection.region} /><span>{connection.region || "未知"}</span></dd></div>}
+              {connection.type === "MongoDB" && <div><dt>增量备份预检</dt><dd data-tooltip-content={connection.mongoBackupReadiness?.message}>{mongoBackupReadinessLabel(connection)}</dd></div>}
               <div><dt>备注</dt><dd>{connection.note || "未填写"}</dd></div>
             </dl>
             <div className="connection-card-foot">
@@ -516,12 +522,12 @@ export function Connections({
             <p className="field-hint">{seedDataHint(seedDataModal.connection.type)}</p>
             {seedDataModal.loading ? <div className="loading-copy">正在加载数据库...</div> : <>
               <SelectField label="目标数据库" value={seedDataModal.database} onChange={(database) => setSeedDataModal({ ...seedDataModal, database, error: "", result: null })}>{seedDataModal.databases.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</SelectField>
-              <SelectField label="写入模板" value={seedDataModal.template} onChange={(template) => setSeedDataModal({ ...seedDataModal, template: template as "users" | "orders" | "products", error: "", result: null })}><option value="users">用户数据</option><option value="orders">订单数据</option><option value="products">商品数据</option></SelectField>
+              <SelectField label="写入模板" value={seedDataModal.template} onChange={(template) => setSeedDataModal({ ...seedDataModal, template: template as "users" | "orders" | "products" | "payload", error: "", result: null })}><option value="users">用户数据</option><option value="orders">订单数据</option><option value="products">商品数据</option><option value="payload">高熵负载测试</option></SelectField>
               <SelectField label="写入方式" value={seedDataModal.mode} onChange={(mode) => setSeedDataModal({ ...seedDataModal, mode: mode as "append" | "replace", error: "", result: null })}><option value="append">追加写入</option><option value="replace">覆盖写入</option></SelectField>
               <label className="field"><span>写入条数</span><input type="number" min={1} max={50000} value={seedDataModal.rows} onChange={(event) => setSeedDataModal({ ...seedDataModal, rows: event.target.value, error: "", result: null })} /></label>
             </>}
             {seedDataModal.error && <div className="form-error left">{seedDataModal.error}</div>}
-            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table}{seedDataTargetSuffix(seedDataModal.connection.type)} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : "商品"}数据。</div>}
+            {seedDataModal.result && <div className="info-banner">已向 {seedDataModal.result.database} 的 {seedDataModal.result.table}{seedDataTargetSuffix(seedDataModal.connection.type)} {seedDataModal.result.mode === "replace" ? "覆盖写入" : "追加写入"} {seedDataModal.result.rows} 条{seedDataModal.result.template === "users" ? "用户" : seedDataModal.result.template === "orders" ? "订单" : seedDataModal.result.template === "products" ? "商品" : "高熵负载"}数据。</div>}
             <div className="modal-actions"><Button type="button" variant="secondary" onClick={() => setSeedDataModal(null)}>关闭</Button><Button type="submit" disabled={seedDataModal.loading || seedDataModal.submitting || !seedDataModal.database}>{seedDataModal.submitting ? "正在写入..." : "开始写入"}</Button></div>
           </form>
         </div>
@@ -576,6 +582,7 @@ export function Connections({
             <div className="field-row"><label className="field grow"><span>主机地址</span><input required value={editModal.form.host} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, host: e.target.value }, error: "" })} /></label><label className="field port"><span>端口</span><input required type="number" value={editModal.form.port} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, port: e.target.value }, error: "" })} /></label></div>
             <label className="field"><span>用户名{editModal.connection.type === "etcd" ? "（可选）" : ""}</span><input required={editModal.connection.type !== "etcd"} value={editModal.form.username} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, username: e.target.value }, error: "" })} /></label>
             <label className="field"><span>密码</span><input type="password" value={editModal.form.password} onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, password: e.target.value }, error: "" })} placeholder="留空则保持当前密码不变" /></label>
+            {editModal.connection.type === "MongoDB" && <MongoConnectionModeFields mode={editModal.form.mongoMode} seeds={editModal.form.mongoSeeds} onModeChange={(mongoMode) => setEditModal({ ...editModal, form: { ...editModal.form, mongoMode }, error: "" })} onSeedsChange={(mongoSeeds) => setEditModal({ ...editModal, form: { ...editModal.form, mongoSeeds }, error: "" })} />}
             <EtcdTLSModeGuide enabled={editModal.connection.type === "etcd"} />
             <SelectField label={connectionSecurityConfig(editModal.connection.type).label} value={editModal.form.sslMode} onChange={(sslMode) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode }, error: "" })}>
               {connectionSecurityConfig(editModal.connection.type).options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -608,6 +615,7 @@ export function Connections({
             {formErrors.name && <div className="form-error left field-error">{formErrors.name}</div>}
             <div className="field-row"><label className="field grow"><span>{requiredLabel("主机地址")}</span><input value={form.host} className={formErrors.host ? "invalid" : ""} onChange={(e) => { const nextForm = { ...form, host: e.target.value }; setForm(nextForm); setFormErrors((current) => ({ ...current, host: validateConnectionForm(nextForm).host })); }} onBlur={(e) => validateSingleField("host", { ...form, host: e.target.value })} placeholder="10.24.8.16" /></label><label className="field port"><span>{requiredLabel("端口")}</span><input inputMode="numeric" pattern="[0-9]*" maxLength={5} value={form.port} className={formErrors.port ? "invalid" : ""} onBeforeInput={(e) => { const value = (e as unknown as { data?: string }).data ?? ""; if (value && /\D/.test(value)) e.preventDefault(); }} onChange={(e) => { const next = e.target.value.replace(/[^\d]/g, "").slice(0, 5); const nextForm = { ...form, port: next }; setForm(nextForm); setFormErrors((current) => ({ ...current, port: validateConnectionForm(nextForm).port })); }} onBlur={(e) => validateSingleField("port", { ...form, port: e.target.value })} /></label></div>
             {(formErrors.host || formErrors.port) && <div className="form-error left field-error">{formErrors.host ?? formErrors.port}</div>}
+            {form.type === "MongoDB" && <MongoConnectionModeFields mode={form.mongoMode} seeds={form.mongoSeeds} onModeChange={(mongoMode) => setForm({ ...form, mongoMode })} onSeedsChange={(mongoSeeds) => setForm({ ...form, mongoSeeds })} />}
             <label className="field"><span>{form.type === "etcd" ? "用户名（未启用鉴权可留空）" : requiredLabel("用户名")}</span><input value={form.username} className={formErrors.username ? "invalid" : ""} onChange={(e) => { updateFormField("username", e.target.value); setFormErrors((current) => ({ ...current, username: undefined })); }} onBlur={(e) => validateSingleField("username", { ...form, username: e.target.value })} placeholder={form.type === "etcd" ? "root（可选）" : "migration_user"} /></label>
             {formErrors.username && <div className="form-error left field-error">{formErrors.username}</div>}
             <label className="field"><span>{form.type === "etcd" ? "密码（可选）" : requiredLabel("密码")}</span><input type="password" value={form.password} className={formErrors.password ? "invalid" : ""} onChange={(e) => { updateFormField("password", e.target.value); setFormErrors((current) => ({ ...current, password: undefined })); }} onBlur={(e) => validateSingleField("password", { ...form, password: e.target.value })} /></label>
@@ -669,6 +677,14 @@ function connectionHealthLabel(connection: DatabaseConnection) {
   if (connection.status === "connected") return `${connection.latency}ms`;
   if (connection.status === "untested") return "点击测试";
   return "网络不可达";
+}
+
+function mongoBackupReadinessLabel(connection: DatabaseConnection) {
+  const readiness = connection.mongoBackupReadiness;
+  if (!readiness) return "未检查";
+  if (readiness.status === "ready") return `可启用 · ${readiness.oplogWindowHours?.toFixed(1) ?? "-"}h`;
+  if (readiness.status === "warning") return `需扩容 · ${readiness.oplogWindowHours?.toFixed(1) ?? "-"}h`;
+  return "不可用";
 }
 
 function EtcdTLSModeGuide({ enabled }: { enabled: boolean }) {
@@ -747,6 +763,7 @@ function scheduledBackupTime(job: BackupJob) {
 }
 
 function scheduleLabel(job: BackupJob) {
+	if (job.scheduleFrequency === "hourly") return `每小时第 ${job.scheduleTime?.slice(3) ?? "00:00"}`;
   const time = normalizeScheduleClock(job.scheduleTime);
   if (job.scheduleFrequency === "weekly") return `每周${weekdays[job.scheduleWeekday ?? 1] ?? "一"} ${time}`;
   if (job.scheduleFrequency === "monthly") return `每月 ${job.scheduleMonthDay ?? 1} 日 ${time}`;
@@ -902,7 +919,29 @@ function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
     password: "",
     sslMode: defaultSecurityMode(type),
     tlsConfig: emptyTLSConfig(),
+    mongoMode: "direct",
+    mongoSeeds: "",
   };
+}
+
+function connectionInputFromForm(form: ConnectionFormState): Omit<ConnectionInput, "port" | "validate"> {
+  const { mongoMode, mongoSeeds, ...input } = form;
+  return {
+    ...input,
+    endpoints: form.type === "MongoDB" && mongoMode === "replica_set" ? mongoSeeds.split(/[\n,]/).map((value) => value.trim()).filter(Boolean) : [],
+  };
+}
+
+function MongoConnectionModeFields({ mode, seeds, onModeChange, onSeedsChange }: { mode: "direct" | "replica_set"; seeds: string; onModeChange: (mode: "direct" | "replica_set") => void; onSeedsChange: (seeds: string) => void }) {
+  return (
+    <>
+      <SelectField label="连接模式" value={mode} onChange={(value) => onModeChange(value as "direct" | "replica_set")}>
+        <option value="direct">直连节点</option>
+        <option value="replica_set">副本集自动发现 Primary</option>
+      </SelectField>
+      {mode === "replica_set" && <label className="field"><span>副本集种子节点</span><textarea value={seeds} onChange={(event) => onSeedsChange(event.target.value)} placeholder="192.168.2.113:27017&#10;192.168.2.114:27017&#10;192.168.2.115:27017" /><small className="field-hint">每行一个节点，也可用逗号分隔。至少填写一个可访问的种子节点；系统会自动发现并连接当前 Primary。</small></label>}
+    </>
+  );
 }
 
 function suggestConnectionName(type: DatabaseType, host: string, port: string) {

@@ -183,7 +183,7 @@ export const api = {
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`),
   createDatabase: (connectionId: string, name: string) =>
     request<DatabaseInfo[]>(`/connections/${connectionId}/databases`, { method: "POST", body: JSON.stringify({ name }) }),
-  seedData: (connectionId: string, database: string, rows: number, mode: "append" | "replace", template: "users" | "orders" | "products") =>
+  seedData: (connectionId: string, database: string, rows: number, mode: "append" | "replace", template: "users" | "orders" | "products" | "payload") =>
     request<SeedDataResult>(`/connections/${connectionId}/seed`, { method: "POST", body: JSON.stringify({ database, rows, mode, template }) }),
   storages: () => request<RemoteStorage[]>("/storages"),
   createStorage: (input: RemoteStorageInput) =>

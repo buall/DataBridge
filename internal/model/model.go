@@ -16,7 +16,7 @@ type ConnectionInput struct {
 	SSLMode   string              `json:"sslMode"`
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
 	Validate  *bool               `json:"validate,omitempty"`
-	Endpoints []string            `json:"-"`
+	Endpoints []string            `json:"endpoints,omitempty"`
 	Status    string              `json:"-"`
 }
 
@@ -30,7 +30,7 @@ type UpdateConnectionInput struct {
 	Password  string              `json:"password,omitempty"`
 	SSLMode   string              `json:"sslMode"`
 	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
-	Endpoints []string            `json:"-"`
+	Endpoints []string            `json:"endpoints,omitempty"`
 }
 
 type DuplicateConnectionInput struct {
@@ -55,23 +55,32 @@ func (c ConnectionTLSConfig) Empty() bool {
 }
 
 type Connection struct {
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
-	Note      string              `json:"note,omitempty"`
-	Type      string              `json:"type"`
-	Host      string              `json:"host"`
-	Port      int                 `json:"port"`
-	Region    string              `json:"region,omitempty"`
-	Username  string              `json:"username"`
-	SSLMode   string              `json:"sslMode"`
-	Status    string              `json:"status"`
-	LatencyMS int64               `json:"latency"`
-	Version   string              `json:"version,omitempty"`
-	CreatedAt time.Time           `json:"createdAt"`
-	Password  string              `json:"-"`
-	TLSConfig ConnectionTLSConfig `json:"-"`
-	Endpoints []string            `json:"endpoints,omitempty"`
-	Favorite  bool                `json:"favorite"`
+	ID                   string                `json:"id"`
+	Name                 string                `json:"name"`
+	Note                 string                `json:"note,omitempty"`
+	Type                 string                `json:"type"`
+	Host                 string                `json:"host"`
+	Port                 int                   `json:"port"`
+	Region               string                `json:"region,omitempty"`
+	Username             string                `json:"username"`
+	SSLMode              string                `json:"sslMode"`
+	Status               string                `json:"status"`
+	LatencyMS            int64                 `json:"latency"`
+	Version              string                `json:"version,omitempty"`
+	CreatedAt            time.Time             `json:"createdAt"`
+	Password             string                `json:"-"`
+	TLSConfig            ConnectionTLSConfig   `json:"-"`
+	Endpoints            []string              `json:"endpoints,omitempty"`
+	MongoBackupReadiness *MongoBackupReadiness `json:"mongoBackupReadiness,omitempty"`
+	Favorite             bool                  `json:"favorite"`
+}
+
+type MongoBackupReadiness struct {
+	Status           string    `json:"status"`
+	ReplicaSet       string    `json:"replicaSet,omitempty"`
+	OplogWindowHours float64   `json:"oplogWindowHours,omitempty"`
+	Message          string    `json:"message"`
+	CheckedAt        time.Time `json:"checkedAt"`
 }
 
 type StorageInput struct {
@@ -172,29 +181,41 @@ type MigrationRequest struct {
 }
 
 type BackupRequest struct {
-	Name                     string             `json:"name"`
-	SourceID                 string             `json:"sourceId"`
-	SourceDatabase           string             `json:"sourceDatabase"`
-	SourceDatabases          []string           `json:"sourceDatabases,omitempty"`
-	DestinationType          string             `json:"destinationType"`
-	Destination              string             `json:"destination"`
-	BackupTargets            []BackupTarget     `json:"backupTargets,omitempty"`
-	PrimaryDestinationID     string             `json:"primaryDestinationId,omitempty"`
-	ScheduleMode             string             `json:"scheduleMode,omitempty"`
-	ScheduleFrequency        string             `json:"scheduleFrequency,omitempty"`
-	ScheduleTime             string             `json:"scheduleTime,omitempty"`
-	ScheduleWeekday          int                `json:"scheduleWeekday,omitempty"`
-	ScheduleMonthDay         int                `json:"scheduleMonthDay,omitempty"`
-	RetentionDays            int                `json:"retentionDays,omitempty"`
-	RetentionMonths          int                `json:"retentionMonths,omitempty"`
-	Notification             BackupNotification `json:"notification,omitempty"`
-	NotificationEnabled      bool               `json:"notificationEnabled,omitempty"`
-	NotificationMethod       string             `json:"notificationMethod,omitempty"`
-	NotificationTarget       string             `json:"notificationTarget,omitempty"`
-	NotificationRecipientIDs []string           `json:"notificationRecipientIds,omitempty"`
-	NotificationTrigger      string             `json:"notificationTrigger,omitempty"`
-	Storage                  *RemoteStorage     `json:"-"`
-	TargetStorages           []RemoteStorage    `json:"-"`
+	Name                     string               `json:"name"`
+	SourceID                 string               `json:"sourceId"`
+	SourceDatabase           string               `json:"sourceDatabase"`
+	SourceDatabases          []string             `json:"sourceDatabases,omitempty"`
+	DestinationType          string               `json:"destinationType"`
+	Destination              string               `json:"destination"`
+	BackupTargets            []BackupTarget       `json:"backupTargets,omitempty"`
+	PrimaryDestinationID     string               `json:"primaryDestinationId,omitempty"`
+	ScheduleMode             string               `json:"scheduleMode,omitempty"`
+	ScheduleFrequency        string               `json:"scheduleFrequency,omitempty"`
+	ScheduleTime             string               `json:"scheduleTime,omitempty"`
+	ScheduleWeekday          int                  `json:"scheduleWeekday,omitempty"`
+	ScheduleMonthDay         int                  `json:"scheduleMonthDay,omitempty"`
+	BackupMode               string               `json:"backupMode,omitempty"`
+	FullBackupIntervalDays   int                  `json:"fullBackupIntervalDays,omitempty"`
+	RestoreDrillEnabled      bool                 `json:"restoreDrillEnabled,omitempty"`
+	RestoreDrillTargetID     string               `json:"restoreDrillTargetId,omitempty"`
+	MongoOplogStart          *MongoOplogTimestamp `json:"-"`
+	RetentionDays            int                  `json:"retentionDays,omitempty"`
+	RetentionMonths          int                  `json:"retentionMonths,omitempty"`
+	Notification             BackupNotification   `json:"notification,omitempty"`
+	NotificationEnabled      bool                 `json:"notificationEnabled,omitempty"`
+	NotificationMethod       string               `json:"notificationMethod,omitempty"`
+	NotificationTarget       string               `json:"notificationTarget,omitempty"`
+	NotificationRecipientIDs []string             `json:"notificationRecipientIds,omitempty"`
+	NotificationTrigger      string               `json:"notificationTrigger,omitempty"`
+	Storage                  *RemoteStorage       `json:"-"`
+	TargetStorages           []RemoteStorage      `json:"-"`
+}
+
+// MongoOplogTimestamp identifies an operation in a replica set's oplog.
+// The increment distinguishes writes occurring in the same wall-clock second.
+type MongoOplogTimestamp struct {
+	Seconds   uint32 `json:"seconds"`
+	Increment uint32 `json:"increment"`
 }
 
 type RestoreBackupRequest struct {
@@ -302,13 +323,18 @@ type BackupArtifactCopy struct {
 }
 
 type BackupArtifactVersion struct {
-	ID         string           `json:"id"`
-	StartedAt  time.Time        `json:"startedAt"`
-	FinishedAt *time.Time       `json:"finishedAt,omitempty"`
-	Status     MigrationStatus  `json:"status"`
-	Stage      string           `json:"stage,omitempty"`
-	Artifacts  []BackupArtifact `json:"artifacts,omitempty"`
-	Error      string           `json:"error,omitempty"`
+	ID              string               `json:"id"`
+	StartedAt       time.Time            `json:"startedAt"`
+	FinishedAt      *time.Time           `json:"finishedAt,omitempty"`
+	Status          MigrationStatus      `json:"status"`
+	Stage           string               `json:"stage,omitempty"`
+	Artifacts       []BackupArtifact     `json:"artifacts,omitempty"`
+	Error           string               `json:"error,omitempty"`
+	BackupMode      string               `json:"backupMode,omitempty"`
+	ChainID         string               `json:"chainId,omitempty"`
+	ParentID        string               `json:"parentId,omitempty"`
+	MongoOplogStart *MongoOplogTimestamp `json:"mongoOplogStart,omitempty"`
+	MongoOplogEnd   *MongoOplogTimestamp `json:"mongoOplogEnd,omitempty"`
 }
 
 type SMTPSettings struct {
@@ -440,6 +466,13 @@ type BackupJob struct {
 	ScheduleWeekday          int                     `json:"scheduleWeekday,omitempty"`
 	ScheduleMonthDay         int                     `json:"scheduleMonthDay,omitempty"`
 	SchedulePaused           bool                    `json:"schedulePaused,omitempty"`
+	BackupMode               string                  `json:"backupMode,omitempty"`
+	FullBackupIntervalDays   int                     `json:"fullBackupIntervalDays,omitempty"`
+	RestoreDrillEnabled      bool                    `json:"restoreDrillEnabled,omitempty"`
+	RestoreDrillTargetID     string                  `json:"restoreDrillTargetId,omitempty"`
+	MongoRPOHours            float64                 `json:"mongoRpoHours,omitempty"`
+	MongoRequiredOplogHours  float64                 `json:"mongoRequiredOplogHours,omitempty"`
+	MongoOplogWindowHours    float64                 `json:"mongoOplogWindowHours,omitempty"`
 	RetentionDays            int                     `json:"retentionDays,omitempty"`
 	RetentionMonths          int                     `json:"retentionMonths,omitempty"`
 	Notification             BackupNotification      `json:"notification,omitempty"`

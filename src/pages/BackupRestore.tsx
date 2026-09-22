@@ -20,12 +20,13 @@ export function BackupRestore({
   const [versionId, setVersionId] = useState(versions[0]?.id ?? "current");
   const selectedVersion = versions.find((version) => version.id === versionId) ?? versions[0];
   const artifacts = selectedVersion?.artifacts ?? [];
+  const mongoOplogRestore = job.sourceType === "MongoDB" && job.backupMode === "mongo_oplog";
   const sourceDatabases = useMemo(() => restoreSourceDatabasesFromArtifacts(job, artifacts), [job, artifacts]);
-  const targets = connections.filter((connection) => connection.type === job.sourceType);
+  const targets = connections.filter((connection) => connection.type === job.sourceType && (!mongoOplogRestore || connection.id !== job.sourceId));
   const [targetId, setTargetId] = useState(targets[0]?.id ?? "");
   const [selectedDatabases, setSelectedDatabases] = useState<string[]>(sourceDatabases);
   const [targetDatabases, setTargetDatabases] = useState<Record<string, string>>(() => Object.fromEntries(sourceDatabases.map((database) => [database, database])));
-  const [strategy, setStrategy] = useState<"append" | "recreate">("append");
+  const [strategy, setStrategy] = useState<"append" | "recreate">(mongoOplogRestore ? "recreate" : "append");
   const [precheck, setPrecheck] = useState<RestorePrecheckResult | null>(null);
   const [prechecking, setPrechecking] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -63,6 +64,10 @@ export function BackupRestore({
       return next;
     });
   }, [sourceDatabases]);
+
+  useEffect(() => {
+    if (mongoOplogRestore) setStrategy("recreate");
+  }, [mongoOplogRestore]);
 
   useEffect(() => {
     if (!versionMenuOpen) return;
@@ -170,13 +175,13 @@ export function BackupRestore({
           </div>
         </Card>
         <Card className="restore-scope-card">
-          <div className="section-title compact"><div><h3>还原范围</h3><p>勾选要从该版本恢复的数据库。</p></div><Badge tone="blue">{selectedDatabases.length} / {sourceDatabases.length}</Badge></div>
+          <div className="section-title compact"><div><h3>还原范围</h3><p>{mongoOplogRestore ? "该备份会恢复整个 MongoDB 副本集。" : "勾选要从该版本恢复的数据库。"}</p></div><Badge tone="blue">{selectedDatabases.length} / {sourceDatabases.length}</Badge></div>
           <div className="restore-database-map restore-scope-map">
             <div className="restore-database-map-head"><span>恢复</span><span>源数据库</span><span>备份文件</span></div>
             {sourceDatabases.map((database) => {
               const artifact = artifacts.find((item) => item.database === database);
               return (
-                <div className={`restore-database-row ${selectedSet.has(database) ? "selected" : "muted"}`} key={database} role="button" tabIndex={0} aria-pressed={selectedSet.has(database)} onClick={() => toggleDatabase(database)} onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleDatabase(database); } }}>
+                <div className={`restore-database-row ${selectedSet.has(database) ? "selected" : "muted"}`} key={database} role={mongoOplogRestore ? undefined : "button"} tabIndex={mongoOplogRestore ? undefined : 0} aria-pressed={mongoOplogRestore ? undefined : selectedSet.has(database)} onClick={() => { if (!mongoOplogRestore) toggleDatabase(database); }} onKeyDown={(event) => { if (!mongoOplogRestore && (event.key === " " || event.key === "Enter")) { event.preventDefault(); toggleDatabase(database); } }}>
                   <span className={`checkbox restore-database-check ${selectedSet.has(database) ? "checked" : ""}`}>{selectedSet.has(database) && <Check size={13} />}</span>
                   <strong>{database}</strong>
                   <small>{artifact ? formatBytes(artifact.size ?? 0) : "未找到产物"}</small>
@@ -202,7 +207,7 @@ export function BackupRestore({
                 <div className={`restore-database-row ${selectedSet.has(database) ? "selected" : "muted"}`} key={database}>
                   <span className={`checkbox restore-database-check ${selectedSet.has(database) ? "checked" : ""}`}>{selectedSet.has(database) && <Check size={13} />}</span>
                   <strong>{database}</strong>
-                  <input disabled={!selectedSet.has(database)} value={targetDatabases[database] ?? ""} onChange={(event) => { setPrecheck(null); setTargetDatabases((current) => ({ ...current, [database]: event.target.value })); }} placeholder={database} />
+                  <input disabled={mongoOplogRestore || !selectedSet.has(database)} value={targetDatabases[database] ?? ""} onChange={(event) => { setPrecheck(null); setTargetDatabases((current) => ({ ...current, [database]: event.target.value })); }} placeholder={database} />
                 </div>
               ))}
             </div>
@@ -211,7 +216,7 @@ export function BackupRestore({
         <Card className="restore-execute-card">
           <div className="section-title compact"><div><h3>检查执行</h3><p>执行前检查备份文件、客户端工具、目标连接和权限。</p></div><ShieldCheck size={20} /></div>
           <SelectField label="恢复策略" value={strategy} onChange={(value) => { setPrecheck(null); setStrategy(value as "append" | "recreate"); }}>
-            <option value="append">追加导入，冲突则失败</option>
+            {!mongoOplogRestore && <option value="append">追加导入，冲突则失败</option>}
             <option value="recreate">重建目标库后恢复</option>
           </SelectField>
           {strategy === "recreate" && <div className="restore-strategy-warning">将先删除并重新创建目标数据库，再导入备份文件。目标库现有数据会被清空。</div>}

@@ -88,6 +88,18 @@ func TestNextBackupRunUsesAppTimezone(t *testing.T) {
 	}
 }
 
+func TestNextBackupRunSupportsHourlySchedule(t *testing.T) {
+	after := time.Date(2026, 9, 22, 10, 17, 0, 0, appLocation)
+	next, err := nextBackupRun(model.BackupRequest{ScheduleFrequency: "hourly", ScheduleTime: "02:30:00"}, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 9, 22, 10, 30, 0, 0, appLocation)
+	if !next.Equal(want) {
+		t.Fatalf("next hourly run = %s, want %s", next, want)
+	}
+}
+
 func TestFailedScheduledBackupRemainsEligibleForNextRun(t *testing.T) {
 	next := time.Now().Add(time.Hour)
 	job := model.BackupJob{
@@ -552,6 +564,59 @@ func TestNormalizeBackupScheduleRetentionDays(t *testing.T) {
 	normalizeBackupSchedule(&request)
 	if request.RetentionDays != 0 {
 		t.Fatalf("one-time retention days = %d, want 0", request.RetentionDays)
+	}
+}
+
+func TestMongoOplogRestoreVersionsIncludesContinuousChain(t *testing.T) {
+	base := time.Date(2026, 9, 1, 2, 0, 0, 0, time.UTC)
+	artifact := []model.BackupArtifact{{Database: mongoReplicaSetScope, Name: "backup.tar.gz"}}
+	job := model.BackupJob{
+		SourceType: "MongoDB", BackupMode: mongoOplogBackupMode,
+		ArtifactVersions: []model.BackupArtifactVersion{
+			{ID: "full", StartedAt: base, Status: model.StatusCompleted, BackupMode: "full", ChainID: "chain", Artifacts: artifact},
+			{ID: "inc-1", StartedAt: base.Add(time.Hour), Status: model.StatusCompleted, BackupMode: "incremental", ChainID: "chain", ParentID: "full", Artifacts: artifact},
+			{ID: "inc-2", StartedAt: base.Add(2 * time.Hour), Status: model.StatusCompleted, BackupMode: "incremental", ChainID: "chain", ParentID: "inc-1", Artifacts: artifact},
+		},
+	}
+	versions, selected, err := mongoOplogRestoreVersions(job, "inc-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != "inc-2" || strings.Join(versions, ",") != "full,inc-1,inc-2" {
+		t.Fatalf("restore chain = %#v, selected = %q", versions, selected)
+	}
+}
+
+func TestMongoExpiredBackupVersionIDsKeepsCurrentChain(t *testing.T) {
+	now := time.Date(2026, 9, 21, 2, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -40)
+	current := now.AddDate(0, 0, -2)
+	job := model.BackupJob{
+		SourceType: "MongoDB", BackupMode: mongoOplogBackupMode,
+		ArtifactVersions: []model.BackupArtifactVersion{
+			{ID: "old-full", StartedAt: old, Status: model.StatusCompleted, BackupMode: "full", ChainID: "old"},
+			{ID: "old-inc", StartedAt: old.AddDate(0, 0, 35), Status: model.StatusCompleted, BackupMode: "incremental", ChainID: "old", ParentID: "old-full"},
+			{ID: "current-full", StartedAt: current, Status: model.StatusCompleted, BackupMode: "full", ChainID: "current"},
+			{ID: "current-inc", StartedAt: current.Add(time.Hour), Status: model.StatusCompleted, BackupMode: "incremental", ChainID: "current", ParentID: "current-full"},
+		},
+	}
+	expired := mongoExpiredBackupVersionIDs(job, "current-inc", now.AddDate(0, 0, -30))
+	if !expired["old-full"] || !expired["old-inc"] || expired["current-full"] || expired["current-inc"] {
+		t.Fatalf("expired versions = %#v", expired)
+	}
+}
+
+func TestMongoOplogRequirementHoursUsesRPODurationAndBuffer(t *testing.T) {
+	request := model.BackupRequest{ScheduleMode: "scheduled", ScheduleFrequency: "daily"}
+	if got := mongoOplogRequirementHours(request, 6*time.Hour); got != 48 {
+		t.Fatalf("daily requirement = %.1f, want 48", got)
+	}
+	if got := mongoOplogRequirementHours(request, 18*time.Hour); got != 54 {
+		t.Fatalf("daily requirement = %.1f, want 54", got)
+	}
+	request.ScheduleFrequency = "weekly"
+	if got := mongoOplogRequirementHours(request, 0); got != 180 {
+		t.Fatalf("weekly requirement = %.1f, want 180", got)
 	}
 }
 

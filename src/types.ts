@@ -17,8 +17,17 @@ export interface DatabaseConnection {
   latency: number;
   version?: string;
   endpoints?: string[];
+  mongoBackupReadiness?: MongoBackupReadiness;
   createdAt: string;
   favorite?: boolean;
+}
+
+export interface MongoBackupReadiness {
+  status: "ready" | "warning" | "unavailable" | string;
+  replicaSet?: string;
+  oplogWindowHours?: number;
+  message: string;
+  checkedAt: string;
 }
 
 export interface ConnectionTLSConfig {
@@ -37,6 +46,7 @@ export interface ConnectionInput {
   password: string;
   sslMode: string;
   tlsConfig?: ConnectionTLSConfig;
+  endpoints?: string[];
   validate?: boolean;
 }
 
@@ -189,10 +199,17 @@ export interface BackupConfig {
   backupTargets?: BackupTarget[];
   primaryDestinationId?: string;
   scheduleMode: "once" | "scheduled";
-  scheduleFrequency?: "daily" | "weekly" | "monthly";
+  scheduleFrequency?: "hourly" | "daily" | "weekly" | "monthly";
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
+  backupMode?: "full" | "mongo_oplog";
+  fullBackupIntervalDays?: number;
+	restoreDrillEnabled?: boolean;
+	restoreDrillTargetId?: string;
+  mongoRpoHours?: number;
+  mongoRequiredOplogHours?: number;
+  mongoOplogWindowHours?: number;
   retentionDays?: number;
   retentionMonths?: number;
   notificationEnabled?: boolean;
@@ -368,11 +385,18 @@ export interface BackupJob {
   backupTargets?: BackupTarget[];
   primaryDestinationId?: string;
   scheduleMode?: "once" | "scheduled";
-  scheduleFrequency?: "daily" | "weekly" | "monthly";
+  scheduleFrequency?: "hourly" | "daily" | "weekly" | "monthly";
   scheduleTime?: string;
   scheduleWeekday?: number;
   scheduleMonthDay?: number;
   schedulePaused?: boolean;
+  backupMode?: string;
+  fullBackupIntervalDays?: number;
+	restoreDrillEnabled?: boolean;
+	restoreDrillTargetId?: string;
+  mongoRpoHours?: number;
+  mongoRequiredOplogHours?: number;
+  mongoOplogWindowHours?: number;
   retentionDays?: number;
   retentionMonths?: number;
   notificationEnabled?: boolean;
@@ -386,7 +410,7 @@ export interface BackupJob {
   artifactSize?: number;
   artifactPath?: string;
   artifacts?: BackupArtifact[];
-  artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: BackupArtifact[]; error?: string }>;
+  artifactVersions?: Array<{ id: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; stage?: string; artifacts?: BackupArtifact[]; error?: string; backupMode?: string; chainId?: string; parentId?: string; mongoOplogStart?: { seconds: number; increment: number }; mongoOplogEnd?: { seconds: number; increment: number } }>;
   events: MigrationEvent[];
   favorite?: boolean;
 }

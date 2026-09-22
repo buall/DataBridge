@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, Archive, Check, ChevronDown, Clock, Database, Info, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { BackupConfig, BackupNotificationTrigger, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
@@ -24,6 +24,7 @@ export function BackupWizard({
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+	const [mongoGuideOpen, setMongoGuideOpen] = useState(false);
   const { recipients, loadingRecipients } = useNotificationRecipients();
   const [config, setConfig] = useState<BackupConfig>({
     name: "",
@@ -39,6 +40,10 @@ export function BackupWizard({
     scheduleTime: "02:00:00",
     scheduleWeekday: 1,
     scheduleMonthDay: 1,
+	backupMode: "full",
+	fullBackupIntervalDays: 7,
+	restoreDrillEnabled: false,
+	restoreDrillTargetId: "",
     retentionDays: 30,
     notificationEnabled: false,
     notificationRecipientIds: [],
@@ -97,6 +102,8 @@ export function BackupWizard({
   }, [config.sourceId]);
 
   const source = backupableConnections.find((item) => item.id === config.sourceId);
+	const mongoOplogMode = source?.type === "MongoDB" && config.backupMode === "mongo_oplog";
+	const mongoRestoreDrillTargets = backupableConnections.filter((item) => item.type === "MongoDB" && item.id !== config.sourceId);
   const selectedTargetIds = selectedBackupTargetIds(config, writableStorages);
   const primaryDestinationId = selectedTargetIds.includes(config.primaryDestinationId ?? "") ? config.primaryDestinationId ?? "" : selectedTargetIds[0] ?? "";
   const selectedTargets = selectedTargetIds.map((id) => writableStorages.find((item) => item.id === id)).filter(Boolean) as RemoteStorage[];
@@ -107,12 +114,20 @@ export function BackupWizard({
 
   async function start() {
     const validDatabaseNames = new Set(activeDatabases.map((item) => item.name));
-    const sourceDatabases = config.sourceDatabases.filter((name) => validDatabaseNames.has(name));
+    const sourceDatabases = mongoOplogMode ? ["整个副本集"] : config.sourceDatabases.filter((name) => validDatabaseNames.has(name));
     if (loading || databaseConnectionId !== config.sourceId || !sourceDatabases.length) {
       setError("请等待当前源端数据库列表加载完成，并选择要备份的数据库");
       return;
     }
-    if (config.scheduleMode === "scheduled" && config.notificationEnabled && !(config.notificationRecipientIds?.length)) {
+	if (mongoOplogMode && config.scheduleMode !== "scheduled") {
+		setError("MongoDB oplog 增量备份必须使用定时任务");
+		return;
+	}
+	if (mongoOplogMode && config.restoreDrillEnabled && !config.restoreDrillTargetId) {
+		setError("请为全量后恢复演练选择独立的目标副本集");
+		return;
+	}
+	if (config.scheduleMode === "scheduled" && config.notificationEnabled && !(config.notificationRecipientIds?.length)) {
       setError("请至少选择一个通知接收者，或关闭备份通知");
       return;
     }
@@ -159,8 +174,9 @@ export function BackupWizard({
           <div className="card-heading"><h3>{source?.type === "etcd" ? "选择要备份的 etcd 集群" : "选择要备份的数据库"}</h3><p>{source?.type === "etcd" ? "etcd 备份固定包含整个集群，不支持按 key 前缀拆分。" : "当前支持 PostgreSQL、MySQL、MongoDB 和 Neo4j 全库导出。"}</p></div>
           <div className="config-grid backup-source-grid">
             <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase || "数据库"} 备份`} /></label>
-            <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [] })} />
-            {source?.type === "etcd" ? <div className="info-banner">备份范围：整个集群</div> : <DatabaseMultiSelect type={source?.type} databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
+            <SourceConnectionSelect connectionId={config.sourceId} connections={connections} onChange={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", sourceDatabases: [], backupMode: "full", fullBackupIntervalDays: 7 })} />
+			{source?.type === "MongoDB" && <SelectField label="备份策略" value={config.backupMode ?? "full"} onChange={(backupMode) => setConfig({ ...config, backupMode: backupMode as BackupConfig["backupMode"], sourceDatabase: backupMode === "mongo_oplog" ? "整个副本集" : "", sourceDatabases: backupMode === "mongo_oplog" ? ["整个副本集"] : [] })}><option value="full">全量备份</option><option value="mongo_oplog">全量基线 + oplog 增量</option></SelectField>}
+			{source?.type === "etcd" || mongoOplogMode ? <div className="info-banner">备份范围：{source?.type === "etcd" ? "整个集群" : "整个副本集"}</div> : <DatabaseMultiSelect type={source?.type} databases={activeDatabases} loading={loading} selected={config.sourceDatabases} onChange={(sourceDatabases) => setConfig({ ...config, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
           </div>
           {loading && <p className="loading-copy">正在加载数据库...</p>}
         </Card>
@@ -179,20 +195,22 @@ export function BackupWizard({
             }}
           />
           <div className="schedule-panel">
-            <span>执行方式</span>
+			<div className="schedule-panel-heading"><span>执行方式</span>{mongoOplogMode && <button type="button" className="oplog-guide-trigger" onClick={() => setMongoGuideOpen(true)}><Info size={15} />Oplog 与 RPO 说明</button>}</div>
             <div className="segmented-control">
               <button type="button" className={config.scheduleMode === "once" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "once", notificationEnabled: false, notificationRecipientIds: [], notificationTrigger: "all" })}>一次性</button>
               <button type="button" className={config.scheduleMode === "scheduled" ? "active" : ""} onClick={() => setConfig({ ...config, scheduleMode: "scheduled" })}>定时</button>
             </div>
-            {config.scheduleMode === "scheduled" && (
+			{config.scheduleMode === "scheduled" && (
               <div className="scheduled-options">
                 <div className="schedule-grid">
-                  <SelectField label="频率" value={config.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setConfig({ ...config, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
+                  <SelectField label="频率" value={config.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setConfig({ ...config, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
                   <TimeSelect value={config.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setConfig({ ...config, scheduleTime })} />
                   {config.scheduleFrequency === "weekly" && <SelectField label="每周" value={config.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setConfig({ ...config, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
                   {config.scheduleFrequency === "monthly" && <SelectField label="每月" value={config.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setConfig({ ...config, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
-                  <RetentionDaysField value={config.retentionDays ?? 30} onChange={(retentionDays) => setConfig({ ...config, retentionDays })} />
+				  <RetentionDaysField value={config.retentionDays ?? 30} onChange={(retentionDays) => setConfig({ ...config, retentionDays })} />
+				  {mongoOplogMode && <SelectField label="全量基线周期" value={config.fullBackupIntervalDays ?? 7} onChange={(fullBackupIntervalDays) => setConfig({ ...config, fullBackupIntervalDays: Number(fullBackupIntervalDays) })}><option value={1}>每天</option><option value={3}>每 3 天</option><option value={7}>每周</option><option value={14}>每 2 周</option><option value={30}>每月</option></SelectField>}
                 </div>
+				{mongoOplogMode && <div className="notification-panel"><button type="button" className="toggle-row" onClick={() => setConfig({ ...config, restoreDrillEnabled: !config.restoreDrillEnabled })}><span className={`switch ${config.restoreDrillEnabled ? "on" : ""}`}><i /></span><div><strong>全量后恢复演练</strong><small>每次生成全量基线后，恢复到独立的目标副本集并校验</small></div></button>{config.restoreDrillEnabled && <SelectField label="演练目标副本集" value={config.restoreDrillTargetId ?? ""} onChange={(restoreDrillTargetId) => setConfig({ ...config, restoreDrillTargetId })}><option value="">选择独立 MongoDB 连接</option>{mongoRestoreDrillTargets.map((connection) => <option key={connection.id} value={connection.id}>{connection.name} · {connection.host}:{connection.port}</option>)}</SelectField>}</div>}
                 <div className="notification-panel">
                   <button type="button" className="toggle-row" onClick={() => setConfig({ ...config, notificationEnabled: !config.notificationEnabled, notificationTrigger: config.notificationTrigger ?? "all" })}><span className={`switch ${config.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>选择定时任务结束后的通知发送范围</small></div></button>
                   {config.notificationEnabled && (
@@ -220,8 +238,15 @@ export function BackupWizard({
         <span>备份文件会写入本地任务记录，密钥仍仅在后端加密保存</span>
         <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || databaseConnectionId !== config.sourceId || !config.sourceDatabases.length || !primaryDestinationId} onClick={() => step === 2 ? start() : setStep(step + 1)}>{starting ? "正在创建..." : step === 2 ? config.scheduleMode === "scheduled" ? "创建计划" : "启动备份" : "下一步"}<ArrowRight size={16} /></Button></div>
       </div>
+		{mongoGuideOpen && <MongoOplogGuide onClose={() => setMongoGuideOpen(false)} />}
     </div>
   );
+}
+
+function MongoOplogGuide({ onClose }: { onClose: () => void }) {
+  const inspectCommand = "db.getReplicationInfo().timeDiffHours\nrs.status().members.map(m => ({ name: m.name, state: m.stateStr }))";
+  const resizeCommand = "use admin\ndb.adminCommand({\n  replSetResizeOplog: 1,\n  size: Double(16384),\n  minRetentionHours: Double(72)\n})";
+  return <div className="modal-backdrop mongo-guide-backdrop" onMouseDown={onClose}><div className="modal mongo-guide-modal" role="dialog" aria-modal="true" aria-labelledby="mongo-oplog-guide-title" onMouseDown={(event) => event.stopPropagation()}><div className="modal-head"><div><h3 id="mongo-oplog-guide-title">MongoDB 增量备份说明</h3><p>副本集 oplog、RPO 与容量配置</p></div><button type="button" className="plain-icon" aria-label="关闭说明" onClick={onClose}><X size={18} /></button></div><div className="mongo-guide-content"><section><h4>核心名词</h4><dl><div><dt>oplog</dt><dd>副本集记录数据变更的滚动日志。增量备份依赖它获取两次备份之间的变化。</dd></div><div><dt>全量基线</dt><dd>完整副本集快照。恢复时必须先恢复基线，再按顺序重放后续增量。</dd></div><div><dt>RPO</dt><dd>最多可接受的数据丢失时间。每小时增量约对应 1 小时 RPO，每天增量约对应 24 小时 RPO。</dd></div><div><dt>RTO</dt><dd>故障后恢复到可用状态所需时间，受全量大小、增量数量和目标环境性能影响。</dd></div></dl></section><section><h4>系统如何判断</h4><p>所需 oplog 窗口 = 增量间隔 + 最近全量耗时 + 12 小时缓冲；生产保护下限为 48 小时。窗口不足时，系统会拒绝创建新任务或在运行前告警。</p><pre><code>{inspectCommand}</code></pre></section><section><h4>自建副本集扩容</h4><p>在每个成员上分别执行，先 Secondary 后 Primary。示例将最大 oplog 调整到 16 GiB，并尽量保留至少 72 小时；数值必须结合实际写入量和磁盘余量确定。</p><pre><code>{resizeCommand}</code></pre><p>此命令可在线生效，但不会自动同步到其他成员。请同时把 <code>replication.oplogSizeMB</code> 和 <code>storage.oplogMinRetentionHours</code> 写入每个成员的启动配置，避免重启后配置不一致。不要降低现有 oplog 大小或保留小时数，降低会截断旧日志并可能导致 Secondary 需要重新同步。</p></section><section><h4>托管服务</h4><p>MongoDB Atlas 不支持此自建命令，应在 Atlas 控制台设置 Minimum Oplog Window。执行任何扩容前先确认各成员磁盘余量与备份窗口。</p><a href="https://www.mongodb.com/docs/manual/reference/command/replsetresizeoplog/" target="_blank" rel="noreferrer">MongoDB 官方 oplog 调整文档</a></section></div><div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>关闭</Button></div></div></div>;
 }
 
 const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -302,6 +327,7 @@ export function BackupTargetSelector({
 
 function scheduleLabel(config: BackupConfig) {
   if (config.scheduleMode !== "scheduled") return "一次性立即执行";
+	if (config.scheduleFrequency === "hourly") return `每小时第 ${(config.scheduleTime ?? "02:00:00").slice(3)}`;
   if (config.scheduleFrequency === "weekly") return `每周${weekdays[config.scheduleWeekday ?? 1]} ${config.scheduleTime}`;
   if (config.scheduleFrequency === "monthly") return `每月 ${config.scheduleMonthDay ?? 1} 日 ${config.scheduleTime}`;
   return `每天 ${config.scheduleTime}`;

@@ -7,5 +7,6 @@ backups/
 outputs/
 *.tsbuildinfo
 .DS_Store
+mongo-replica.env
 scripts/compatibility/reports/*
 !scripts/compatibility/reports/.gitkeep
