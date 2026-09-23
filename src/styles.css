@@ -147,6 +147,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .page-heading-actions { display: flex; align-items: center; gap: 10px; }
 .runtime-heading > div:first-child > div { display: flex; align-items: center; gap: 14px; }
 .runtime-heading > div:last-child { display: flex; gap: 10px; }
+.runtime-heading > div:first-child { min-width: 0; }
+.runtime-source-summary { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .runtime-actions { flex-wrap: wrap; justify-content: flex-end; }
 .runtime-actions .button { min-height: 38px; }
 .section-title h3 { font-size: 16px; }
@@ -1165,6 +1167,12 @@ h1, h2, h3, h4, p { margin: 0; }
     gap: 12px;
   }
   .runtime-heading > div:first-child > div { align-items: flex-start; }
+  .runtime-source-summary {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
   .page-heading > div,
   .runtime-heading > div:first-child,
   .section-title > div,
@@ -1606,9 +1614,42 @@ h1, h2, h3, h4, p { margin: 0; }
   .migration-list-table,
   .backup-list-table { padding: 14px; }
   .modal-head { grid-template-columns: minmax(0, 1fr) 36px; }
-  .step { min-width: 160px; }
-  .step strong { font-size: 11px; }
-  .step i { margin: 0 12px; }
+  .connections-grid,
+  .connection-card,
+  .connection-card-head,
+  .connection-card-head > div { min-width: 0; }
+  .connection-card-head > div:nth-child(2) { flex: 1; }
+  .connection-card-head > div:nth-child(2) > strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .connection-card dl { margin: 18px 0 14px; gap: 8px; }
+  .connection-card dl div {
+    grid-template-columns: 1fr;
+    gap: 5px;
+    padding: 10px 12px;
+    border: 1px solid #edf2f7;
+    border-radius: 8px;
+    background: #fbfdff;
+  }
+  .connection-card dd,
+  .connection-card dd.host-address-value,
+  .connection-card .copy-inline {
+    text-align: left;
+    justify-content: flex-start;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .connection-card .host-address-value .copy-inline { margin-left: 0; }
+  .connection-card-foot { min-width: 0; }
+  .stepper { overflow-x: visible; justify-content: stretch; padding-left: 2px; padding-right: 2px; }
+  .step { flex: 1 1 0; min-width: 0; }
+  .step:last-child { flex: 1 1 0; }
+  .step strong { margin-left: 7px; font-size: 11px; white-space: nowrap; }
+  .step i { min-width: 8px; margin: 0 8px; }
   .confirmation-grid > div,
   .quality-score,
   .check-card { padding: 14px; }
