@@ -12,10 +12,91 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"databridge/internal/model"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+func TestCommandCancellationPreservesContextError(t *testing.T) {
+	command := filepath.Join(t.TempDir(), "blocking-export")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nsleep 30 &\nprintf ready > \"$DATABRIDGE_TEST_COMMAND_READY\"\nwait\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []string{"buffered", "writer-env", "writer"} {
+		t.Run(variant, func(t *testing.T) {
+			ready := filepath.Join(t.TempDir(), "ready")
+			t.Setenv("DATABRIDGE_TEST_COMMAND_READY", ready)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				report := func(Progress) {}
+				switch variant {
+				case "buffered":
+					done <- runCommand(ctx, command, nil, os.Environ(), "export", report)
+				case "writer-env":
+					done <- runCommandToWriterEnv(ctx, command, nil, os.Environ(), "export", io.Discard, report)
+				case "writer":
+					done <- runCommandToWriter(ctx, command, nil, "export", io.Discard, report)
+				}
+			}()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("export command did not start")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled command returned %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("export command did not stop after cancellation")
+			}
+		})
+	}
+}
+
+func TestMultiDestinationStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := 0
+	destination := multiDestination{items: []destination{
+		testDestination(func(context.Context, string, string, Reporter) error { cancel(); return context.Canceled }),
+		testDestination(func(context.Context, string, string, Reporter) error { called++; return nil }),
+	}}
+	if err := destination.upload(ctx, "backup.tar.gz", "backup.tar.gz", func(Progress) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("upload cancellation = %v", err)
+	}
+	if called != 0 {
+		t.Fatal("upload continued to the next destination after cancellation")
+	}
+}
+
+type testDestination func(context.Context, string, string, Reporter) error
+
+func (d testDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	return d(ctx, filePath, objectKey, report)
+}
+
+func TestLocalDestinationHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	directory := t.TempDir()
+	destination := localDestination{directory: directory}
+	if err := destination.upload(ctx, "unused", "backup.tar.gz", func(Progress) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("upload cancellation = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "backup.tar.gz")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled upload created a file: %v", err)
+	}
+}
 
 func TestNormalizeNeo4jDumpForTargetUpgradesLegacyUniqueConstraint(t *testing.T) {
 	dumpFile := filepath.Join(t.TempDir(), "dump.cypher")

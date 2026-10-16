@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"databridge/internal/backup"
 	"databridge/internal/model"
 	"databridge/internal/store"
 )
@@ -180,6 +181,96 @@ func TestPauseAndResumeBackupSchedule(t *testing.T) {
 	}
 	if len(resumed.Events) != 2 || resumed.Events[0].Message != "定时备份调度已暂停" || resumed.Events[1].Message != "定时备份调度已恢复" {
 		t.Fatalf("schedule events = %#v", resumed.Events)
+	}
+}
+
+func TestCancelTriggeredScheduledBackupPreservesPlan(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("paused=%v", paused), func(t *testing.T) {
+			appStore, server, _ := newTestServer(t)
+			server.backup = backup.New()
+			source, err := appStore.AddConnection(model.ConnectionInput{
+				Name: "mongo", Type: "MongoDB", Host: "localhost", Port: 27017,
+			}, 0, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			storage, err := appStore.AddStorage(model.StorageInput{Type: "local", Name: "test backup storage", Path: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			toolDir := t.TempDir()
+			ready := filepath.Join(toolDir, "ready")
+			t.Setenv("DATABRIDGE_TEST_COMMAND_READY", ready)
+			t.Setenv("PATH", toolDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err := os.WriteFile(filepath.Join(toolDir, "mongodump"), []byte("#!/bin/sh\nprintf ready > \"$DATABRIDGE_TEST_COMMAND_READY\"\nexec sleep 30\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			request := model.BackupRequest{
+				SourceID: source.ID, SourceDatabase: "iot", DestinationType: "local", Destination: storage.ID,
+				ScheduleMode: "scheduled", ScheduleFrequency: "daily", ScheduleTime: "04:00:00",
+			}
+			job := model.BackupJob{
+				ID: store.NewID(), Name: "mongo backup", SourceID: source.ID, SourceName: source.Name,
+				SourceType: source.Type, SourceDatabase: "iot", Status: model.StatusScheduled,
+				ScheduleMode: "scheduled", SchedulePaused: paused, StartedAt: time.Now(), Request: request,
+				ArtifactVersions: []model.BackupArtifactVersion{{ID: "history", Status: model.StatusCompleted}},
+			}
+			if err := appStore.AddBackup(job, nil); err != nil {
+				t.Fatal(err)
+			}
+			triggerResponse := httptest.NewRecorder()
+			triggerRequest := httptest.NewRequest(http.MethodPost, "/api/backups/"+job.ID+"/trigger", nil)
+			triggerRequest.SetPathValue("id", job.ID)
+			server.triggerBackup(triggerResponse, triggerRequest)
+			if triggerResponse.Code != http.StatusAccepted {
+				t.Fatalf("trigger status = %d, body = %s", triggerResponse.Code, triggerResponse.Body.String())
+			}
+			t.Cleanup(func() { _ = appStore.CancelBackup(job.ID) })
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(ready); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("scheduled export did not start")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			cancelResponse := httptest.NewRecorder()
+			cancelRequest := httptest.NewRequest(http.MethodPost, "/api/backups/"+job.ID+"/cancel", nil)
+			cancelRequest.SetPathValue("id", job.ID)
+			server.cancelBackup(cancelResponse, cancelRequest)
+			if cancelResponse.Code != http.StatusAccepted {
+				t.Fatalf("cancel status = %d, body = %s", cancelResponse.Code, cancelResponse.Body.String())
+			}
+			deadline = time.Now().Add(5 * time.Second)
+			for {
+				updated, err := appStore.Backup(job.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if updated.FinishedAt != nil {
+					if updated.Status != model.StatusScheduled || updated.Error != "" || updated.SchedulePaused != paused {
+						t.Fatalf("cancelled schedule = %#v", updated)
+					}
+					if len(updated.ArtifactVersions) != 2 || updated.ArtifactVersions[0].Status != model.StatusCancelled || updated.ArtifactVersions[1].ID != "history" {
+						t.Fatalf("cancelled run history = %#v", updated.ArtifactVersions)
+					}
+					if paused && updated.NextRunAt != nil {
+						t.Fatal("cancellation resumed a paused schedule")
+					}
+					if !paused && (updated.NextRunAt == nil || !updated.NextRunAt.After(time.Now())) {
+						t.Fatal("cancellation lost the next scheduled run")
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("scheduled backup did not stop after cancellation")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }
 

@@ -1758,6 +1758,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 		err = s.preflightMongoFullBackupWorkspace(ctx, source, reporter)
 	}
 	for index, database := range databases {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			break
 		}
@@ -1779,6 +1782,9 @@ func (s *Server) runBackup(ctx context.Context, id string, source model.Connecti
 			err = runErr
 			break
 		}
+	}
+	if ctx.Err() != nil {
+		err = ctx.Err()
 	}
 	finished := time.Now()
 	_ = s.store.UpdateBackup(id, func(item *model.BackupJob) {

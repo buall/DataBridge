@@ -446,11 +446,16 @@ export default function App() {
   }
   async function triggerBackup(job: BackupJob) {
     const updated = await api.triggerBackup(job.id);
-    setBackups((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
+  }
+  async function cancelBackup(job: BackupJob) {
+    await api.cancelBackup(job.id);
+    const updated = await api.backup(job.id, true);
+    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
   }
   async function setBackupSchedulePaused(job: BackupJob, paused: boolean) {
     const updated = paused ? await api.pauseBackupSchedule(job.id) : await api.resumeBackupSchedule(job.id);
-    setBackups((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
   }
   async function setMigrationFavorite(job: MigrationJob) {
     const updated = await api.setMigrationFavorite(job.id, !job.favorite);
@@ -470,7 +475,7 @@ export default function App() {
     applyRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
   }, [applyRoute]);
   const completeBackup = useCallback((job: BackupJob) => {
-    setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+    setBackups((current) => current.map((item) => item.id === job.id ? job : item));
     window.history.replaceState(null, "", pathForBackup(job));
     applyRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
   }, [applyRoute]);
@@ -534,7 +539,7 @@ export default function App() {
   else if (view === "connections") content = <Connections connections={connections} backups={backups} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onToggleFavorite={async (connection) => { const updated = await api.setConnectionFavorite(connection.id, !connection.favorite); setConnections((current) => current.map((item) => item.id === updated.id ? updated : item)); }} onCreateMigration={createMigration} onBatchImported={completeBatchImport} />;
   else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} onToggleFavorite={async (storage) => { const updated = await api.setStorageFavorite(storage.id, !storage.favorite); setStorages((current) => current.map((item) => item.id === updated.id ? updated : item)); }} />;
   else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} onToggleFavorite={setMigrationFavorite} /> : <MigrationList migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} onToggleFavorite={setMigrationFavorite} />;
-  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} storages={storages} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} onTrigger={triggerBackup} onSetSchedulePaused={setBackupSchedulePaused} onToggleFavorite={setBackupFavorite} />;
+  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} storages={storages} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} onTrigger={triggerBackup} onCancel={cancelBackup} onSetSchedulePaused={setBackupSchedulePaused} onToggleFavorite={setBackupFavorite} />;
   else if (view === "settings") content = <Settings />;
   else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
 

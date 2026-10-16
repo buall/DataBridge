@@ -853,7 +853,9 @@ func (s *Store) Backup(id string) (model.BackupJob, error) {
 }
 
 func (s *Store) Backups() ([]model.BackupJob, error) {
-	rows, err := s.db.Query(`SELECT data FROM backups ORDER BY updated_at DESC`)
+	// Keep newest-created jobs first. Progress updates and scheduled runs must
+	// not change a job's position; StartedAt also changes on every execution.
+	rows, err := s.db.Query(`SELECT data FROM backups ORDER BY rowid DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list backups: %w", err)
 	}

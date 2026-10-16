@@ -360,3 +360,54 @@ func TestStoreReplacesAndClearsBackupCancel(t *testing.T) {
 		t.Fatalf("cleared cancel should not be called again: second=%d", secondCancelled)
 	}
 }
+
+func TestBackupOrderSurvivesExecutionUpdatesAndRestart(t *testing.T) {
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "databridge.db")
+	keyPath := filepath.Join(directory, "databridge.key")
+	appStore, err := New(databasePath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = appStore.Close() })
+
+	for _, id := range []string{"first", "second", "third"} {
+		if err := appStore.AddBackup(model.BackupJob{ID: id, Status: model.StatusScheduled, StartedAt: time.Now()}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertOrder := func() {
+		t.Helper()
+		jobs, err := appStore.Backups()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(jobs) != 3 || jobs[0].ID != "third" || jobs[1].ID != "second" || jobs[2].ID != "first" {
+			t.Fatalf("backup order changed: %#v", jobs)
+		}
+	}
+	assertOrder()
+	for _, status := range []model.MigrationStatus{model.StatusPending, model.StatusRunning, model.StatusScheduled} {
+		if err := appStore.UpdateBackup("first", func(job *model.BackupJob) {
+			job.Status = status
+			job.StartedAt = time.Now().Add(time.Hour)
+			job.Progress = 35
+			job.SchedulePaused = true
+		}); err != nil {
+			t.Fatal(err)
+		}
+		assertOrder()
+	}
+	if _, err := appStore.SetBackupFavorite("second", true); err != nil {
+		t.Fatal(err)
+	}
+	assertOrder()
+	if err := appStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	appStore, err = New(databasePath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOrder()
+}

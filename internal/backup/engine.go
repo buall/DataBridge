@@ -125,6 +125,9 @@ func AvailableWorkBytes() (string, int64, error) {
 }
 
 func (e *Engine) Run(ctx context.Context, source model.Connection, request model.BackupRequest, report Reporter) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch source.Type {
 	case "PostgreSQL":
 		return e.runPostgres(ctx, source, request, report)
@@ -580,12 +583,24 @@ func (d multiDestination) upload(ctx context.Context, filePath, objectKey string
 	var failed []string
 	success := 0
 	for _, item := range d.items {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := item.upload(ctx, filePath, objectKey, report); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			failed = append(failed, err.Error())
 			report(Progress{Stage: "upload", EventLevel: "WARN", EventMessage: "备份目标同步失败：" + err.Error()})
 			continue
 		}
 		success++
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if success == 0 && len(failed) > 0 {
 		return fmt.Errorf("all backup destinations failed: %s", strings.Join(failed, "; "))
@@ -603,6 +618,9 @@ type localDestination struct {
 }
 
 func (d localDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dst := filepath.Join(d.directory, filepath.FromSlash(objectKey))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
@@ -616,16 +634,41 @@ func (d localDestination) upload(ctx context.Context, filePath, objectKey string
 	if err != nil {
 		return err
 	}
-	defer output.Close()
-	if _, err := io.Copy(output, input); err != nil {
+	complete := false
+	defer func() {
+		_ = output.Close()
+		if !complete {
+			_ = os.Remove(dst)
+		}
+	}()
+	if _, err := io.Copy(output, contextReader{ctx: ctx, reader: input}); err != nil {
 		return err
 	}
-	if info, err := output.Stat(); err == nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	complete = true
+	if info, err := os.Stat(dst); err == nil {
 		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已保存到本地目录", d.storage), ArtifactName: objectKey, ArtifactSize: info.Size(), ArtifactPath: dst, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, info.Size(), dst, "")})
 	} else {
 		report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已保存到本地目录", d.storage), ArtifactName: objectKey, ArtifactPath: dst, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, objectKey, 0, dst, "")})
 	}
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }
 
 type objectDestination struct {
@@ -1147,17 +1190,36 @@ func neo4jBoltURI(source model.Connection) string {
 	return fmt.Sprintf("%s://%s:%d", scheme, source.Host, port)
 }
 
+func backupCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, path, args...)
+	// tar may launch gzip. Stop the whole command group so child processes do
+	// not keep working or hold output pipes open after the parent is killed.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 2 * time.Second
+	return cmd
+}
+
 func runCommand(ctx context.Context, name string, args []string, env []string, stage string, report Reporter) error {
 	path, err := toolPath(name)
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := backupCommand(ctx, path, args...)
 	cmd.Env = env
 	stdout, stderr := newCommandOutputBuffer(), newCommandOutputBuffer()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if stdout.Len() > 0 {
 		report(Progress{Stage: stage, EventLevel: "INFO", EventMessage: stdout.String()})
 	}
@@ -1180,7 +1242,7 @@ func runCommandToWriterEnv(ctx context.Context, name string, args []string, env 
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := backupCommand(ctx, path, args...)
 	cmd.Env = env
 	cmd.Stdout = stdout
 	if len(stdin) > 0 && stdin[0] != nil {
@@ -1189,6 +1251,9 @@ func runCommandToWriterEnv(ctx context.Context, name string, args []string, env 
 	stderr := newCommandOutputBuffer()
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if stderr.Len() > 0 {
 		report(Progress{Stage: stage, EventLevel: commandOutputLevel(err), EventMessage: stderr.String()})
 	}
@@ -1204,7 +1269,7 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, path, args...)
+	cmd := backupCommand(ctx, path, args...)
 	cmd.Stdout = stdout
 	if len(stdin) > 0 && stdin[0] != nil {
 		cmd.Stdin = stdin[0]
@@ -1212,6 +1277,9 @@ func runCommandToWriter(ctx context.Context, name string, args []string, stage s
 	stderr := newCommandOutputBuffer()
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if stderr.Len() > 0 {
 		report(Progress{Stage: stage, EventLevel: commandOutputLevel(err), EventMessage: stderr.String()})
 	}

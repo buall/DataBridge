@@ -328,6 +328,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .row-action,
 .row-trigger,
 .row-schedule,
+.row-stop,
 .row-delete,
 .row-favorite { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .row-action { color: var(--blue) !important; }
@@ -335,6 +336,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .row-trigger:hover { color: #3730a3 !important; }
 .row-schedule { color: #1d4ed8 !important; cursor: pointer; }
 .row-schedule:hover { color: #1e40af !important; }
+.row-stop { color: var(--red) !important; cursor: pointer; }
 .row-delete { color: var(--red); cursor: pointer; }
 .row-favorite {
   width: 24px;
