@@ -1,209 +1,284 @@
 import {
-  Activity,
-  Archive,
-  Bell,
-  Cable,
-  ChevronDown,
+  ArrowLeftRight,
   Cloud,
+  Database,
   LayoutDashboard,
   LogOut,
-  Menu,
+  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   ScrollText,
-  SlidersHorizontal,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sun,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { AppView } from "../types";
+import { useState, type ReactNode } from "react";
+import { migrationStageLabel } from "../labels";
+import type { AppView, BackupJob, DatabaseConnection, MigrationJob, RemoteStorage } from "../types";
+import { BridgeLogo, type ThemeMode } from "./UI";
 
-type NavItem = { id: AppView; label: string; icon: LucideIcon; children?: Array<{ label: string; icon: LucideIcon }> };
+type NavItem = { id: AppView; label: string; shortLabel: string; icon: LucideIcon };
 
 const mainNav: NavItem[] = [
-  { id: "overview" as const, label: "总览", icon: LayoutDashboard },
-  { id: "connections" as const, label: "数据连接", icon: Cable },
-  { id: "backups" as const, label: "备份任务", icon: Archive },
-  { id: "migrations" as const, label: "迁移任务", icon: Activity },
-  { id: "storages" as const, label: "远端存储", icon: Cloud },
-  { id: "logs" as const, label: "运行日志", icon: ScrollText },
-  { id: "settings" as const, label: "系统设置", icon: SlidersHorizontal, children: [{ label: "通知管理", icon: Bell }] },
+  { id: "overview", label: "工作台", shortLabel: "总览", icon: LayoutDashboard },
+  { id: "connections", label: "数据连接", shortLabel: "连接", icon: Database },
+  { id: "backups", label: "备份任务", shortLabel: "备份", icon: ShieldCheck },
+  { id: "migrations", label: "迁移任务", shortLabel: "迁移", icon: ArrowLeftRight },
+  { id: "storages", label: "远端存储", shortLabel: "存储", icon: Cloud },
+  { id: "logs", label: "运行日志", shortLabel: "日志", icon: ScrollText },
+  { id: "settings", label: "系统设置", shortLabel: "设置", icon: Settings },
 ];
 
 interface LayoutProps {
   activeView: AppView;
   title: string;
-  children: React.ReactNode;
+  crumb?: string;
+  children: ReactNode;
   paths: Record<AppView, string>;
+  connections: DatabaseConnection[];
+  storages: RemoteStorage[];
+  migrations: MigrationJob[];
+  backups: BackupJob[];
+  username?: string;
+  authConfigured?: boolean;
+  theme: ThemeMode;
+  onToggleTheme: () => void;
+  onOpenPalette: () => void;
+  onOpenMigration: (job: MigrationJob) => void;
   onNavigate: (view: AppView) => void;
   onLogout: () => void;
 }
 
-export function Layout({ activeView, title, children, paths, onNavigate, onLogout }: LayoutProps) {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(max-width: 960px)").matches;
-  });
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
+export function Layout({
+  activeView,
+  title,
+  crumb,
+  children,
+  paths,
+  connections,
+  storages,
+  migrations,
+  backups,
+  username = "admin",
+  authConfigured = true,
+  theme,
+  onToggleTheme,
+  onOpenPalette,
+  onOpenMigration,
+  onNavigate,
+  onLogout,
+}: LayoutProps) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
-      return window.localStorage.getItem("databridge:sidebar") === "collapsed";
+      return window.localStorage.getItem("db-sidebar-collapsed") === "true";
     } catch {
       return false;
     }
   });
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [expandedNav, setExpandedNav] = useState<AppView | null>(null);
-  const [selectedNavChild, setSelectedNavChild] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const media = window.matchMedia("(max-width: 960px)");
-    const update = (event?: MediaQueryListEvent) => {
-      const nextIsMobile = event ? event.matches : media.matches;
-      setIsMobile(nextIsMobile);
-      if (!nextIsMobile) {
-        setMobileNavOpen(false);
+  function toggleSidebar() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem("db-sidebar-collapsed", String(next));
+      } catch {
+        // Ignore storage errors.
       }
-    };
-    update();
-    if (typeof media.addEventListener === "function") {
-      media.addEventListener("change", update);
-      return () => media.removeEventListener("change", update);
-    }
-    media.addListener(update);
-    return () => media.removeListener(update);
-  }, []);
+      return next;
+    });
+  }
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("databridge:sidebar", sidebarCollapsed ? "collapsed" : "expanded");
-    } catch {
-      // The toggle still works when persistent browser storage is unavailable.
-    }
-  }, [sidebarCollapsed]);
+  const runningMigrations = migrations.filter((item) => item.status === "running" || item.status === "pending");
+  const failedBackups = backups.filter(
+    (item) =>
+      item.status === "failed" ||
+      ((item.scheduleMode === "scheduled" || item.status === "scheduled") &&
+        item.status !== "running" &&
+        item.status !== "pending" &&
+        item.artifactVersions?.[0]?.status === "failed"),
+  ).length;
 
-  useEffect(() => {
-    if (!isMobile) return;
-    setMobileNavOpen(false);
-  }, [activeView, isMobile]);
-
-  useEffect(() => {
-    if (!isMobile) return;
-    const previousOverflow = document.body.style.overflow;
-    if (mobileNavOpen) {
-      document.body.style.overflow = "hidden";
-    }
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [isMobile, mobileNavOpen]);
-
-  const shellClassName = [
-    "app-shell",
-    sidebarCollapsed && !isMobile ? "sidebar-collapsed" : "",
-    isMobile ? "mobile-shell" : "",
-    mobileNavOpen ? "mobile-nav-open" : "",
-  ].filter(Boolean).join(" ");
+  const counts: Partial<Record<AppView, number>> = {
+    connections: connections.length,
+    backups: backups.length,
+    migrations: migrations.length,
+    storages: storages.length,
+  };
 
   return (
-    <div className={shellClassName}>
-      {isMobile && mobileNavOpen ? <button type="button" className="sidebar-scrim" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)} /> : null}
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark" data-label="DataBridge" aria-hidden="true">
-            <span className="brand-bridge" />
-            <span className="brand-node brand-node-left" />
-            <span className="brand-node brand-node-right" />
-          </div>
-          <div className="brand-copy">
-            <strong>DataBridge</strong>
-            <span>DATABASE MIGRATION</span>
-          </div>
-        </div>
+    <>
+      <div className="app">
+        <div className="workspace">
+          <aside className={`atlas ${collapsed ? "collapsed" : ""}`} aria-label="侧边导航">
+            <div className="brand" title={collapsed ? "DataBridge" : undefined}>
+              <span className="glyph">
+                <BridgeLogo size={34} />
+              </span>
+              {!collapsed ? (
+                <div>
+                  <div className="bname">DataBridge</div>
+                  <div className="bsub">数据备份与迁移</div>
+                </div>
+              ) : null}
+            </div>
 
-        <div className="sidebar-scroll">
-          <nav className="primary-nav" aria-label="主导航">
-            {mainNav.map(({ id, label, icon: Icon, ...item }) => (
-              <div className={`nav-group ${expandedNav === id ? "open" : ""}`} key={id}>
-                <a
-                  className={activeView === id ? "nav-item active" : "nav-item"}
-                  href={paths[id]}
-                  data-label={label}
-                  data-path={paths[id]}
-                  data-tooltip-content={label}
-                  aria-current={activeView === id ? "page" : undefined}
-                  aria-expanded={item.children ? expandedNav === id : undefined}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    if (item.children) {
-                      setExpandedNav((current) => current === id ? null : id);
-                      return;
-                    }
-                    setExpandedNav(null);
-                    setSelectedNavChild(null);
-                    onNavigate(id);
-                  }}
-                >
-                  <Icon size={18} />
-                  <span>{label}</span>
-                  {item.children ? <ChevronDown className="nav-expand-icon" size={15} /> : null}
-                </a>
-                {item.children && expandedNav === id ? item.children.map(({ label: childLabel, icon: ChildIcon }) => (
-                  <a className={selectedNavChild === childLabel ? "nav-child active" : "nav-child"} href={paths[id]} key={childLabel} aria-current={selectedNavChild === childLabel ? "page" : undefined} onClick={(event) => { event.preventDefault(); setSelectedNavChild(childLabel); onNavigate(id); }}><ChildIcon size={14} /><span>{childLabel}</span></a>
-                )) : null}
+            {!collapsed ? <div className="sec-label">工作空间</div> : null}
+            <nav aria-label="主导航">
+              {mainNav.map(({ id, label, icon: Icon }) => {
+                const isActive = activeView === id;
+                const count = counts[id];
+                const collapsedTip = collapsed
+                  ? id === "backups" && failedBackups > 0
+                    ? `${label}（${failedBackups} 个最近执行失败）`
+                    : count != null
+                      ? `${label} (${count})`
+                      : label
+                  : undefined;
+                return (
+                  <a
+                    key={id}
+                    href={paths[id]}
+                    className={`navrow ${isActive ? "active" : ""}`}
+                    aria-current={isActive ? "page" : undefined}
+                    aria-label={label}
+                    data-tooltip-content={collapsedTip}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onNavigate(id);
+                    }}
+                  >
+                    <Icon size={17} />
+                    {!collapsed ? <span>{label}</span> : null}
+                    {id === "backups" && failedBackups > 0 ? (
+                      <span
+                        className="dot"
+                        data-tooltip-content={collapsed ? undefined : `${failedBackups} 个备份任务最近执行失败`}
+                      />
+                    ) : !collapsed && count != null ? (
+                      <span className="cnt">{count}</span>
+                    ) : null}
+                  </a>
+                );
+              })}
+            </nav>
+
+            {!collapsed && runningMigrations.length > 0 ? (
+              <div className="live-strip">
+                <h4>
+                  <span className="pulse" />
+                  进行中 ({runningMigrations.length})
+                </h4>
+                {runningMigrations.slice(0, 3).map((job) => (
+                  <button
+                    key={job.id}
+                    type="button"
+                    className="live-item"
+                    onClick={() => onOpenMigration(job)}
+                  >
+                    <div className="li-name">
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {job.name || `${job.sourceName} → ${job.targetName}`}
+                      </span>
+                      <span className="pct">{job.progress}%</span>
+                    </div>
+                    <div className="li-sub">
+                      {job.sourceName} → {job.targetName} · {migrationStageLabel(job.stage)}
+                    </div>
+                    <div className="mini-bar">
+                      <i style={{ width: `${job.progress}%` }} />
+                    </div>
+                  </button>
+                ))}
               </div>
-            ))}
-          </nav>
+            ) : null}
 
-        </div>
+            <div className="atlas-foot">
+              <div className="user-chip">
+                {!collapsed ? (
+                  <>
+                    <span className="avatar">{(username.trim().slice(0, 2) || "DB").toUpperCase()}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="un">{username || "admin"}</div>
+                      <div className="ur">{authConfigured ? "密码认证已开启" : "本机免密模式"}</div>
+                    </div>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  className="icon-btn ghost"
+                  aria-label={collapsed ? "展开左侧菜单" : "收起左侧菜单"}
+                  aria-expanded={!collapsed}
+                  data-tooltip-content={collapsed ? "展开左侧菜单" : "收起左侧菜单"}
+                  onClick={toggleSidebar}
+                >
+                  {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+                </button>
+              </div>
+            </div>
+          </aside>
 
-        <div className="sidebar-user">
-          <button
-            type="button"
-            className="sidebar-user-toggle"
-            aria-label={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
-            aria-expanded={isMobile ? mobileNavOpen : !sidebarCollapsed}
-            data-tooltip-content={isMobile ? "关闭左侧菜单" : sidebarCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
-            data-label={isMobile ? "关闭" : sidebarCollapsed ? "展开" : "收起"}
-            onClick={() => {
-              if (isMobile) {
-                setMobileNavOpen(false);
-                return;
-              }
-              setSidebarCollapsed((current) => !current);
-            }}
-          >
-            {isMobile ? <PanelLeftClose size={16} /> : sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-            <span>{isMobile ? "关闭" : sidebarCollapsed ? "展开" : "收起"}</span>
-          </button>
-        </div>
-      </aside>
+          <main className="main">
+            <header className="cmdbar">
+              <div className="page-t">
+                {crumb ? <span className="crumb">{crumb} / </span> : null}
+                {title}
+              </div>
 
-      <main className="main-area">
-        <header className="topbar">
-          <div className="topbar-leading">
-            {isMobile ? (
               <button
                 type="button"
-                className="icon-button mobile-nav-button"
-                aria-label={mobileNavOpen ? "关闭导航菜单" : "打开导航菜单"}
-                aria-expanded={mobileNavOpen}
-                onClick={() => setMobileNavOpen((current) => !current)}
+                className="searchbox-trigger"
+                aria-label="打开命令面板"
+                data-tooltip-content="搜索连接、任务、备份 (⌘K)"
+                onClick={onOpenPalette}
               >
-                <Menu size={18} />
+                <Search size={15} />
+                <span className="ph">搜索连接、任务、备份，或输入命令…</span>
+                <span className="kbd">⌘K</span>
               </button>
-            ) : null}
-            <div className="topbar-copy">
-              <h1>{title}</h1>
-            </div>
-          </div>
-          <div className="topbar-actions">
-            <button className="icon-button" aria-label="退出登录" data-tooltip-content="退出登录" onClick={onLogout}><LogOut size={18} /></button>
-            <div className="avatar dark">DB</div>
-          </div>
-        </header>
-        <div className="content">{children}</div>
-      </main>
-    </div>
+
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+                data-tooltip-content={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
+                onClick={onToggleTheme}
+              >
+                {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
+
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="退出登录"
+                data-tooltip-content="退出登录"
+                onClick={onLogout}
+              >
+                <LogOut size={16} />
+              </button>
+            </header>
+
+            <div className="content">{children}</div>
+          </main>
+        </div>
+      </div>
+
+      <nav className="mobile-nav" aria-label="移动端导航">
+        {mainNav
+          .filter((item) => item.id !== "storages")
+          .map(({ id, shortLabel, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              className={activeView === id ? "on" : ""}
+              onClick={() => onNavigate(id)}
+            >
+              <Icon size={19} />
+              <span>{shortLabel}</span>
+            </button>
+          ))}
+      </nav>
+    </>
   );
 }

@@ -1,11 +1,13 @@
 import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { BackupList } from "./pages/BackupList";
+import { CommandPalette } from "./components/CommandPalette";
+import { Layout } from "./components/Layout";
+import { useTheme } from "./components/UI";
 import { BackupArtifacts } from "./pages/BackupArtifacts";
+import { BackupList } from "./pages/BackupList";
 import { BackupMonitoring } from "./pages/BackupMonitoring";
 import { BackupRestore } from "./pages/BackupRestore";
 import { BackupWizard } from "./pages/BackupWizard";
-import { Layout } from "./components/Layout";
 import { Connections } from "./pages/Connections";
 import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
@@ -16,8 +18,18 @@ import { Overview } from "./pages/Overview";
 import { Report } from "./pages/Report";
 import { Settings } from "./pages/Settings";
 import { Storages } from "./pages/Storages";
-import type { AuditLogEntry, BatchImportResult } from "./types";
-import type { AppView, BackupConfig, BackupJob, DatabaseConnection, MigrationConfig, MigrationJob, MigrationStage, RemoteStorage } from "./types";
+import type {
+  AppView,
+  AuditLogEntry,
+  BackupConfig,
+  BackupJob,
+  BatchImportResult,
+  DatabaseConnection,
+  MigrationConfig,
+  MigrationJob,
+  MigrationStage,
+  RemoteStorage,
+} from "./types";
 
 type AppRoute = {
   view: AppView;
@@ -105,10 +117,32 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authConfigured, setAuthConfigured] = useState(true);
+  const [authUsername, setAuthUsername] = useState("admin");
   const [loadError, setLoadError] = useState("");
-  const activeJob = useMemo(() => route.jobId ? migrations.find((job) => job.id === route.jobId) ?? null : null, [migrations, route.jobId]);
-  const activeBackup = useMemo(() => route.jobId ? backups.find((job) => job.id === route.jobId) ?? null : null, [backups, route.jobId]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const { theme, toggleTheme } = useTheme();
+
+  const activeJob = useMemo(() => (route.jobId ? migrations.find((job) => job.id === route.jobId) ?? null : null), [migrations, route.jobId]);
+  const activeBackup = useMemo(() => (route.jobId ? backups.find((job) => job.id === route.jobId) ?? null : null), [backups, route.jobId]);
   const { view, stage: migrationStage } = route;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!authenticated) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((current) => !current);
+      } else if (
+        event.key === "/" &&
+        !/input|textarea|select/i.test((document.activeElement as HTMLElement | null)?.tagName ?? "")
+      ) {
+        event.preventDefault();
+        setPaletteOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [authenticated]);
 
   useEffect(() => {
     const applyOverflowTitles = () => {
@@ -184,13 +218,11 @@ export default function App() {
       root.querySelectorAll<HTMLElement>("[title]").forEach(migrateTitle);
     };
 
-    const isOverflowed = (element: HTMLElement) => {
-      return element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1;
-    };
+    const isOverflowed = (element: HTMLElement) =>
+      element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1;
 
-    const shouldShowTooltip = (element: HTMLElement) => {
-      return element.dataset.tooltipMode === "always" || isOverflowed(element);
-    };
+    const shouldShowTooltip = (element: HTMLElement) =>
+      element.dataset.tooltipMode === "always" || isOverflowed(element);
 
     const containsPoint = (element: HTMLElement, clientX: number, clientY: number) => {
       const rect = element.getBoundingClientRect();
@@ -232,9 +264,7 @@ export default function App() {
     };
 
     const handlePointerOver = (event: PointerEvent) => {
-      if (event.target instanceof HTMLElement) {
-        migrateTitles(event.target);
-      }
+      if (event.target instanceof HTMLElement) migrateTitles(event.target);
       const target = event.target instanceof Element ? findTooltipTarget(event.target, event.clientX, event.clientY) : null;
       if (!target || target === activeElement) return;
       showTooltip(target);
@@ -248,9 +278,7 @@ export default function App() {
     };
 
     migrateTitles();
-    const migrateObserver = new MutationObserver(() => {
-      window.requestAnimationFrame(() => migrateTitles());
-    });
+    const migrateObserver = new MutationObserver(() => window.requestAnimationFrame(() => migrateTitles()));
     migrateObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["title"] });
     window.addEventListener("pointerover", handlePointerOver);
     window.addEventListener("pointerout", handlePointerOut);
@@ -272,6 +300,7 @@ export default function App() {
       .then((session) => {
         setAuthenticated(session.authenticated);
         setAuthConfigured(session.configured);
+        if (session.username) setAuthUsername(session.username);
       })
       .catch(() => setAuthenticated(false))
       .finally(() => setAuthChecked(true));
@@ -299,7 +328,6 @@ export default function App() {
 
   useEffect(() => {
     if (!authenticated || route.view !== "backups" || route.stage !== "list" || !hasRunningBackup) return;
-
     let stopped = false;
     let refreshing = false;
     const refreshBackups = async () => {
@@ -309,7 +337,7 @@ export default function App() {
         const next = await api.backups();
         if (!stopped) setBackups(next);
       } catch {
-        // Keep the current progress visible and retry on the next interval.
+        // Retry on next tick.
       } finally {
         refreshing = false;
       }
@@ -326,10 +354,12 @@ export default function App() {
     api.logs()
       .then((data) => {
         setAuditLogs(data.auditLogs);
-        setMigrations((current) => current.map((job) => {
-          const logJob = data.migrations.find((item) => item.id === job.id);
-          return logJob ? { ...job, events: logJob.events } : job;
-        }));
+        setMigrations((current) =>
+          current.map((job) => {
+            const logJob = data.migrations.find((item) => item.id === job.id);
+            return logJob ? { ...job, events: logJob.events } : job;
+          }),
+        );
       })
       .catch((error) => setLoadError(error.message));
   }, [authenticated, route.view]);
@@ -352,7 +382,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: "auto" });
+    const contentEl = document.querySelector(".content");
+    if (contentEl) contentEl.scrollTop = 0;
   }, [route]);
 
   useEffect(() => {
@@ -361,12 +392,16 @@ export default function App() {
     if (!job) return;
     setNavigationView("migrations");
     startTransition(() => {
-      setRoute((current) => current.jobId === job.id ? {
-        view: "migrations",
-        stage: job.status === "running" || job.status === "pending" ? "running" : "report",
-        jobId: job.id,
-        sourceId: null,
-      } : current);
+      setRoute((current) =>
+        current.jobId === job.id
+          ? {
+              view: "migrations",
+              stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+              jobId: job.id,
+              sourceId: null,
+            }
+          : current,
+      );
     });
   }, [migrations, route]);
 
@@ -376,12 +411,16 @@ export default function App() {
     if (!job) return;
     setNavigationView("backups");
     startTransition(() => {
-      setRoute((current) => current.jobId === job.id ? {
-        view: "backups",
-        stage: job.status === "running" || job.status === "pending" ? "running" : "report",
-        jobId: job.id,
-        sourceId: current.sourceId === "artifacts" ? "artifacts" : null,
-      } : current);
+      setRoute((current) =>
+        current.jobId === job.id
+          ? {
+              view: "backups",
+              stage: job.status === "running" || job.status === "pending" ? "running" : "report",
+              jobId: job.id,
+              sourceId: current.sourceId === "artifacts" ? "artifacts" : null,
+            }
+          : current,
+      );
     });
   }, [backups, route]);
 
@@ -390,17 +429,24 @@ export default function App() {
     startTransition(() => setRoute(next));
   }, []);
 
-  function pushRoute(path: string) {
-    if (window.location.pathname !== path) {
-      window.history.pushState(null, "", path);
-    }
-    applyRoute(routeFromPath(path));
-  }
+  const pushRoute = useCallback(
+    (path: string) => {
+      if (window.location.pathname !== path) {
+        window.history.pushState(null, "", path);
+      }
+      applyRoute(routeFromPath(path));
+    },
+    [applyRoute],
+  );
 
-  function navigate(next: AppView) {
-    if (route.view === next && route.stage === "list" && !route.jobId) return;
-    pushRoute(routes[next]);
-  }
+  const navigate = useCallback(
+    (next: AppView) => {
+      if (route.view === next && route.stage === "list" && !route.jobId) return;
+      pushRoute(routes[next]);
+    },
+    [pushRoute, route.jobId, route.stage, route.view],
+  );
+
   function createMigration(sourceId?: string) {
     const path = sourceId ? `/migrations/new?sourceId=${encodeURIComponent(sourceId)}` : "/migrations/new";
     pushRoute(path);
@@ -446,44 +492,59 @@ export default function App() {
   }
   async function triggerBackup(job: BackupJob) {
     const updated = await api.triggerBackup(job.id);
-    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setBackups((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
   async function cancelBackup(job: BackupJob) {
     await api.cancelBackup(job.id);
     const updated = await api.backup(job.id, true);
-    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setBackups((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
   async function setBackupSchedulePaused(job: BackupJob, paused: boolean) {
     const updated = paused ? await api.pauseBackupSchedule(job.id) : await api.resumeBackupSchedule(job.id);
-    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setBackups((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
   async function setMigrationFavorite(job: MigrationJob) {
     const updated = await api.setMigrationFavorite(job.id, !job.favorite);
-    setMigrations((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setMigrations((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
   async function setBackupFavorite(job: BackupJob) {
     const updated = await api.setBackupFavorite(job.id, !job.favorite);
-    setBackups((current) => current.map((item) => item.id === updated.id ? updated : item));
+    setBackups((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
   function completeBatchImport(result: BatchImportResult) {
-    setConnections((current) => [...current, ...result.connections.filter((connection) => !current.some((item) => item.id === connection.id))]);
-    setBackups((current) => [...result.backups, ...current.filter((item) => !result.backups.some((backup) => backup.id === item.id))]);
+    setConnections((current) => [
+      ...current,
+      ...result.connections.filter((connection) => !current.some((item) => item.id === connection.id)),
+    ]);
+    setBackups((current) => [
+      ...result.backups,
+      ...current.filter((item) => !result.backups.some((backup) => backup.id === item.id)),
+    ]);
   }
-  const completeMigration = useCallback((job: MigrationJob) => {
-    setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    window.history.replaceState(null, "", pathForJob(job));
-    applyRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
-  }, [applyRoute]);
-  const completeBackup = useCallback((job: BackupJob) => {
-    setBackups((current) => current.map((item) => item.id === job.id ? job : item));
-    window.history.replaceState(null, "", pathForBackup(job));
-    applyRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
-  }, [applyRoute]);
-  const openRestoredBackup = useCallback((job: BackupJob) => {
-    setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    window.history.pushState(null, "", pathForBackup(job));
-    applyRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
-  }, [applyRoute]);
+  const completeMigration = useCallback(
+    (job: MigrationJob) => {
+      setMigrations((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      window.history.replaceState(null, "", pathForJob(job));
+      applyRoute({ view: "migrations", stage: "report", jobId: job.id, sourceId: null });
+    },
+    [applyRoute],
+  );
+  const completeBackup = useCallback(
+    (job: BackupJob) => {
+      setBackups((current) => current.map((item) => (item.id === job.id ? job : item)));
+      window.history.replaceState(null, "", pathForBackup(job));
+      applyRoute({ view: "backups", stage: "report", jobId: job.id, sourceId: null });
+    },
+    [applyRoute],
+  );
+  const openRestoredBackup = useCallback(
+    (job: BackupJob) => {
+      setBackups((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      window.history.pushState(null, "", pathForBackup(job));
+      applyRoute({ view: "backups", stage: "running", jobId: job.id, sourceId: null });
+    },
+    [applyRoute],
+  );
   function openBackupRestore(job: BackupJob) {
     const path = pathForBackupRestore(job);
     if (window.location.pathname !== path) {
@@ -528,39 +589,209 @@ export default function App() {
   }
 
   if (!authChecked) {
-    return <main className="login-page"><div className="loading-copy">正在检查登录状态...</div></main>;
+    return (
+      <main className="login-shell">
+        <div style={{ color: "var(--muted)", fontSize: 14 }}>正在检查登录状态...</div>
+      </main>
+    );
   }
   if (!authenticated) {
     return <Login configured={authConfigured} onLogin={login} />;
   }
 
   let content: React.ReactNode;
-  if (view === "overview") content = <Overview connections={connections} backups={backups} migrations={migrations} onConnections={() => navigate("connections")} onBackups={() => navigate("backups")} onOpenBackup={openBackup} onMigrations={() => navigate("migrations")} onOpenMigration={openMigration} />;
-  else if (view === "connections") content = <Connections connections={connections} backups={backups} onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])} onUpdate={(connection: DatabaseConnection) => setConnections((current) => current.map((item) => item.id === connection.id ? connection : item))} onDelete={(connectionId: string) => setConnections((current) => current.filter((item) => item.id !== connectionId))} onToggleFavorite={async (connection) => { const updated = await api.setConnectionFavorite(connection.id, !connection.favorite); setConnections((current) => current.map((item) => item.id === updated.id ? updated : item)); }} onCreateMigration={createMigration} onBatchImported={completeBatchImport} />;
-  else if (view === "storages") content = <Storages storages={storages} onAdd={(storage) => setStorages((current) => [...current, storage])} onUpdate={(storage) => setStorages((current) => current.map((item) => item.id === storage.id ? storage : item))} onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))} onToggleFavorite={async (storage) => { const updated = await api.setStorageFavorite(storage.id, !storage.favorite); setStorages((current) => current.map((item) => item.id === updated.id ? updated : item)); }} />;
-  else if (view === "migrations") content = migrationStage === "running" && activeJob ? <Monitoring jobId={activeJob.id} onComplete={completeMigration} /> : migrationStage === "report" && activeJob ? <Report job={activeJob} /> : migrationStage === "wizard" ? <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} /> : route.jobId && migrations.length ? <MigrationList title="未找到迁移任务" description={`任务 ${route.jobId} 不存在或已被删除。`} migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} onToggleFavorite={setMigrationFavorite} /> : <MigrationList migrations={migrations} connections={connections} onCreate={() => createMigration()} onOpen={openMigration} onDelete={deleteMigration} onToggleFavorite={setMigrationFavorite} />;
-  else if (view === "backups") content = migrationStage === "restore" && activeBackup ? <BackupRestore job={activeBackup} connections={connections} onBack={() => openBackup(activeBackup)} onRestoreCreated={openRestoredBackup} /> : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} /> : (migrationStage === "running" || migrationStage === "report") && activeBackup ? <BackupMonitoring jobId={activeBackup.id} connections={connections} storages={storages} onComplete={completeBackup} onOpenRestore={openBackupRestore} onOpenArtifacts={openBackupArtifacts} /> : migrationStage === "wizard" ? <BackupWizard connections={connections} storages={storages} onStart={startBackup} /> : <BackupList backups={backups} onCreate={createBackup} onOpen={openBackup} onDelete={deleteBackup} onTrigger={triggerBackup} onCancel={cancelBackup} onSetSchedulePaused={setBackupSchedulePaused} onToggleFavorite={setBackupFavorite} />;
-  else if (view === "settings") content = <Settings />;
-  else content = <Logs migrations={migrations} auditLogs={auditLogs} />;
+  if (view === "overview") {
+    content = (
+      <Overview
+        connections={connections}
+        storages={storages}
+        backups={backups}
+        migrations={migrations}
+        onConnections={() => navigate("connections")}
+        onStorages={() => navigate("storages")}
+        onBackups={() => navigate("backups")}
+        onOpenBackup={openBackup}
+        onMigrations={() => navigate("migrations")}
+        onOpenMigration={openMigration}
+        onCreateBackup={createBackup}
+        onCreateMigration={() => createMigration()}
+      />
+    );
+  } else if (view === "connections") {
+    content = (
+      <Connections
+        connections={connections}
+        backups={backups}
+        onAdd={(connection: DatabaseConnection) => setConnections((current) => [...current, connection])}
+        onUpdate={(connection: DatabaseConnection) =>
+          setConnections((current) => current.map((item) => (item.id === connection.id ? connection : item)))
+        }
+        onDelete={(connectionId: string) =>
+          setConnections((current) => current.filter((item) => item.id !== connectionId))
+        }
+        onToggleFavorite={async (connection) => {
+          const updated = await api.setConnectionFavorite(connection.id, !connection.favorite);
+          setConnections((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+        }}
+        onCreateMigration={createMigration}
+        onBatchImported={completeBatchImport}
+      />
+    );
+  } else if (view === "storages") {
+    content = (
+      <Storages
+        storages={storages}
+        onAdd={(storage) => setStorages((current) => [...current, storage])}
+        onUpdate={(storage) =>
+          setStorages((current) => current.map((item) => (item.id === storage.id ? storage : item)))
+        }
+        onDelete={(storageId) => setStorages((current) => current.filter((item) => item.id !== storageId))}
+        onToggleFavorite={async (storage) => {
+          const updated = await api.setStorageFavorite(storage.id, !storage.favorite);
+          setStorages((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+        }}
+      />
+    );
+  } else if (view === "migrations") {
+    content =
+      migrationStage === "running" && activeJob ? (
+        <Monitoring jobId={activeJob.id} connections={connections} onBack={() => navigate("migrations")} onComplete={completeMigration} />
+      ) : migrationStage === "report" && activeJob ? (
+        <Report job={activeJob} connections={connections} onBack={() => navigate("migrations")} />
+      ) : migrationStage === "wizard" ? (
+        <MigrationWizard connections={connections} initialSourceId={route.sourceId ?? undefined} onStart={startMigration} />
+      ) : route.jobId && migrations.length ? (
+        <MigrationList
+          title="未找到迁移任务"
+          description={`任务 ${route.jobId} 不存在或已被删除。`}
+          migrations={migrations}
+          connections={connections}
+          onCreate={() => createMigration()}
+          onOpen={openMigration}
+          onDelete={deleteMigration}
+          onToggleFavorite={setMigrationFavorite}
+        />
+      ) : (
+        <MigrationList
+          migrations={migrations}
+          connections={connections}
+          onCreate={() => createMigration()}
+          onOpen={openMigration}
+          onDelete={deleteMigration}
+          onToggleFavorite={setMigrationFavorite}
+        />
+      );
+  } else if (view === "backups") {
+    content =
+      migrationStage === "restore" && activeBackup ? (
+        <BackupRestore
+          job={activeBackup}
+          connections={connections}
+          onBack={() => openBackup(activeBackup)}
+          onRestoreCreated={openRestoredBackup}
+        />
+      ) : migrationStage === "report" && activeBackup && route.sourceId === "artifacts" ? (
+        <BackupArtifacts job={activeBackup} onBack={() => openBackup(activeBackup)} />
+      ) : (migrationStage === "running" || migrationStage === "report") && activeBackup ? (
+        <BackupMonitoring
+          jobId={activeBackup.id}
+          connections={connections}
+          storages={storages}
+          onBack={() => navigate("backups")}
+          onComplete={completeBackup}
+          onOpenRestore={openBackupRestore}
+          onOpenArtifacts={openBackupArtifacts}
+        />
+      ) : migrationStage === "wizard" ? (
+        <BackupWizard connections={connections} storages={storages} onStart={startBackup} />
+      ) : (
+        <BackupList
+          backups={backups}
+          onCreate={createBackup}
+          onOpen={openBackup}
+          onDelete={deleteBackup}
+          onTrigger={triggerBackup}
+          onCancel={cancelBackup}
+          onSetSchedulePaused={setBackupSchedulePaused}
+          onToggleFavorite={setBackupFavorite}
+        />
+      );
+  } else if (view === "settings") {
+    content = <Settings />;
+  } else {
+    content = <Logs migrations={migrations} auditLogs={auditLogs} />;
+  }
 
-  const meta = view === "migrations" && migrationStage === "running" && activeJob
-    ? [activeJob.name, `任务 ID ${activeJob.id}`]
-    : view === "migrations" && migrationStage === "wizard"
-      ? ["创建迁移任务", "配置源端、目标端与迁移对象"]
-    : view === "migrations" && migrationStage === "report" && activeJob
-      ? ["迁移校验报告", `${activeJob.name} · ${new Date(activeJob.startedAt).toLocaleDateString("zh-CN")}`]
-    : view === "backups" && migrationStage === "running" && activeBackup
-      ? [activeBackup.name, `任务 ID ${activeBackup.id}`]
-    : view === "backups" && migrationStage === "wizard"
-      ? ["创建备份任务", "配置源数据库与备份目标"]
-    : view === "backups" && migrationStage === "restore" && activeBackup
-      ? ["数据还原", `${activeBackup.name} · 最新备份产物`]
-    : view === "backups" && migrationStage === "report" && activeBackup && route.sourceId === "artifacts"
-      ? ["备份产物", `${activeBackup.name} · 指定版本管理`]
-    : view === "backups" && migrationStage === "report" && activeBackup
-      ? ["备份任务结果", `${activeBackup.name} · ${new Date(activeBackup.startedAt).toLocaleDateString("zh-CN")}`]
-    : viewMeta[view];
-  const title = navigationView === view ? meta[0] : viewMeta[navigationView][0];
+  let pageCrumb = "";
+  let pageTitle = viewMeta[view][0];
+  if (view === "migrations" && migrationStage === "running" && activeJob) {
+    pageCrumb = "迁移任务";
+    pageTitle = activeJob.name;
+  } else if (view === "migrations" && migrationStage === "wizard") {
+    pageCrumb = "迁移任务";
+    pageTitle = "创建迁移任务";
+  } else if (view === "migrations" && migrationStage === "report" && activeJob) {
+    pageCrumb = "迁移任务";
+    pageTitle = `${activeJob.name} · 校验报告`;
+  } else if (view === "backups" && migrationStage === "running" && activeBackup) {
+    pageCrumb = "备份任务";
+    pageTitle = activeBackup.name;
+  } else if (view === "backups" && migrationStage === "wizard") {
+    pageCrumb = "备份任务";
+    pageTitle = "创建备份任务";
+  } else if (view === "backups" && migrationStage === "restore" && activeBackup) {
+    pageCrumb = `备份任务 / ${activeBackup.name}`;
+    pageTitle = "数据还原";
+  } else if (view === "backups" && migrationStage === "report" && activeBackup && route.sourceId === "artifacts") {
+    pageCrumb = `备份任务 / ${activeBackup.name}`;
+    pageTitle = "备份产物";
+  } else if (view === "backups" && migrationStage === "report" && activeBackup) {
+    pageCrumb = "备份任务";
+    pageTitle = activeBackup.name;
+  }
 
-  return <Layout activeView={navigationView} title={title} paths={routes} onNavigate={navigate} onLogout={logout}>{loadError && <div className="error-banner">{loadError}</div>}{content}</Layout>;
+  return (
+    <>
+      <Layout
+        activeView={navigationView}
+        title={pageTitle}
+        crumb={pageCrumb}
+        paths={routes}
+        connections={connections}
+        storages={storages}
+        migrations={migrations}
+        backups={backups}
+        username={authUsername}
+        authConfigured={authConfigured}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenMigration={openMigration}
+        onNavigate={navigate}
+        onLogout={logout}
+      >
+        {loadError ? (
+          <div className="error-banner" style={{ marginBottom: 16 }}>
+            {loadError}
+          </div>
+        ) : null}
+        {content}
+      </Layout>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        connections={connections}
+        migrations={migrations}
+        backups={backups}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onNavigate={navigate}
+        onCreateMigration={() => createMigration()}
+        onCreateBackup={createBackup}
+        onOpenMigration={openMigration}
+        onOpenBackup={openBackup}
+      />
+    </>
+  );
 }

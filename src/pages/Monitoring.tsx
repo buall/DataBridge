@@ -1,23 +1,23 @@
-import { AlertTriangle, Check, CircleX, Clock3, Database, Gauge, Rows3, Square } from "lucide-react";
+import { AlertTriangle, ChevronLeft, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { BridgeFlow } from "../components/BridgeFlow";
+import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
 import { migrationStageLabel } from "../labels";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
-import type { MigrationJob } from "../types";
-import { Badge, Button, Card, ConfirmDialog } from "../components/UI";
+import type { DatabaseConnection, DatabaseType, MigrationJob } from "../types";
 
-const stages = [
-  ["precheck", "连接检查"],
-  ["target-prep", "目标处理"],
-  ["schema", "结构准备"],
-  ["dump", "源端导出"],
-  ["data", "数据传输"],
-  ["restore", "目标导入"],
-  ["constraints", "约束索引"],
-  ["validation", "结果校验"],
-];
-
-export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (job: MigrationJob) => void }) {
+export function Monitoring({
+  jobId,
+  connections = [],
+  onBack,
+  onComplete,
+}: {
+  jobId: string;
+  connections?: DatabaseConnection[];
+  onBack?: () => void;
+  onComplete: (job: MigrationJob) => void;
+}) {
   const [job, setJob] = useState<MigrationJob | null>(null);
   const [error, setError] = useState("");
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
@@ -46,7 +46,9 @@ export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (
       }
     }
     refresh();
-    return () => { stopped = true; };
+    return () => {
+      stopped = true;
+    };
   }, [jobId, onComplete]);
 
   async function cancel() {
@@ -61,42 +63,174 @@ export function Monitoring({ jobId, onComplete }: { jobId: string; onComplete: (
     }
   }
 
-  if (!job) return <div className="empty-state"><div>DB</div><h2>任务准备中</h2><p>{error || "正在连接源端和目标端数据库..."}</p></div>;
+  if (!job) {
+    return (
+      <div className="empty">
+        <div className="e-t">任务准备中</div>
+        <div className="e-s">{error || "正在连接源端和目标端数据库..."}</div>
+      </div>
+    );
+  }
 
   const failed = job.status === "failed" || job.status === "cancelled";
-  const currentStage = stageIndex(job.stage);
   const elapsed = Math.max(1, (Date.now() - new Date(job.startedAt).getTime()) / 1000);
   const rowsPerSecond = Math.round(job.rowsCopied / elapsed);
   const isMongoMigration = job.results.some((result) => result.table.includes("collections)"));
   const isNeo4jMigration = job.results.some((result) => result.table.endsWith(" graph"));
   const nativeCommandStage = job.stage === "dump" || job.stage === "restore" || job.stage === "target-prep";
-  const objectUnit = isNeo4jMigration ? "图对象" : isMongoMigration ? "集合" : "行";
-  const throughputDetail = isNeo4jMigration ? "Neo4j 按节点和关系统计" : isMongoMigration ? "Mongo 原生工具阶段按集合统计" : nativeCommandStage ? "原生命令阶段不按行实时统计" : "进程内实时估算";
-  const rowsDetail = isNeo4jMigration ? `${job.rowsCopied} / ${job.rowsTotal} 个节点/关系` : isMongoMigration ? `${job.rowsCopied} / ${job.rowsTotal} 个集合` : nativeCommandStage ? migrationStageLabel(job.stage) : `${job.tablesDone} 张表已完成`;
+  const dbType: DatabaseType =
+    connections.find((c) => c.name === job.sourceName)?.type ??
+    (isNeo4jMigration ? "Neo4j" : isMongoMigration ? "MongoDB" : "PostgreSQL");
+
+  const etaMinutes =
+    job.status === "running" && rowsPerSecond > 0 && job.rowsTotal > job.rowsCopied
+      ? Math.max(1, Math.round((job.rowsTotal - job.rowsCopied) / rowsPerSecond / 60))
+      : null;
+
   return (
     <div className="page-stack">
-      {error && <div className="error-banner">{error}</div>}
-      {failed && <div className="error-banner">{job.error || "迁移任务已取消"}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge><h2>{job.sourceName} → {job.targetName}</h2></div><p>{job.sourceDatabase} → {job.targetDatabase} · 任务 ID {job.id}</p></div><div>{!failed && <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
-      <Card className="overall-progress"><div><span>总体进度 · {migrationStageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>{isNeo4jMigration ? `已迁移 ${formatNumber(job.rowsCopied)} / ${formatNumber(job.rowsTotal)} 个节点/关系` : isMongoMigration ? `已完成 ${formatNumber(job.rowsCopied)} / ${formatNumber(job.rowsTotal)} 个集合` : `已迁移 ${formatNumber(job.rowsCopied)} / ${formatNumber(job.rowsTotal)} 行`}</span><span>{job.currentTable ? `当前：${job.currentTable}` : isNeo4jMigration ? `${job.tablesDone} / ${job.tablesTotal} 个迁移项` : isMongoMigration ? `${job.tablesDone} / ${job.tablesTotal} 个迁移项` : `${job.tablesDone} / ${job.tablesTotal} 张表`}</span></footer></Card>
-      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label="实时吞吐" value={`${formatNumber(rowsPerSecond)} ${objectUnit}/s`} detail={throughputDetail} /><RuntimeMetric icon={<Rows3 />} label={isNeo4jMigration ? "已迁移图对象" : isMongoMigration ? "已迁移集合" : "已迁移行数"} value={formatNumber(job.rowsCopied)} detail={rowsDetail} /><RuntimeMetric icon={<Clock3 />} label="运行时长" value={formatDuration(elapsed * 1000)} detail="从开始到现在" /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={failed ? "任务已停止" : "持续监控"} warning={failed} /></div>
-      <div className="monitor-grid">
-        <Card className="chart-card migration-detail"><div className="section-title compact"><div><h3>{isNeo4jMigration ? "图迁移状态" : isMongoMigration ? "集合迁移状态" : "逐表迁移状态"}</h3><p>{isNeo4jMigration ? "按整库图查看节点和关系校验结果。" : isMongoMigration ? "按集合查看迁移与校验结果。" : "逐表查看迁移与校验结果。"}</p></div><Badge tone="green">实时</Badge></div><div className="migration-table-list">{job.results.length ? job.results.map((result) => <div className="migration-table-row" key={result.table}><Database size={16}/><strong>{result.table}</strong><span>{formatNumber(result.copiedRows)} {isNeo4jMigration ? "节点/关系" : isMongoMigration ? "集合" : "行"}</span>{result.error ? <Badge tone="red">失败</Badge> : <Badge tone={result.valid ? "green" : "blue"}>{result.valid ? "已校验" : "已复制"}</Badge>}</div>) : <div className="loading-copy">{nativeCommandStage ? `${migrationStageLabel(job.stage)}中，等待${isNeo4jMigration ? "图" : isMongoMigration ? "集合" : "表"}级校验结果...` : `等待首个${isNeo4jMigration ? "图" : isMongoMigration ? "集合" : "表"}完成迁移...`}</div>}</div></Card>
-        <Card className="phase-card"><h3>执行阶段</h3>{stages.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : failed && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
+      <div className="h-row">
+        {onBack ? (
+          <Button variant="secondary" className="sm" onClick={onBack}>
+            <ChevronLeft size={14} /> 返回列表
+          </Button>
+        ) : null}
+        <span className="tag mono-t">{job.id}</span>
+        <Badge tone={migrationStatusTone(job.status)}>
+          <span className="pd" />
+          {migrationStatusLabel(job.status)}
+        </Badge>
+        <span className="sp" />
+        {!failed ? (
+          <Button variant="danger" onClick={() => setCancelConfirmOpen(true)}>
+            <Square size={14} />
+            停止任务
+          </Button>
+        ) : null}
       </div>
-      <Card className="event-card"><div className="section-title compact"><div><h3>实时事件</h3><p>查看迁移过程中的关键日志。</p></div></div>{[...job.events].reverse().slice(0, 12).map((event,index)=><div className="event-row" key={`${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Database size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</Card>
-      {cancelConfirmOpen && <ConfirmDialog title="停止迁移任务" description="这是中危操作，任务会被取消，未完成的数据表不会继续迁移。" tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.sourceName} → ${job.targetName}`, `数据库：${job.sourceDatabase} → ${job.targetDatabase}`]} />}
+
+      <div>
+        <h1 className="page-h">{job.name || `${job.sourceName} → ${job.targetName}`}</h1>
+        <div className="sec-sub">
+          {job.sourceName}/{job.sourceDatabase} → {job.targetName}/{job.targetDatabase} · 运行时长 {formatDuration(elapsed * 1000)}
+        </div>
+      </div>
+
+      {error ? <div className="error-banner">{error}</div> : null}
+      {failed ? (
+        <div className="attn">
+          <AlertTriangle size={17} style={{ color: "var(--danger)", flex: "none", marginTop: 2 }} />
+          <div>
+            <div className="a-t">任务已停止（{migrationStageLabel(job.stage)}）</div>
+            <div className="a-s">{job.error || "迁移任务已取消"}</div>
+          </div>
+        </div>
+      ) : null}
+
+      <Card>
+        <BridgeFlow
+          sourceName={job.sourceName}
+          sourceDatabase={job.sourceDatabase}
+          targetName={job.targetName}
+          targetDatabase={job.targetDatabase}
+          type={dbType}
+          status={job.status}
+          stage={job.stage}
+          progress={job.progress}
+          rowsCopied={job.rowsCopied}
+          rowsTotal={job.rowsTotal}
+          tablesDone={job.tablesDone}
+          tablesTotal={job.tablesTotal}
+          currentTable={job.currentTable}
+          ratePerSecond={nativeCommandStage ? undefined : rowsPerSecond}
+          etaMinutes={etaMinutes}
+          isMongo={isMongoMigration}
+          isNeo4j={isNeo4jMigration}
+        />
+      </Card>
+
+      <div className="ov-grid">
+        <div>
+          <div className="h-row" style={{ marginBottom: 10 }}>
+            <h3 className="sec-title">
+              {isNeo4jMigration ? "图迁移状态" : isMongoMigration ? "集合迁移状态" : "逐表迁移状态"}
+            </h3>
+            <Badge tone="green">实时</Badge>
+          </div>
+          {job.results.length ? (
+            <div className="ledger">
+              {job.results.map((result) => (
+                <div className="vrow" key={result.table}>
+                  <span className="vt">{result.table}</span>
+                  <span style={{ color: "var(--muted)", fontSize: 12.5 }}>
+                    已复制 <b className="num" style={{ color: "var(--ink)" }}>{formatNumber(result.copiedRows)}</b>{" "}
+                    {isNeo4jMigration ? "节点/关系" : isMongoMigration ? "集合" : "行"}
+                  </span>
+                  <span className="num" style={{ color: "var(--muted)", fontSize: 12.5 }}>
+                    {result.durationMs ? formatDuration(result.durationMs) : "—"}
+                  </span>
+                  <span>
+                    {result.error ? (
+                      <Badge tone="red">失败</Badge>
+                    ) : (
+                      <Badge tone={result.valid ? "green" : "blue"}>{result.valid ? "已校验" : "已复制"}</Badge>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty">
+              <div className="e-t">
+                {nativeCommandStage
+                  ? `${migrationStageLabel(job.stage)}中`
+                  : `等待首个${isNeo4jMigration ? "图" : isMongoMigration ? "集合" : "表"}完成迁移`}
+              </div>
+              <div className="e-s">原生命令阶段完成后将汇报对象级校验结果。</div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="h-row" style={{ marginBottom: 10 }}>
+            <h3 className="sec-title">实时事件</h3>
+            <span className="tag">错误 {job.events.filter((e) => e.level === "ERROR").length}</span>
+          </div>
+          <Card className="pad" style={{ maxHeight: 420, overflowY: "auto" }}>
+            {[...job.events]
+              .reverse()
+              .slice(0, 20)
+              .map((event, index) => (
+                <div className="evt" key={`${event.time}-${index}`}>
+                  <span className="et">{new Date(event.time).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+                  <span className={`ed2 ed-${event.level}`} />
+                  <span className="em">{event.message}</span>
+                </div>
+              ))}
+          </Card>
+        </div>
+      </div>
+
+      {cancelConfirmOpen ? (
+        <ConfirmDialog
+          title="停止迁移任务"
+          description="这是中危操作，任务会被取消，未完成的数据表不会继续迁移。"
+          tone="warning"
+          confirmText="确认停止"
+          submitting={cancelling}
+          onCancel={() => setCancelConfirmOpen(false)}
+          onConfirm={cancel}
+          details={[`任务：${job.sourceName} → ${job.targetName}`, `数据库：${job.sourceDatabase} → ${job.targetDatabase}`]}
+        />
+      ) : null}
     </div>
   );
 }
 
-function RuntimeMetric({ icon, label, value, detail, warning = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warning?: boolean }) {
-  return <Card className="runtime-metric"><span className={warning ? "warning" : ""}>{icon}</span><div><small>{label}</small><strong>{value}</strong><em className={warning ? "warning" : ""}>{detail}</em></div></Card>;
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
 }
-
-function stageIndex(stage: string) {
-  const index = stages.findIndex(([id]) => id === stage);
-  return index >= 0 ? index : 0;
+function formatDuration(value: number) {
+  const seconds = Math.round(value / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
-function formatNumber(value: number) { return new Intl.NumberFormat("zh-CN").format(value); }
-function formatDuration(value: number) { const seconds = Math.round(value / 1000); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }

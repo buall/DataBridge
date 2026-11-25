@@ -1,9 +1,33 @@
-import { AlertTriangle, Archive, ArrowLeft, CheckCircle2, ChevronDown, Clipboard, Copy, DatabaseBackup, Download, FileText, HardDrive, HardDriveDownload, KeyRound, PlayCircle, Terminal, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  Archive,
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  Clipboard,
+  Copy,
+  DatabaseBackup,
+  Download,
+  FileText,
+  HardDrive,
+  HardDriveDownload,
+  KeyRound,
+  PlayCircle,
+  Terminal,
+  X,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
-import { Badge, Button, Card } from "../components/UI";
+import { Badge, Button, Card, DatabaseLogo } from "../components/UI";
 import type { BackupJob } from "../types";
-import { artifactVersionsForRestore, backupArtifacts, formatBytes, storageTypeLabel, totalArtifactSize } from "./BackupMonitoring";
+import {
+  artifactVersionsForRestore,
+  backupArtifacts,
+  formatBytes,
+  storageTypeLabel,
+  totalArtifactSize,
+} from "./BackupMonitoring";
 
 type BackupArtifactItem = ReturnType<typeof backupArtifacts>[number];
 type EtcdManualStep = {
@@ -15,23 +39,21 @@ type EtcdManualStep = {
 };
 
 export function BackupArtifacts({
-	job,
-	onBack,
+  job,
+  onBack,
 }: {
-	job: BackupJob;
-	onBack: () => void;
+  job: BackupJob;
+  onBack: () => void;
 }) {
   const versions = artifactVersionsForRestore(job);
   const [selectedVersionId, setSelectedVersionId] = useState(versions[0]?.id ?? "current");
   const selectedVersion = versions.find((version) => version.id === selectedVersionId) ?? versions[0] ?? null;
   const artifacts = selectedVersion?.artifacts ?? backupArtifacts(job);
   const showEtcdSnapshotManual = job.sourceType === "etcd";
-	const [copied, setCopied] = useState("");
-	const [downloading, setDownloading] = useState("");
-	const [error, setError] = useState("");
-	const [versionMenuOpen, setVersionMenuOpen] = useState(false);
+  const [copied, setCopied] = useState("");
+  const [downloading, setDownloading] = useState("");
+  const [error, setError] = useState("");
   const [manualOpen, setManualOpen] = useState(false);
-	const versionMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!versions.length) {
@@ -43,22 +65,6 @@ export function BackupArtifacts({
     }
   }, [selectedVersionId, versions]);
 
-  useEffect(() => {
-    if (!versionMenuOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!versionMenuRef.current?.contains(event.target as Node)) setVersionMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setVersionMenuOpen(false);
-    };
-    window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [versionMenuOpen]);
-
   async function copyArtifactPath(artifact: BackupArtifactItem) {
     const value = artifact.path || artifact.name;
     if (!value) return;
@@ -66,7 +72,7 @@ export function BackupArtifacts({
     try {
       await copyText(value);
       setCopied(artifact.database);
-      window.setTimeout(() => setCopied((current) => current === artifact.database ? "" : current), 1800);
+      window.setTimeout(() => setCopied((current) => (current === artifact.database ? "" : current)), 1800);
     } catch {
       setError("复制失败，请手动选择路径后复制");
     }
@@ -76,7 +82,11 @@ export function BackupArtifacts({
     setDownloading(artifact.database);
     setError("");
     try {
-      const { blob, fileName } = await api.downloadBackupArtifact(job.id, artifact.database, selectedVersion?.current ? undefined : selectedVersion?.id);
+      const { blob, fileName } = await api.downloadBackupArtifact(
+        job.id,
+        artifact.database,
+        selectedVersion?.current ? undefined : selectedVersion?.id,
+      );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -92,52 +102,190 @@ export function BackupArtifacts({
     }
   }
 
-	return (
-    <div className="page-stack artifact-manager-page">
-      <div className="page-heading">
-        <div><h2>备份产物</h2><p>{job.name} · 任务 ID {job.id}</p></div>
-        <Button variant="secondary" onClick={onBack}><ArrowLeft size={16} />返回备份详情</Button>
-      </div>
-      {error && <div className="error-banner">{error}</div>}
-      <Card className="artifact-manager-card">
-        <div className="section-title compact"><div><h3>产物版本</h3><p>选择某一次备份版本后，再管理该版本下的数据库产物。</p></div><Badge tone="gray">{storageTypeLabel(job.destinationType)}</Badge></div>
-        {versions.length > 1 && <div className="artifact-version-picker field select-field artifact-manager-picker" ref={versionMenuRef}><span>备份版本</span><button type="button" className="select-trigger artifact-version-trigger" aria-haspopup="listbox" aria-expanded={versionMenuOpen} onClick={() => setVersionMenuOpen((current) => !current)}><span>{selectedVersion ? `${selectedVersion.label} · ${selectedVersion.artifacts.length} 个数据库 · ${formatBytes(totalArtifactSize(selectedVersion.artifacts))}` : "选择备份版本"}</span><ChevronDown size={16} /></button>{versionMenuOpen && <div className="select-menu artifact-version-menu" role="listbox" aria-label="备份版本">{versions.map((version) => <button type="button" key={version.id} className={version.id === selectedVersion?.id ? "active" : ""} role="option" aria-selected={version.id === selectedVersion?.id} onClick={() => { setSelectedVersionId(version.id); setVersionMenuOpen(false); }}><strong>{version.label}</strong><small>{version.artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(version.artifacts))}{version.current ? " · 最新产物" : ""}</small></button>)}</div>}</div>}
-        <div className="artifact-manager-summary">
-          <strong>{selectedVersion ? selectedVersion.label : "当前最新产物"}</strong>
-          <span>{artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(artifacts))}</span>
-          <small>{selectedVersion?.current ? "当前展示最新一次备份版本的真实产物。" : "当前展示所选备份版本的真实产物。"}</small>
-        </div>
-        {artifacts.length ? (
-          <div className="backup-artifact-list artifact-manager-list">
-            {artifacts.map((artifact) => (
-              <div className="backup-artifact-row" key={artifact.database}>
-                <span className="artifact-icon">{job.destinationType === "local" ? <HardDrive size={22} /> : <Archive size={22} />}</span>
-                <div className="artifact-main">
-                  <div className="artifact-title"><strong>{artifact.database}</strong><span>{formatBytes(artifact.size ?? 0)}</span></div>
-                  <dl>
-                    <div><dt>存储类型</dt><dd>{storageTypeLabel(job.destinationType)}</dd></div>
-                    <div><dt>{job.destinationType === "local" ? "本地路径" : "对象路径"}</dt><dd>{artifact.path || artifact.name}</dd></div>
-                  </dl>
-                </div>
-				<div className="artifact-actions">
-				  <button type="button" data-tooltip-content="复制路径" onClick={() => copyArtifactPath(artifact)}>{copied === artifact.database ? <Clipboard size={15} /> : <Copy size={15} />}<span>{copied === artifact.database ? "已复制路径" : "复制路径"}</span></button>
-				  <button type="button" data-tooltip-content="下载备份产物" disabled={downloading === artifact.database} onClick={() => downloadArtifact(artifact)}><Download size={15} /><span>{downloading === artifact.database ? "下载中" : "下载"}</span></button>
-          {showEtcdSnapshotManual && <button type="button" className="manual" data-tooltip-content="查看 etcd 数据恢复文档" onClick={() => setManualOpen(true)}><FileText size={15} /><span>数据恢复文档</span></button>}
-				</div>
-			  </div>
-            ))}
+  return (
+    <div className="page-stack">
+      <div className="h-row">
+        <div className="page-h">
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <DatabaseLogo type={job.sourceType} size="md" />
+            <div>
+              <h2>备份产物</h2>
+              <p>
+                {job.name} · <span className="mono">{job.id}</span>
+              </p>
+            </div>
           </div>
-        ) : (
-          <div className="backup-artifact"><span className="artifact-icon"><Archive size={22} /></span><div><strong>当前版本没有可管理产物</strong><span>0 B</span><small>请选择其他备份版本或等待备份完成。</small></div></div>
-        )}
+        </div>
+        <div className="sp" />
+        {showEtcdSnapshotManual ? (
+          <Button variant="secondary" onClick={() => setManualOpen(true)}>
+            <FileText size={15} />
+            etcd 恢复手册
+          </Button>
+        ) : null}
+        <Button variant="secondary" onClick={onBack}>
+          <ArrowLeft size={15} />
+          返回备份详情
+        </Button>
+      </div>
+
+      {error ? <div className="error-banner">{error}</div> : null}
+
+      <Card className="pad">
+        <div className="h-row" style={{ marginBottom: 8 }}>
+          <div>
+            <div className="sec-title">产物版本时间线</div>
+            <div className="sec-sub">选择一次备份版本后，查看、复制路径或下载该版本下的数据库产物</div>
+          </div>
+          <div className="sp" />
+          <Badge tone="gray">{storageTypeLabel(job.destinationType)}</Badge>
+        </div>
+
+        {versions.length > 0 ? (
+          <div className="chain" role="listbox" aria-label="备份版本">
+            {versions.map((version, idx) => {
+              const isSelected = version.id === selectedVersion?.id;
+              return (
+                <button
+                  type="button"
+                  key={version.id}
+                  className={[
+                    "chain-node",
+                    version.current ? "anchor" : "",
+                    isSelected ? "sel" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => setSelectedVersionId(version.id)}
+                >
+                  <span className="cn-dot">{version.current ? "最新" : `V${versions.length - idx}`}</span>
+                  <span className="cn-t">{version.label}</span>
+                  <span className="cn-s">
+                    {version.artifacts.length} 个库 · {formatBytes(totalArtifactSize(version.artifacts))}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        <div
+          className="info-callout"
+          style={{
+            marginTop: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 10,
+          }}
+        >
+          <div>
+            <strong>{selectedVersion ? selectedVersion.label : "当前最新产物"}</strong>
+            <div style={{ fontSize: 12, marginTop: 2 }}>
+              {selectedVersion?.current
+                ? "当前展示最新一次备份版本的真实产物。"
+                : "当前展示所选历史备份版本的真实产物。"}
+            </div>
+          </div>
+          <span className="tag mono-t">
+            {artifacts.length} 个数据库 · {formatBytes(totalArtifactSize(artifacts))}
+          </span>
+        </div>
       </Card>
-      {showEtcdSnapshotManual && manualOpen && <EtcdSnapshotManualDialog artifacts={artifacts} onClose={() => setManualOpen(false)} />}
-	</div>
+
+      {artifacts.length ? (
+        <div className="ledger">
+          {artifacts.map((artifact) => (
+            <div className="lrow" key={artifact.database}>
+              <span
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 10,
+                  background: "var(--surface)",
+                  border: "1px solid var(--hair)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--ink)",
+                  flexShrink: 0,
+                }}
+              >
+                {job.destinationType === "local" ? <HardDrive size={18} /> : <Archive size={18} />}
+              </span>
+              <div className="lr-main">
+                <div className="lr-t">
+                  <span>{artifact.database}</span>
+                  <span className="tag mono-t">{formatBytes(artifact.size ?? 0)}</span>
+                  <Badge tone="gray">{storageTypeLabel(job.destinationType)}</Badge>
+                </div>
+                <div className="lr-s mono" style={{ wordBreak: "break-all" }}>
+                  {job.destinationType === "local" ? "本地路径: " : "对象路径: "}
+                  {artifact.path || artifact.name}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  data-tooltip-content="复制路径"
+                  onClick={() => copyArtifactPath(artifact)}
+                >
+                  {copied === artifact.database ? <Clipboard size={14} /> : <Copy size={14} />}
+                  {copied === artifact.database ? "已复制路径" : "复制路径"}
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  data-tooltip-content="下载备份产物"
+                  disabled={downloading === artifact.database}
+                  onClick={() => downloadArtifact(artifact)}
+                >
+                  <Download size={14} />
+                  {downloading === artifact.database ? "下载中..." : "下载"}
+                </Button>
+                {showEtcdSnapshotManual ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-tooltip-content="查看 etcd 数据恢复文档"
+                    onClick={() => setManualOpen(true)}
+                  >
+                    <FileText size={14} />
+                    数据恢复文档
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Card className="empty">
+          <Archive size={28} style={{ color: "var(--muted)", marginBottom: 8 }} />
+          <div className="e-t">当前版本没有可管理产物</div>
+          <div className="e-s">请选择其他备份版本，或等待一次备份任务完成后再查看产物。</div>
+        </Card>
+      )}
+
+      {showEtcdSnapshotManual && manualOpen ? (
+        <EtcdSnapshotManualDialog artifacts={artifacts} onClose={() => setManualOpen(false)} />
+      ) : null}
+    </div>
   );
 }
 
-function EtcdSnapshotManualDialog({ artifacts, onClose }: { artifacts: BackupArtifactItem[]; onClose: () => void }) {
-  const artifactPath = artifacts[0]?.path || artifacts[0]?.name || "/path/to/etcd_cluster_20260709_140510.tar.gz";
+function EtcdSnapshotManualDialog({
+  artifacts,
+  onClose,
+}: {
+  artifacts: BackupArtifactItem[];
+  onClose: () => void;
+}) {
+  const artifactPath =
+    artifacts[0]?.path || artifacts[0]?.name || "/path/to/etcd_cluster_20260709_140510.tar.gz";
   const endpoint = "http://127.0.0.1:12379";
   const snapshotLookupCommand = artifactPath.endsWith(".db")
     ? `SNAPSHOT_DB="${artifactPath}"`
@@ -149,6 +297,7 @@ SNAPSHOT_DB="$(find /tmp/etcd-snapshot-view -name '*.db' -type f | head -n 1)"
 test -n "$SNAPSHOT_DB"`;
   const [copiedCommand, setCopiedCommand] = useState("");
   const [manualTab, setManualTab] = useState<"view" | "restore">("view");
+
   const viewSteps: EtcdManualStep[] = [
     {
       icon: HardDriveDownload,
@@ -191,10 +340,12 @@ etcdctl --endpoints=${endpoint} get /your/key`,
     {
       icon: Terminal,
       title: "Kubernetes 对象内容看起来异常",
-      description: "Kubernetes 存在 etcd 里的对象通常是 protobuf，直接读取时出现乱码属于正常现象。需要粗略看文本片段时可以配合 strings。",
+      description:
+        "Kubernetes 存在 etcd 里的对象通常是 protobuf，直接读取时出现乱码属于正常现象。需要粗略看文本片段时可以配合 strings。",
       command: `etcdctl --endpoints=${endpoint} get /registry/storageclasses/openebs-hostpath --print-value-only | strings`,
     },
   ];
+
   const restoreSteps: EtcdManualStep[] = [
     {
       icon: HardDriveDownload,
@@ -211,10 +362,14 @@ etcdctl --endpoints=${endpoint} get /your/key`,
     {
       icon: AlertTriangle,
       title: "理解恢复影响范围",
-      description: "snapshot restore 会生成一个新的 etcd 数据目录。后续如果把目标 etcd 的 data-dir 指向这个目录，目标集群当前 etcd 状态会以该快照为准；不要在已有业务运行的集群上直接覆盖使用。",
+      description:
+        "snapshot restore 会生成一个新的 etcd 数据目录。后续如果把目标 etcd 的 data-dir 指向这个目录，目标集群当前 etcd 状态会以该快照为准；不要在已有业务运行的集群上直接覆盖使用。",
       notes: [
         { term: "恢复目录", description: "建议先恢复到新的空目录，例如 /var/lib/etcd-restore。" },
-        { term: "生效条件", description: "只有当 etcd 配置切换到恢复目录后，新启动的 etcd 才会使用 snapshot 中的数据。" },
+        {
+          term: "生效条件",
+          description: "只有当 etcd 配置切换到恢复目录后，新启动的 etcd 才会使用 snapshot 中的数据。",
+        },
       ],
       command: `rm -rf /var/lib/etcd-restore
 
@@ -224,7 +379,8 @@ etcdutl snapshot restore "$SNAPSHOT_DB" \\
     {
       icon: AlertTriangle,
       title: "先确认新集群类型",
-      description: "不同 Kubernetes 安装方式接管 etcd 的入口不同。先确认是独立 systemd etcd、kubeadm static pod、发行版内置 etcd，还是云厂商托管控制面。",
+      description:
+        "不同 Kubernetes 安装方式接管 etcd 的入口不同。先确认是独立 systemd etcd、kubeadm static pod、发行版内置 etcd，还是云厂商托管控制面。",
       command: `# kubeadm 常见路径
 ls /etc/kubernetes/manifests/etcd.yaml
 ls /etc/kubernetes/pki/etcd/
@@ -244,7 +400,10 @@ systemctl status rke2-server --no-pager`,
         { term: "--name", description: "当前节点名称，必须出现在 --initial-cluster 成员列表中。" },
         { term: "--initial-cluster", description: "新集群完整成员列表，所有节点填写一致。" },
         { term: "--initial-advertise-peer-urls", description: "当前节点自己的 peer 地址，每台节点填写自己的地址。" },
-        { term: "--initial-cluster-token", description: "新集群 token，所有节点填写一致，用于避免和其他恢复任务混淆。" },
+        {
+          term: "--initial-cluster-token",
+          description: "新集群 token，所有节点填写一致，用于避免和其他恢复任务混淆。",
+        },
       ],
       command: `rm -rf /var/lib/etcd-restore
 
@@ -258,7 +417,8 @@ etcdutl snapshot restore "$SNAPSHOT_DB" \\
     {
       icon: DatabaseBackup,
       title: "三节点新集群恢复模板",
-      description: "每个新节点都用同一个 snapshot，但 --name 和 --initial-advertise-peer-urls 要按当前节点修改，并与 initial-cluster 成员列表保持一致。",
+      description:
+        "每个新节点都用同一个 snapshot，但 --name 和 --initial-advertise-peer-urls 要按当前节点修改，并与 initial-cluster 成员列表保持一致。",
       command: `rm -rf /var/lib/etcd-restore
 
 etcdutl snapshot restore "$SNAPSHOT_DB" \\
@@ -271,7 +431,8 @@ etcdutl snapshot restore "$SNAPSHOT_DB" \\
     {
       icon: Terminal,
       title: "kubeadm / static pod 接管方式",
-      description: "kubeadm 创建控制平面时，etcd 通常由 kubelet 以 static pod 管理。先停 kubelet 或移走 etcd manifest，再把 manifest 的 data-dir 指向恢复目录。",
+      description:
+        "kubeadm 创建控制平面时，etcd 通常由 kubelet 以 static pod 管理。先停 kubelet 或移走 etcd manifest，再把 manifest 的 data-dir 指向恢复目录。",
       command: `systemctl stop kubelet
 
 mv /etc/kubernetes/manifests/etcd.yaml /etc/kubernetes/manifests/etcd.yaml.bak
@@ -287,7 +448,8 @@ journalctl -u kubelet -f`,
     {
       icon: PlayCircle,
       title: "独立 systemd etcd 接管方式",
-      description: "如果 etcd 是独立 systemd 服务，停止 etcd 后把配置里的数据目录切到 restore 结果目录。不同安装方式的配置文件路径可能不同。",
+      description:
+        "如果 etcd 是独立 systemd 服务，停止 etcd 后把配置里的数据目录切到 restore 结果目录。不同安装方式的配置文件路径可能不同。",
       command: `systemctl stop etcd
 
 # 确认 etcd 配置中的 --data-dir 指向 /var/lib/etcd-restore
@@ -299,7 +461,8 @@ systemctl status etcd --no-pager`,
     {
       icon: AlertTriangle,
       title: "发行版和托管控制面",
-      description: "k3s、rke2、Rancher、MicroK8s 等优先用发行版自己的 snapshot restore；EKS/GKE/ACK/CCE 等托管控制面通常不能直接恢复 etcd snapshot。",
+      description:
+        "k3s、rke2、Rancher、MicroK8s 等优先用发行版自己的 snapshot restore；EKS/GKE/ACK/CCE 等托管控制面通常不能直接恢复 etcd snapshot。",
       command: `# k3s / rke2 示例：以发行版实际文档为准
 # 不要直接套 kubeadm 的 /etc/kubernetes/manifests/etcd.yaml 路径
 
@@ -322,6 +485,7 @@ kubectl get nodes
 kubectl get pods -A`,
     },
   ];
+
   const steps = manualTab === "view" ? viewSteps : restoreSteps;
 
   useEffect(() => {
@@ -336,63 +500,170 @@ kubectl get pods -A`,
     setCopiedCommand(title);
     try {
       await copyText(command);
-      window.setTimeout(() => setCopiedCommand((current) => current === title ? "" : current), 1600);
+      window.setTimeout(() => setCopiedCommand((current) => (current === title ? "" : current)), 1600);
     } catch {
       setCopiedCommand("复制失败");
-      window.setTimeout(() => setCopiedCommand((current) => current === "复制失败" ? "" : current), 1600);
+      window.setTimeout(() => setCopiedCommand((current) => (current === "复制失败" ? "" : current)), 1600);
     }
   }
 
-  return (
-    <div className="modal-backdrop artifact-manual-backdrop" onMouseDown={onClose}>
-      <div className="modal artifact-manual-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-manual-title" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-head artifact-manual-modal-head">
-          <div className="artifact-manual-title">
-            <span><DatabaseBackup size={20} /></span>
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div
+        className="modal wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="artifact-manual-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-h">
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <span
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 9,
+                background: "var(--surface)",
+                border: "1px solid var(--hair)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--indigo-ink)",
+                flexShrink: 0,
+              }}
+            >
+              <DatabaseBackup size={18} />
+            </span>
             <div>
               <h3 id="artifact-manual-title">查看 etcd snapshot 备份</h3>
-              <p>.db 文件是 etcd snapshot 备份，不能像普通文档一样直接打开查看。可先查看内容，也可按离线流程恢复到新的 etcd 集群。</p>
+              <div className="ms">
+                .db 文件是 etcd snapshot 备份，不能像普通文档一样直接打开查看。可先查看内容，也可按离线流程恢复到新的 etcd 集群。
+              </div>
             </div>
           </div>
-          <button type="button" className="plain-icon" aria-label="关闭操作手册" onClick={onClose}><X size={18} /></button>
+          <button type="button" className="icon-btn ghost" aria-label="关闭操作手册" onClick={onClose}>
+            <X size={17} />
+          </button>
         </div>
-        <div className="artifact-manual-tabs" role="tablist" aria-label="etcd snapshot 操作类型">
-          <button type="button" className={manualTab === "view" ? "active" : ""} role="tab" aria-selected={manualTab === "view"} onClick={() => setManualTab("view")}>查看备份</button>
-          <button type="button" className={manualTab === "restore" ? "active" : ""} role="tab" aria-selected={manualTab === "restore"} onClick={() => setManualTab("restore")}>恢复到新集群</button>
-        </div>
-        <div className="artifact-manual-warning">
-          <AlertTriangle size={16} />
-          <span>{manualTab === "view" ? "不要把 snapshot 直接恢复覆盖到生产 etcd 数据目录。临时查看统一使用 /tmp 目录。" : "恢复到新集群会重建该集群的 etcd 状态，不是导入到现有运行中的集群。执行前请停止目标 etcd，并确认节点名、IP、证书和数据目录都属于新集群。"}</span>
-        </div>
-        <div className="artifact-manual-steps">
-          {steps.map(({ icon: Icon, title, description, notes, command }, index) => (
-            <section className="artifact-manual-step" key={title}>
-              <div className="artifact-manual-step-head">
-                <span>{index + 1}</span>
-                <Icon size={17} />
-                <div><strong>{title}</strong><small>{description}</small></div>
+
+        <div className="modal-b" style={{ display: "grid", gap: 14 }}>
+          <div className="chiprow" role="tablist" aria-label="etcd snapshot 操作类型">
+            <button
+              type="button"
+              className={manualTab === "view" ? "fchip on" : "fchip"}
+              role="tab"
+              aria-selected={manualTab === "view"}
+              onClick={() => setManualTab("view")}
+            >
+              查看备份
+            </button>
+            <button
+              type="button"
+              className={manualTab === "restore" ? "fchip on" : "fchip"}
+              role="tab"
+              aria-selected={manualTab === "restore"}
+              onClick={() => setManualTab("restore")}
+            >
+              恢复到新集群
+            </button>
+          </div>
+
+          <div className="warn-callout" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              {manualTab === "view"
+                ? "不要把 snapshot 直接恢复覆盖到生产 etcd 数据目录。临时查看统一使用 /tmp 目录。"
+                : "恢复到新集群会重建该集群的 etcd 状态，不是导入到现有运行中的集群。执行前请停止目标 etcd，并确认节点名、IP、证书和数据目录都属于新集群。"}
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gap: 12 }}>
+            {steps.map(({ icon: Icon, title, description, notes, command }, index) => (
+              <div className="card pad" key={title} style={{ display: "grid", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <span
+                    className="mono"
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 99,
+                      background: "var(--indigo-soft)",
+                      color: "var(--indigo-ink)",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {index + 1}
+                  </span>
+                  <Icon size={16} style={{ marginTop: 3, color: "var(--muted)", flexShrink: 0 }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{title}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>{description}</div>
+                  </div>
+                </div>
+
+                {notes?.length ? (
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 20,
+                      display: "grid",
+                      gap: 4,
+                      fontSize: 12.5,
+                      color: "var(--muted)",
+                    }}
+                  >
+                    {notes.map((note) => (
+                      <li key={note.term}>
+                        <code style={{ color: "var(--ink)", fontFamily: "var(--mono)" }}>{note.term}</code>
+                        <span>：{note.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+
+                <div style={{ position: "relative" }}>
+                  <div style={{ position: "absolute", top: 8, right: 8 }}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      data-tooltip-content="复制命令"
+                      onClick={() => copyCommand(command, title)}
+                    >
+                      {copiedCommand === title ? <Check size={13} /> : <Copy size={13} />}
+                      {copiedCommand === title ? "已复制" : copiedCommand === "复制失败" ? "失败" : "复制"}
+                    </Button>
+                  </div>
+                  <pre className="codebox" style={{ paddingRight: 88 }}>
+                    <code>{command}</code>
+                  </pre>
+                </div>
               </div>
-              {notes?.length ? (
-                <ul className="artifact-manual-notes">
-                  {notes.map((note) => <li key={note.term}><code>{note.term}</code><span>：{note.description}</span></li>)}
-                </ul>
-              ) : null}
-              <div className="artifact-manual-command-wrap">
-                <button type="button" className="artifact-command-copy" data-tooltip-content="复制命令" onClick={() => copyCommand(command, title)}>
-                  {copiedCommand === title ? <Clipboard size={14} /> : <Copy size={14} />}
-                  <span>{copiedCommand === title ? "已复制" : copiedCommand === "复制失败" ? "失败" : "复制"}</span>
-                </button>
-                <pre className="manual-command artifact-manual-command"><code>{command}</code></pre>
-              </div>
-            </section>
-          ))}
+            ))}
+          </div>
+
+          <div className="info-callout" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              {manualTab === "view"
+                ? "查看完成后关闭启动本地 etcd 的终端，确认 12379 端口不再使用后，可以删除 /tmp/etcd-restore 和 /tmp/etcd-snapshot-view。"
+                : "多节点恢复时所有节点必须使用同一个 snapshot、同一个 initial-cluster 成员列表和同一个 token；每个节点只修改自己的 --name 与 --initial-advertise-peer-urls。Kubernetes 发行版集群优先遵循发行版恢复流程。"}
+            </span>
+          </div>
         </div>
-        <div className="artifact-manual-footer">
-          <CheckCircle2 size={16} />
-          <span>{manualTab === "view" ? "查看完成后关闭启动本地 etcd 的终端，确认 12379 端口不再使用后，可以删除 /tmp/etcd-restore 和 /tmp/etcd-snapshot-view。" : "多节点恢复时所有节点必须使用同一个 snapshot、同一个 initial-cluster 成员列表和同一个 token；每个节点只修改自己的 --name 与 --initial-advertise-peer-urls。Kubernetes 发行版集群优先遵循发行版恢复流程。"}</span>
+
+        <div className="modal-f">
+          <Button variant="secondary" onClick={onClose}>
+            关闭
+          </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

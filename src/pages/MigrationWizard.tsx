@@ -1,13 +1,20 @@
-import { ArrowLeft, ArrowRight, Check, ChevronDown, Database, Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, Box, Check, ChevronDown, Database, Search, Zap } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
+import { BridgeFlow } from "../components/BridgeFlow";
+import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import type { DatabaseConnection, DatabaseInfo, MigrationConfig, TableInfo } from "../types";
-import { Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 
 const steps = ["连接与数据库", "选择数据表", "迁移配置", "确认执行"];
 
 function isMigrationConnection(connection: DatabaseConnection) {
-  return connection.type === "PostgreSQL" || connection.type === "MySQL" || connection.type === "MongoDB" || connection.type === "Neo4j";
+  return (
+    connection.type === "PostgreSQL" ||
+    connection.type === "MySQL" ||
+    connection.type === "MongoDB" ||
+    connection.type === "Neo4j"
+  );
 }
 
 export function MigrationWizard({
@@ -20,9 +27,14 @@ export function MigrationWizard({
   onStart: (config: MigrationConfig) => Promise<void>;
 }) {
   const migrationConnections = useMemo(() => connections.filter(isMigrationConnection), [connections]);
-  const initialSource = initialSourceId && migrationConnections.some((item) => item.id === initialSourceId) ? initialSourceId : (migrationConnections[0]?.id ?? "");
+  const initialSource =
+    initialSourceId && migrationConnections.some((item) => item.id === initialSourceId)
+      ? initialSourceId
+      : (migrationConnections[0]?.id ?? "");
   const initialSourceType = migrationConnections.find((item) => item.id === initialSource)?.type;
-  const initialTarget = migrationConnections.find((item) => item.id !== initialSource && item.type === initialSourceType)?.id ?? "";
+  const initialTarget =
+    migrationConnections.find((item) => item.id !== initialSource && item.type === initialSourceType)?.id ?? "";
+
   const [step, setStep] = useState(0);
   const [query, setQuery] = useState("");
   const [sourceDatabases, setSourceDatabases] = useState<DatabaseInfo[]>([]);
@@ -44,11 +56,16 @@ export function MigrationWizard({
   });
 
   useEffect(() => {
-    const nextSource = initialSourceId && migrationConnections.some((item) => item.id === initialSourceId) ? initialSourceId : (migrationConnections[0]?.id ?? "");
+    const nextSource =
+      initialSourceId && migrationConnections.some((item) => item.id === initialSourceId)
+        ? initialSourceId
+        : (migrationConnections[0]?.id ?? "");
     setConfig((current) => {
       const sourceId = migrationConnections.some((item) => item.id === current.sourceId) ? current.sourceId : nextSource;
       const sourceType = migrationConnections.find((item) => item.id === sourceId)?.type;
-      const targetCandidate = migrationConnections.some((item) => item.id === current.targetId && item.id !== sourceId && item.type === sourceType)
+      const targetCandidate = migrationConnections.some(
+        (item) => item.id === current.targetId && item.id !== sourceId && item.type === sourceType,
+      )
         ? current.targetId
         : (migrationConnections.find((item) => item.id !== sourceId && item.type === sourceType)?.id ?? "");
       if (sourceId === current.sourceId && targetCandidate === current.targetId) {
@@ -72,18 +89,20 @@ export function MigrationWizard({
         setSourceDatabases(items);
         setConfig((current) => ({
           ...current,
-          sourceDatabase: items.some((item) => item.name === current.sourceDatabase) ? current.sourceDatabase : (items[0]?.name ?? ""),
+          sourceDatabase: items.some((item) => item.name === current.sourceDatabase)
+            ? current.sourceDatabase
+            : (items[0]?.name ?? ""),
         }));
       })
       .catch((reason) => {
-        if (cancelled) return;
-        setError(reason.message);
+        if (!cancelled) setError(reason.message);
       })
       .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [config.sourceId]);
 
   useEffect(() => {
@@ -100,22 +119,27 @@ export function MigrationWizard({
         setTargetDatabases(items);
         setConfig((current) => ({
           ...current,
-          targetDatabase: items.some((item) => item.name === current.targetDatabase) ? current.targetDatabase : (items[0]?.name ?? ""),
+          targetDatabase: items.some((item) => item.name === current.targetDatabase)
+            ? current.targetDatabase
+            : (items[0]?.name ?? ""),
         }));
       })
       .catch((reason) => {
-        if (cancelled) return;
-        setError(reason.message);
+        if (!cancelled) setError(reason.message);
       })
       .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [config.targetId]);
 
   const source = migrationConnections.find((item) => item.id === config.sourceId);
-  const targetConnections = useMemo(() => migrationConnections.filter((item) => item.id !== config.sourceId && item.type === source?.type), [migrationConnections, config.sourceId, source?.type]);
+  const targetConnections = useMemo(
+    () => migrationConnections.filter((item) => item.id !== config.sourceId && item.type === source?.type),
+    [migrationConnections, config.sourceId, source?.type],
+  );
   const target = targetConnections.find((item) => item.id === config.targetId);
   const databaseType = source?.type && target?.type && source.type === target.type ? source.type : source?.type;
   const supportsCopy = databaseType === "PostgreSQL";
@@ -138,24 +162,21 @@ export function MigrationWizard({
       .then((items) => {
         if (cancelled) return;
         setTables(items);
-        setConfig((current) => {
-          const validSelections = current.tables.filter((id) => items.some((item) => item.id === id));
-          if (isMongo) {
-            return { ...current, tables: validSelections };
-          }
-          return { ...current, tables: validSelections };
-        });
+        setConfig((current) => ({
+          ...current,
+          tables: current.tables.filter((id) => items.some((item) => item.id === id)),
+        }));
       })
       .catch((reason) => {
-        if (cancelled) return;
-        setError(reason.message);
+        if (!cancelled) setError(reason.message);
       })
       .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [step, config.sourceId, config.sourceDatabase, isMongo]);
+    return () => {
+      cancelled = true;
+    };
+  }, [step, config.sourceId, config.sourceDatabase, isNeo4j]);
 
   useEffect(() => {
     if (!supportsCopy && config.engine === "copy") {
@@ -181,7 +202,7 @@ export function MigrationWizard({
         ? config.tables.filter((id) => validTableIds.has(id))
         : isNeo4j
           ? []
-        : config.tables;
+          : config.tables;
       await onStart({
         ...config,
         tables: normalizedTables,
@@ -202,151 +223,571 @@ export function MigrationWizard({
   }
 
   if (!migrationConnections.length) {
-    return <div className="empty-state"><div>DB</div><h2>暂无可迁移连接</h2><p>当前迁移支持 PostgreSQL、MySQL、MongoDB 和 Neo4j。请先添加至少两个可访问的同类型数据库连接。</p></div>;
+    return (
+      <div className="empty">
+        <div className="e-t">暂无可迁移连接</div>
+        <div className="e-s">当前迁移支持 PostgreSQL、MySQL、MongoDB 和 Neo4j。请先添加至少两个可访问的同类型数据库连接。</div>
+      </div>
+    );
   }
 
+  const nextDisabled =
+    loading ||
+    starting ||
+    (step === 0 &&
+      (!config.sourceDatabase ||
+        !config.targetDatabase ||
+        (config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase))) ||
+    (step === 1 && !isMongo && !isNeo4j && !config.tables.length);
+
   return (
-    <div className="wizard-page">
-      <div className="stepper">
-        {steps.map((label, index) => <div className={`step ${index === step ? "current" : ""} ${index < step ? "done" : ""}`} key={label}><span>{index < step ? <Check size={14} /> : index + 1}</span><strong>{label}</strong>{index < steps.length - 1 && <i />}</div>)}
+    <div className="page-stack constrained">
+      <div>
+        <h1 className="page-h">创建迁移任务</h1>
+        <div className="sec-sub">仅支持同类型实例之间迁移 · 目标数据库需预先存在</div>
       </div>
-      {error && <div className="error-banner">{error}</div>}
 
-      {step === 0 && (
-        <Card className="wizard-card connection-step">
-          <div className="card-heading"><h3>选择源端与目标端数据库</h3><p>目标数据库需提前创建，迁移任务会在其中写入所选对象和数据。</p></div>
-          <div className="endpoint-grid">
-            <EndpointSelect title="源端" connectionId={config.sourceId} database={config.sourceDatabase} connections={migrationConnections} databases={sourceDatabases} onConnection={(sourceId) => setConfig({ ...config, sourceId, sourceDatabase: "", targetId: "", targetDatabase: "" })} onDatabase={(sourceDatabase) => setConfig({ ...config, sourceDatabase })} />
-            <div className="route-arrow"><span><ArrowRight /></span></div>
-            <EndpointSelect title="目标端" connectionId={config.targetId} database={config.targetDatabase} connections={targetConnections} databases={targetDatabases} onConnection={(targetId) => setConfig({ ...config, targetId, targetDatabase: "" })} onDatabase={(targetDatabase) => setConfig({ ...config, targetDatabase })} />
+      <div className="steps">
+        {steps.map((label, index) => (
+          <div className={`step ${index === step ? "on" : index < step ? "done" : ""}`} key={label}>
+            <span className="sn">{index < step ? <Check size={12} /> : index + 1}</span>
+            <span>{label}</span>
           </div>
-          {loading && <p className="loading-copy">正在加载数据库...</p>}
-          {source && !targetConnections.length && <p className="form-error">没有可用的同类型目标连接，请先添加另一个 {source.type} 连接。</p>}
-          {config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase && <p className="form-error">源端和目标端不能是同一个数据库。</p>}
-        </Card>
-      )}
+        ))}
+      </div>
 
-      {step === 1 && (
-        <div className="wizard-columns">
-          <Card className="object-panel">
+      {error ? <div className="error-banner">{error}</div> : null}
+
+      {step === 0 ? (
+        <Card className="pad">
+          <h3 className="sec-title">选择源端与目标端数据库</h3>
+          <div className="sec-sub" style={{ marginBottom: 16 }}>
+            目标数据库需提前创建，迁移任务会在其中写入所选对象和数据。
+          </div>
+
+          <div className="grid2">
+            <EndpointSelect
+              title="源端"
+              connectionId={config.sourceId}
+              database={config.sourceDatabase}
+              connections={migrationConnections}
+              databases={sourceDatabases}
+              onConnection={(sourceId) =>
+                setConfig({ ...config, sourceId, sourceDatabase: "", targetId: "", targetDatabase: "" })
+              }
+              onDatabase={(sourceDatabase) => setConfig({ ...config, sourceDatabase })}
+            />
+            <EndpointSelect
+              title="目标端"
+              connectionId={config.targetId}
+              database={config.targetDatabase}
+              connections={targetConnections}
+              databases={targetDatabases}
+              onConnection={(targetId) => setConfig({ ...config, targetId, targetDatabase: "" })}
+              onDatabase={(targetDatabase) => setConfig({ ...config, targetDatabase })}
+            />
+          </div>
+
+          {loading ? <div style={{ color: "var(--muted)", fontSize: 13 }}>正在加载数据库...</div> : null}
+          {source && !targetConnections.length ? (
+            <div className="error-banner" style={{ marginTop: 10 }}>
+              没有可用的同类型目标连接，请先添加另一个 {source.type} 连接。
+            </div>
+          ) : null}
+          {config.sourceId &&
+          config.sourceId === config.targetId &&
+          config.sourceDatabase &&
+          config.sourceDatabase === config.targetDatabase ? (
+            <div className="error-banner" style={{ marginTop: 10 }}>
+              源端和目标端不能是同一个数据库。
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
+      {step === 1 ? (
+        <div className="ov-grid">
+          <Card className="pad">
             {isNeo4j ? (
               <>
-                <div className="card-heading"><h3>确认迁移图数据库</h3><p>Neo4j 当前按整库图数据迁移。</p></div>
-                <div className="database-list">
-                  <div className="database-row selected">
-                    <span className="checkbox checked"><Check size={13} /></span>
-                    <Database size={17} />
-                    <strong>{config.sourceDatabase}</strong>
-                    <span>Graph</span>
-                    <small>节点、关系、索引和约束</small>
-                    <span />
+                <h3 className="sec-title">确认迁移图数据库</h3>
+                <div className="sec-sub" style={{ marginBottom: 12 }}>
+                  Neo4j 当前按整库图数据迁移。
+                </div>
+                <div className="ledger">
+                  <div className="lrow" style={{ cursor: "default" }}>
+                    <Database size={16} />
+                    <div className="lr-main">
+                      <div className="lr-t">{config.sourceDatabase}</div>
+                      <div className="lr-s">节点、关系、索引和约束</div>
+                    </div>
+                    <Badge tone="green">整库图</Badge>
                   </div>
                 </div>
-                <div className="info-banner">Neo4j 迁移会使用 APOC stream 导出整库 Cypher，再通过 cypher-shell 导入目标库；暂不支持按标签或关系类型拆分迁移。</div>
-              </>
-            ) : isMongo ? (
-              <>
-                <div className="card-heading"><h3>选择迁移集合</h3><p>已选择 {config.tables.length} / {tables.length} 个集合</p></div>
-                <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 collection" /></label>
-                <div className="table-selection-actions"><button onClick={() => setConfig({ ...config, tables: tables.map((item) => item.id) })}>全选</button><button onClick={() => setConfig({ ...config, tables: [] })}>清空</button></div>
-                <div className="database-list">
-                  {loading && <div className="loading-copy">正在加载集合信息...</div>}
-                  {!loading && filteredTables.map((item) => {
-                    const checked = config.tables.includes(item.id);
-                    return <button className="database-row" key={item.id} onClick={() => toggleTable(item.id)}><span className={`checkbox ${checked ? "checked" : ""}`}>{checked && <Check size={13} />}</span><Database size={17} /><strong>{item.name}</strong><span>Collection</span><small>{item.schema}</small><span /></button>;
-                  })}
-                  {!loading && !tables.length && <div className="loading-copy">该数据库没有可迁移的集合。</div>}
+                <div className="info-callout" style={{ marginTop: 12 }}>
+                  Neo4j 迁移会使用 APOC stream 导出整库 Cypher，再通过 cypher-shell 导入目标库；暂不支持按标签或关系类型拆分迁移。
                 </div>
-                <div className="info-banner">MongoDB 迁移当前走原生工具链。可按集合选择，迁移时使用 `mongodump --collection` 与 `mongorestore --nsInclude`。</div>
               </>
             ) : (
               <>
-                <div className="card-heading"><h3>选择迁移数据表</h3><p>已选择 {config.tables.length} / {tables.length} 张表</p></div>
-                <label className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 schema.table" /></label>
-                <div className="table-selection-actions"><button onClick={() => setConfig({ ...config, tables: tables.map((item) => item.id) })}>全选</button><button onClick={() => setConfig({ ...config, tables: [] })}>清空</button></div>
-                <div className="database-list">
-                  {loading && <div className="loading-copy">正在加载表信息...</div>}
-                  {!loading && filteredTables.map((item) => {
-                    const checked = config.tables.includes(item.id);
-                    return <button className="database-row" key={item.id} onClick={() => toggleTable(item.id)}><span className={`checkbox ${checked ? "checked" : ""}`}>{checked && <Check size={13} />}</span><Database size={17} /><strong>{item.id}</strong><span>{formatBytes(item.sizeBytes)}</span><small>约 {formatNumber(item.estimatedRows)} 行</small><span /></button>;
-                  })}
-                  {!loading && !tables.length && <div className="loading-copy">该数据库没有可迁移的普通表。</div>}
+                <div className="h-row" style={{ marginBottom: 12 }}>
+                  <div>
+                    <h3 className="sec-title">{isMongo ? "选择迁移集合" : "选择迁移数据表"}</h3>
+                    <div className="sec-sub">
+                      已选择 {config.tables.length} / {tables.length} {isMongo ? "个集合" : "张表"}
+                    </div>
+                  </div>
+                  <span className="sp" />
+                  <Button variant="secondary" className="sm" onClick={() => setConfig({ ...config, tables: tables.map((i) => i.id) })}>
+                    全选
+                  </Button>
+                  <Button variant="secondary" className="sm" onClick={() => setConfig({ ...config, tables: [] })}>
+                    清空
+                  </Button>
                 </div>
-                <div className="info-banner">{databaseType === "MySQL" ? "MySQL 当前走原生工具链。普通表可直接迁移，复杂对象请先在测试环境验证。" : "当前支持普通表、分区表、序列、枚举、约束和索引；视图、函数和扩展暂不迁移。"}</div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <span className="sfield" style={{ width: "100%" }}>
+                    <span className="sfield-ic">
+                      <Search size={14} />
+                    </span>
+                    <input
+                      className="inp"
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder={isMongo ? "搜索 collection…" : "搜索 schema.table…"}
+                      style={{ width: "100%" }}
+                    />
+                  </span>
+                </div>
+
+                <div className="ledger" style={{ maxHeight: 320, overflowY: "auto" }}>
+                  {loading ? (
+                    <div style={{ padding: 18, color: "var(--muted)" }}>正在加载对象信息...</div>
+                  ) : filteredTables.length ? (
+                    filteredTables.map((item) => {
+                      const checked = config.tables.includes(item.id);
+                      return (
+                        <label
+                          key={item.id}
+                          className="lrow"
+                          style={{ cursor: "pointer", padding: "9px 14px" }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleTable(item.id)}
+                            style={{ width: 16, height: 16, accentColor: "var(--indigo)" }}
+                          />
+                          <div className="lr-main">
+                            <div className="lr-t mono" style={{ fontSize: 13 }}>
+                              {isMongo ? item.name : item.id}
+                            </div>
+                          </div>
+                          <span className="num" style={{ fontSize: 12.5, color: "var(--muted)" }}>
+                            {isMongo ? item.schema || "Collection" : `约 ${formatNumber(item.estimatedRows)} 行 · ${formatBytes(item.sizeBytes)}`}
+                          </span>
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <div style={{ padding: 18, color: "var(--muted)" }}>
+                      {tables.length ? "没有匹配的对象" : isMongo ? "该数据库没有可迁移的集合。" : "该数据库没有可迁移的普通表。"}
+                    </div>
+                  )}
+                </div>
+
+                <div className="info-callout" style={{ marginTop: 12 }}>
+                  {isMongo
+                    ? "MongoDB 迁移当前走原生工具链。可按集合选择，迁移时使用 mongodump --collection 与 mongorestore --nsInclude。"
+                    : databaseType === "MySQL"
+                      ? "MySQL 当前走原生工具链。普通表可直接迁移，复杂对象请先在测试环境验证。"
+                      : "当前支持普通表、分区表、序列、枚举、约束和索引；视图、函数和扩展暂不迁移。"}
+                </div>
               </>
             )}
           </Card>
-          <Card className="summary-panel">
-            <div className="card-heading"><h3>选择摘要</h3><p>{isNeo4j ? "Neo4j 按整库图数据迁移" : isMongo ? "MongoDB 集合迁移不按文档大小估算" : `来自 ${databaseType === "MySQL" ? "MySQL information_schema" : "PostgreSQL 系统目录"} 的估算值`}</p></div>
-            <div className="summary-stat"><span>预计迁移数据量</span><strong>{isNeo4j ? "整库图数据" : isMongo ? `${config.tables.length} 个集合` : formatBytes(selectedBytes)}</strong><small>{isNeo4j ? "实际耗时取决于节点、关系、属性体积和网络吞吐" : isMongo ? "实际耗时取决于集合数量、文档体积和网络吞吐" : "实际耗时取决于网络、数据量和索引数量"}</small></div>
-            <dl><div><dt>{isNeo4j ? "迁移范围" : isMongo ? "集合" : "数据表"}</dt><dd>{isNeo4j ? "整库" : isMongo ? config.tables.length : selectedTables.length}</dd></div><div><dt>{isNeo4j || isMongo ? "目标数据库" : "估算行数"}</dt><dd>{isNeo4j || isMongo ? config.targetDatabase : formatNumber(selectedRows)}</dd></div><div><dt>源数据库</dt><dd>{config.sourceDatabase}</dd></div></dl>
+
+          <Card className="pad">
+            <h3 className="sec-title">选择摘要</h3>
+            <div className="sec-sub" style={{ marginBottom: 14 }}>
+              {isNeo4j
+                ? "Neo4j 按整库图数据迁移"
+                : isMongo
+                  ? "MongoDB 集合迁移不按文档大小估算"
+                  : `来自 ${databaseType === "MySQL" ? "MySQL information_schema" : "PostgreSQL 系统目录"} 的估算值`}
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: "-.02em", marginBottom: 4 }} className="num">
+              {isNeo4j ? "整库图数据" : isMongo ? `${config.tables.length} 个集合` : formatBytes(selectedBytes)}
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 14 }}>
+              {isNeo4j
+                ? "实际耗时取决于节点、关系、属性体积和网络吞吐"
+                : isMongo
+                  ? "实际耗时取决于集合数量、文档体积和网络吞吐"
+                  : "实际耗时取决于网络、数据量和索引数量"}
+            </div>
+            <div className="kv">
+              <span className="k">{isNeo4j ? "迁移范围" : isMongo ? "已选集合" : "已选数据表"}</span>
+              <span className="v num">{isNeo4j ? "整库" : isMongo ? config.tables.length : selectedTables.length}</span>
+            </div>
+            <div className="kv">
+              <span className="k">{isNeo4j || isMongo ? "目标数据库" : "估算行数"}</span>
+              <span className="v num">{isNeo4j || isMongo ? config.targetDatabase : formatNumber(selectedRows)}</span>
+            </div>
+            <div className="kv">
+              <span className="k">源数据库</span>
+              <span className="v">{config.sourceDatabase}</span>
+            </div>
           </Card>
         </div>
-      )}
+      ) : null}
 
-      {step === 2 && (
-        <Card className="wizard-card config-step">
-          <div className="card-heading"><h3>迁移配置</h3><p>当前采用一次性全量迁移，完成后会逐表校验行数。</p></div>
-          <div className="config-grid">
-            <label className="field"><span>任务名称</span><input value={config.name} onChange={(event) => setConfig({ ...config, name: event.target.value })} placeholder={`${config.sourceDatabase} → ${config.targetDatabase}`} /></label>
-            <SelectField label="迁移模式" value={config.engine} onChange={(engine) => setConfig({ ...config, engine: engine as MigrationConfig["engine"] })}><option value="native">{isNeo4j ? "原生工具：cypher-shell + APOC" : isMongo ? "原生工具：mongodump / mongorestore" : databaseType === "MySQL" ? "原生工具：mysqldump / mysql" : "原生工具：pg_dump / pg_restore"}</option>{supportsCopy && <option value="copy">内置引擎：binary COPY</option>}</SelectField>
-            <SelectField label="同名对象冲突" value={config.conflictStrategy} onChange={(conflictStrategy) => setConfig({ ...config, conflictStrategy: conflictStrategy as MigrationConfig["conflictStrategy"] })}><option value="backup">{isNeo4j ? "清空目标图后迁移" : "备份原表后迁移"}</option><option value="overwrite">{isNeo4j ? "清空目标图后迁移" : "删除原表后迁移"}</option><option value="skip">{isNeo4j ? "目标图有数据则失败" : "存在同名表则失败"}</option></SelectField>
+      {step === 2 ? (
+        <Card className="pad">
+          <h3 className="sec-title">迁移配置</h3>
+          <div className="sec-sub" style={{ marginBottom: 16 }}>
+            当前采用一次性全量迁移，完成后会执行校验。
           </div>
-          {config.engine === "native" ? (
-            <div className="scope-note"><strong>本次迁移会执行</strong>{isNeo4j ? <><span>使用 APOC stream 导出源端 Cypher</span><span>根据冲突策略检查或清空目标图</span><span>使用 cypher-shell 导入目标库</span><span>完成后校验节点和关系数量</span></> : isMongo ? <><span>按所选集合执行 mongodump</span><span>根据冲突策略处理目标数据库</span><span>使用 mongorestore 导入到目标库</span><span>完成后校验目标库集合可读</span></> : databaseType === "MySQL" ? <><span>预处理目标端同名表</span><span>全选时整库 mysqldump，部分选择时按表导出</span><span>使用 mysql 导入结构和数据</span><span>完成后逐表校验行数</span></> : <><span>使用 psql 预处理目标同名对象</span><span>全选时整库 pg_dump，部分选择时按表导出</span><span>使用 pg_restore 恢复结构、数据、索引和约束</span><span>完成后逐表校验行数</span></>}</div>
-          ) : (
-            <div className="scope-note"><strong>本次迁移会执行</strong><span>创建 Schema、枚举与序列</span><span>创建表并使用 binary COPY 传输数据</span><span>创建主键、唯一约束、外键和索引</span><span>同步序列值并逐表校验行数</span></div>
-          )}
-        </Card>
-      )}
 
-      {step === 3 && (
-        <Card className="wizard-card confirm-step">
-          <div className="confirm-icon"><Check /></div><div className="card-heading centered"><h3>确认执行迁移</h3><p>任务启动后会直接写入目标数据库，请确认目标库和冲突策略。</p></div>
-          <div className="route-summary"><Endpoint connection={source} database={config.sourceDatabase} label="源端" /><div className="route-line"><ArrowRight /></div><Endpoint connection={target} database={config.targetDatabase} label="目标端" /></div>
-          <div className="confirmation-grid"><div><span>迁移引擎</span><strong>{engineLabel(config.engine, databaseType)}</strong></div><div><span>{isNeo4j ? "迁移范围" : isMongo ? "迁移集合" : "迁移数据表"}</span><strong>{isNeo4j ? "整库图" : isMongo ? `${config.tables.length} 个` : `${config.tables.length} 张`}</strong></div><div><span>估算数据量</span><strong>{isNeo4j ? "节点和关系" : isMongo ? `${config.tables.length} 个集合` : formatBytes(selectedBytes)}</strong></div><div><span>冲突策略</span><strong>{strategyLabel(config.conflictStrategy, databaseType)}</strong></div><div><span>完成校验</span><strong>{isNeo4j ? "节点和关系数量" : isMongo ? "目标库集合可读" : "逐表精确行数"}</strong></div></div>
-        </Card>
-      )}
+          <label className="field">
+            <span>任务名称</span>
+            <input
+              value={config.name}
+              onChange={(event) => setConfig({ ...config, name: event.target.value })}
+              placeholder={`${source?.name ?? config.sourceDatabase} 到 ${target?.name ?? config.targetDatabase}迁移`}
+            />
+          </label>
 
-      <div className="wizard-actions">
-        <span>连接凭证已加密保存，迁移任务和校验结果会写入本地 SQLite</span>
-        <div>{step > 0 && <Button variant="secondary" onClick={() => setStep(step - 1)}><ArrowLeft size={16} />上一步</Button>}<Button disabled={loading || starting || (step === 0 && (!config.sourceDatabase || !config.targetDatabase || (config.sourceId === config.targetId && config.sourceDatabase === config.targetDatabase))) || (step === 1 && !isMongo && !isNeo4j && !config.tables.length)} onClick={() => step === 3 ? requestStart() : setStep(step + 1)}>{starting ? "正在创建..." : step === 3 ? "启动迁移" : "下一步"}<ArrowRight size={16} /></Button></div>
+          <div className="field">
+            <span>迁移模式</span>
+            <div className="radio-cards">
+              <button
+                type="button"
+                className={`radio-card ${config.engine === "native" ? "on" : ""}`}
+                onClick={() => setConfig({ ...config, engine: "native" })}
+              >
+                <div className="rc-h">
+                  <Box size={14} />
+                  {isNeo4j
+                    ? "原生工具：cypher-shell + APOC"
+                    : isMongo
+                      ? "原生工具：mongodump / mongorestore"
+                      : databaseType === "MySQL"
+                        ? "原生工具：mysqldump / mysql"
+                        : "原生工具：pg_dump / pg_restore"}
+                </div>
+                <div className="rc-d">调用数据库原生工具链导出并恢复。</div>
+              </button>
+
+              {supportsCopy ? (
+                <button
+                  type="button"
+                  className={`radio-card ${config.engine === "copy" ? "on" : ""}`}
+                  onClick={() => setConfig({ ...config, engine: "copy" })}
+                >
+                  <div className="rc-h">
+                    <Zap size={14} /> 内置引擎：binary COPY
+                  </div>
+                  <div className="rc-d">经 pgx 二进制 COPY 流式传输，自动处理结构、枚举、序列与约束索引。</div>
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="field">
+            <span>同名对象冲突策略</span>
+            <div className="radio-cards">
+              <button
+                type="button"
+                className={`radio-card warn-card ${config.conflictStrategy === "backup" ? "on" : ""}`}
+                onClick={() => setConfig({ ...config, conflictStrategy: "backup" })}
+              >
+                <div className="rc-h">{isNeo4j ? "清空目标图后迁移" : isMongo ? "重建目标库后迁移" : "备份原表后迁移"}</div>
+                <div className="rc-d">
+                  {isNeo4j
+                    ? "导入前会清空目标图中的节点与关系。"
+                    : isMongo
+                      ? "MongoDB 集合迁移会重建目标库后导入所选集合。"
+                      : "将目标同名表重命名为 databridge_backup 后缀后再写入新表。"}
+                </div>
+              </button>
+
+              <button
+                type="button"
+                className={`radio-card danger-card ${config.conflictStrategy === "overwrite" ? "on" : ""}`}
+                onClick={() => setConfig({ ...config, conflictStrategy: "overwrite" })}
+              >
+                <div className="rc-h">{isNeo4j ? "清空目标图后迁移（覆盖）" : isMongo ? "删除目标库后迁移" : "删除原表后迁移"}</div>
+                <div className="rc-d">先移除目标端已有对象再迁移，原数据不可恢复。</div>
+              </button>
+
+              <button
+                type="button"
+                className={`radio-card warn-card ${config.conflictStrategy === "skip" ? "on" : ""}`}
+                onClick={() => setConfig({ ...config, conflictStrategy: "skip" })}
+              >
+                <div className="rc-h">{isNeo4j ? "目标图有数据则失败" : "存在同名表则失败"}</div>
+                <div className="rc-d">目标端已有数据时任务直接失败，不做任何改动。</div>
+              </button>
+            </div>
+          </div>
+
+          <div className="info-callout">
+            {config.engine === "native" ? (
+              <span>
+                {isNeo4j
+                  ? "本次将执行：APOC stream 导出源端 Cypher → 按冲突策略处理目标图 → cypher-shell 导入 → 校验节点与关系数量。"
+                  : isMongo
+                    ? "本次将执行：mongodump 导出所选集合 → 按冲突策略处理目标库 → mongorestore 导入 → 校验目标库集合可读。"
+                    : databaseType === "MySQL"
+                      ? "本次将执行：预处理目标同名表 → mysqldump 导出 → mysql 导入 → 逐表校验行数。"
+                      : "本次将执行：psql 预处理目标同名对象 → pg_dump 导出 → pg_restore 恢复 → 逐表校验行数。"}
+              </span>
+            ) : (
+              <span>本次将执行：创建 Schema、枚举与序列 → 创建表并 binary COPY 传输 → 创建主键、外键与索引 → 同步序列值并逐表校验行数。</span>
+            )}
+          </div>
+        </Card>
+      ) : null}
+
+      {step === 3 && source && target ? (
+        <Card style={{ overflow: "hidden" }}>
+          <BridgeFlow
+            sourceName={source.name}
+            sourceDatabase={config.sourceDatabase}
+            targetName={target.name}
+            targetDatabase={config.targetDatabase}
+            type={source.type}
+            status="pending"
+            stage="pending"
+            progress={0}
+            showStats={false}
+          />
+          <div style={{ padding: "8px 22px 18px" }}>
+            <div className="kv">
+              <span className="k">任务名称</span>
+              <span className="v">{config.name || `${source.name} 到 ${target.name}迁移`}</span>
+            </div>
+            <div className="kv">
+              <span className="k">迁移引擎</span>
+              <span className="v">{engineLabel(config.engine, databaseType)}</span>
+            </div>
+            <div className="kv">
+              <span className="k">{isNeo4j ? "迁移范围" : isMongo ? "迁移集合" : "迁移数据表"}</span>
+              <span className="v num">
+                {isNeo4j ? "整库图" : isMongo ? `${config.tables.length} 个` : `${config.tables.length} 张 · ${formatBytes(selectedBytes)}`}
+              </span>
+            </div>
+            <div className="kv">
+              <span className="k">冲突策略</span>
+              <span className="v">{strategyLabel(config.conflictStrategy, databaseType)}</span>
+            </div>
+            <div className="kv">
+              <span className="k">完成校验</span>
+              <span className="v">{isNeo4j ? "节点和关系数量" : isMongo ? "目标库集合可读" : "逐表精确行数"}</span>
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      <div className="h-row">
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>
+          连接凭证已加密保存，迁移任务和校验结果会写入本地 SQLite
+        </span>
+        <span className="sp" />
+        {step > 0 ? (
+          <Button variant="secondary" onClick={() => setStep(step - 1)}>
+            <ArrowLeft size={15} />
+            上一步
+          </Button>
+        ) : null}
+        <Button disabled={nextDisabled} onClick={() => (step === 3 ? requestStart() : setStep(step + 1))}>
+          {starting ? "正在创建..." : step === 3 ? "启动迁移" : "下一步"}
+          <ArrowRight size={15} />
+        </Button>
       </div>
-      {startConfirmOpen && <ConfirmDialog title={config.conflictStrategy === "overwrite" ? (isNeo4j ? "清空目标图后迁移" : isMongo ? "删除目标库后迁移" : "删除原表后迁移") : (isNeo4j ? "图迁移确认" : isMongo ? "集合迁移确认" : "备份原表后迁移")} description={config.conflictStrategy === "overwrite" ? (isNeo4j ? "这是高危操作，迁移前会清空目标库中的图数据。" : isMongo ? "这是高危操作，迁移前会删除目标数据库。" : "这是高危操作，迁移前会删除目标端同名对象。") : (isNeo4j ? "这是中危操作，Neo4j 迁移当前会清空目标图后导入源端图数据。" : isMongo ? "这是中危操作，Mongo 集合迁移当前会重建目标数据库后导入所选集合。" : "这是中危操作，迁移前会改名保存目标端同名对象。")} tone={config.conflictStrategy === "overwrite" ? "danger" : "warning"} confirmText="确认启动迁移" submitting={starting} onCancel={() => setStartConfirmOpen(false)} onConfirm={start} details={[`目标：${target?.name ?? "目标端"} / ${config.targetDatabase}`, `迁移对象：${isNeo4j ? "整库图数据" : isMongo ? `${config.tables.length} 个集合` : `${config.tables.length} 张表`}`, isNeo4j ? "Neo4j 当前执行 APOC stream 导出和 cypher-shell 导入。" : isMongo ? "Mongo 当前按所选集合执行原生工具导出导入。" : config.conflictStrategy === "overwrite" ? "目标端同名表和相关对象会被删除后重新写入。" : "目标端同名表会被改名备份，仍会改变目标库对象结构。"]} />}
+
+      {startConfirmOpen ? (
+        <ConfirmDialog
+          title={
+            config.conflictStrategy === "overwrite"
+              ? isNeo4j
+                ? "清空目标图后迁移"
+                : isMongo
+                  ? "删除目标库后迁移"
+                  : "删除原表后迁移"
+              : isNeo4j
+                ? "图迁移确认"
+                : isMongo
+                  ? "集合迁移确认"
+                  : "备份原表后迁移"
+          }
+          description={
+            config.conflictStrategy === "overwrite"
+              ? isNeo4j
+                ? "这是高危操作，迁移前会清空目标库中的图数据。"
+                : isMongo
+                  ? "这是高危操作，迁移前会删除目标数据库。"
+                  : "这是高危操作，迁移前会删除目标端同名对象。"
+              : isNeo4j
+                ? "这是中危操作，Neo4j 迁移当前会清空目标图后导入源端图数据。"
+                : isMongo
+                  ? "这是中危操作，Mongo 集合迁移当前会重建目标数据库后导入所选集合。"
+                  : "这是中危操作，迁移前会改名保存目标端同名对象。"
+          }
+          tone={config.conflictStrategy === "overwrite" ? "danger" : "warning"}
+          confirmText="确认启动迁移"
+          submitting={starting}
+          onCancel={() => setStartConfirmOpen(false)}
+          onConfirm={start}
+          details={[
+            `目标：${target?.name ?? "目标端"} / ${config.targetDatabase}`,
+            `迁移对象：${isNeo4j ? "整库图数据" : isMongo ? `${config.tables.length} 个集合` : `${config.tables.length} 张表`}`,
+          ]}
+        />
+      ) : null}
     </div>
   );
 }
 
-function EndpointSelect({ title, connectionId, database, connections, databases, onConnection, onDatabase }: { title: string; connectionId: string; database: string; connections: DatabaseConnection[]; databases: DatabaseInfo[]; onConnection: (value: string) => void; onDatabase: (value: string) => void }) {
+function EndpointSelect({
+  title,
+  connectionId,
+  database,
+  connections,
+  databases,
+  onConnection,
+  onDatabase,
+}: {
+  title: string;
+  connectionId: string;
+  database: string;
+  connections: DatabaseConnection[];
+  databases: DatabaseInfo[];
+  onConnection: (value: string) => void;
+  onDatabase: (value: string) => void;
+}) {
   const connection = connections.find((item) => item.id === connectionId);
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; minWidth: number }>({ left: 0, top: 0, minWidth: 220 });
+
+  const updatePos = useCallback(() => {
+    const tr = triggerRef.current;
+    if (!tr) return;
+    const r = tr.getBoundingClientRect();
+    setPos({ left: Math.max(8, r.left), top: r.bottom + 6, minWidth: r.width });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) updatePos();
+  }, [open, updatePos]);
 
   useEffect(() => {
     if (!open) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
     };
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("keydown", handleEscape);
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onEscape);
+    window.addEventListener("resize", updatePos);
+    window.addEventListener("scroll", updatePos, true);
     return () => {
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("keydown", handleEscape);
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onEscape);
+      window.removeEventListener("resize", updatePos);
+      window.removeEventListener("scroll", updatePos, true);
     };
-  }, [open]);
+  }, [open, updatePos]);
 
-  return <div className="endpoint-select"><span>{title}</span><div className="endpoint-control stacked">{connection && <DatabaseLogo type={connection.type} name={connection.name} />}<div ref={rootRef}><div className="endpoint-instance-picker"><button type="button" className="endpoint-instance-trigger" aria-label={`${title}实例`} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((value) => !value)}><span className="endpoint-instance-trigger-content">{connection && <DatabaseTypeIcon type={connection.type} />}{connection?.name} · {connection?.host}{connection?.region && connection.region !== "内网" && <RegionFlag region={connection.region} />}</span><ChevronDown size={16} /></button>{open && <div className="endpoint-instance-menu" role="listbox" aria-label={`${title}实例列表`}>{connections.map((item) => <button type="button" key={item.id} className={`endpoint-instance-option ${item.id === connectionId ? "active" : ""}`} onClick={() => { onConnection(item.id); setOpen(false); }}><div><strong><DatabaseTypeIcon type={item.type} />{item.name} · {item.host}{item.region && item.region !== "内网" && <RegionFlag region={item.region} />}</strong></div></button>)}</div>}</div><SelectField label={`${title}数据库`} value={database} onChange={onDatabase}>{databases.map((item) => <option key={item.name} value={item.name}>{item.name} · {formatDatabaseMetric(item, connection?.type)}</option>)}</SelectField></div></div></div>;
-}
+  return (
+    <div className="card pad" style={{ background: "var(--surface-2)", marginBottom: 12 }}>
+      <div className="h-row" style={{ marginBottom: 10 }}>
+        {connection ? <DatabaseLogo type={connection.type} name={connection.name} size="sm" /> : null}
+        <strong style={{ fontSize: 13.5 }}>{title}</strong>
+      </div>
 
-function Endpoint({ connection, database, label }: { connection?: DatabaseConnection; database: string; label: string }) {
-  return <div className="endpoint-summary">{connection && <DatabaseLogo type={connection.type} name={connection.name} />}<div><span>{label}</span><strong>{connection?.name} / {database}</strong><small>{connection?.host}:{connection?.port}</small></div></div>;
+      <div className="field">
+        <span>{title}实例</span>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="csel-trigger"
+          aria-label={`${title}实例`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className="csel-val">
+            {connection ? <DatabaseTypeIcon type={connection.type} /> : null}
+            <span className="csel-txt">
+              {connection ? `${connection.name} · ${connection.host}` : "请选择实例"}
+            </span>
+            {connection?.region && connection.region !== "内网" ? <RegionFlag region={connection.region} /> : null}
+          </span>
+          <span className="csel-chev">
+            <ChevronDown size={14} />
+          </span>
+        </button>
+      </div>
+
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              className="csel-list"
+              role="listbox"
+              aria-label={`${title}实例列表`}
+              style={{ left: pos.left, top: pos.top, minWidth: pos.minWidth, maxWidth: "min(420px, calc(100vw - 16px))" }}
+            >
+              {connections.map((item) => {
+                const isSel = item.id === connectionId;
+                return (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className="csel-opt"
+                    role="option"
+                    aria-selected={isSel}
+                    onClick={() => {
+                      onConnection(item.id);
+                      setOpen(false);
+                    }}
+                  >
+                    <DatabaseTypeIcon type={item.type} />
+                    <span className="csel-txt">
+                      {item.name} · {item.host}
+                    </span>
+                    {item.region && item.region !== "内网" ? <RegionFlag region={item.region} /> : null}
+                    {isSel ? (
+                      <span className="csel-check">
+                        <Check size={14} />
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
+          )
+        : null}
+
+      <SelectField label={`${title}数据库`} value={database} onChange={onDatabase}>
+        {databases.map((item) => (
+          <option key={item.name} value={item.name}>
+            {item.name} · {formatDatabaseMetric(item, connection?.type)}
+          </option>
+        ))}
+      </SelectField>
+    </div>
+  );
 }
 
 function formatBytes(value: number) {
@@ -368,16 +809,17 @@ function formatDatabaseMetric(database: DatabaseInfo, type?: DatabaseConnection[
 }
 
 function strategyLabel(value: MigrationConfig["conflictStrategy"], databaseType?: DatabaseConnection["type"]) {
-  if (databaseType === "Neo4j") {
-    return value === "skip" ? "目标图有数据则失败" : "清空目标图后迁移";
-  }
+  if (databaseType === "Neo4j") return value === "skip" ? "目标图有数据则失败" : "清空目标图后迁移";
+  if (databaseType === "MongoDB") return value === "skip" ? "目标库有集合则失败" : value === "overwrite" ? "删除目标库后迁移" : "重建目标库后迁移";
   return value === "backup" ? "备份原表后迁移" : value === "overwrite" ? "删除原表后迁移" : "同名表时报错";
 }
 
 function engineLabel(value: MigrationConfig["engine"], databaseType?: DatabaseConnection["type"]) {
   if (value === "native") {
     if (databaseType === "Neo4j") return "cypher-shell + APOC";
-    return "原生工具";
+    if (databaseType === "MongoDB") return "mongodump / mongorestore";
+    if (databaseType === "MySQL") return "mysqldump / mysql";
+    return "pg_dump / pg_restore";
   }
   return "内置 binary COPY";
 }

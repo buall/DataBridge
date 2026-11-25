@@ -1,14 +1,49 @@
-import { AlertTriangle, Archive, Check, ChevronDown, ChevronRight, CircleX, Clock3, Clipboard, Copy, DatabaseBackup, Download, FileArchive, Gauge, HardDrive, PauseCircle, Pencil, Play, PlayCircle, Square, Trash2, X } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  Archive,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  DatabaseBackup,
+  Download,
+  PauseCircle,
+  Pencil,
+  Play,
+  PlayCircle,
+  Square,
+  X,
+} from "lucide-react";
+import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
+import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
+import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
-import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
-import { BackupTargetSelector, buildBackupTargets, DatabaseMultiSelect, normalizeTargetSelection, NotificationTriggerSelector, notificationTriggerLabel, RetentionDaysField, selectedBackupTargetIds, TimeSelect } from "./BackupWizard";
-import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
+import {
+  BackupTargetSelector,
+  buildBackupTargets,
+  DatabaseMultiSelect,
+  normalizeTargetSelection,
+  NotificationTriggerSelector,
+  notificationTriggerLabel,
+  RetentionDaysField,
+  selectedBackupTargetIds,
+  TimeSelect,
+} from "./BackupWizard";
 
 type BackupArtifactItem = { database: string; name: string; size?: number; path?: string };
-export type BackupArtifactVersionOption = { id: string; label: string; startedAt: string; finishedAt?: string; status: BackupJob["status"]; artifacts: BackupArtifactItem[]; backupMode?: string; current?: boolean };
+export type BackupArtifactVersionOption = {
+  id: string;
+  label: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: BackupJob["status"];
+  artifacts: BackupArtifactItem[];
+  backupMode?: string;
+  current?: boolean;
+};
 
 const backupStages = [
   ["pending", "任务排队"],
@@ -26,10 +61,14 @@ const restoreStages = [
   ["completed", "恢复完成"],
 ];
 
+const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const etcdClusterDatabase: DatabaseInfo = { name: "整个集群", sizeBytes: 0 };
+
 export function BackupMonitoring({
   jobId,
   connections,
   storages,
+  onBack,
   onComplete,
   onOpenRestore,
   onOpenArtifacts,
@@ -37,6 +76,7 @@ export function BackupMonitoring({
   jobId: string;
   connections: DatabaseConnection[];
   storages: RemoteStorage[];
+  onBack?: () => void;
   onComplete: (job: BackupJob) => void;
   onOpenRestore: (job: BackupJob) => void;
   onOpenArtifacts: (job: BackupJob) => void;
@@ -52,7 +92,6 @@ export function BackupMonitoring({
   const [exportingRecords, setExportingRecords] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [artifactError, setArtifactError] = useState("");
   const { recipients, loadingRecipients } = useNotificationRecipients();
 
   useEffect(() => {
@@ -78,7 +117,9 @@ export function BackupMonitoring({
       }
     }
     refresh();
-    return () => { stopped = true; };
+    return () => {
+      stopped = true;
+    };
   }, [jobId, onComplete]);
 
   async function cancel() {
@@ -165,23 +206,31 @@ export function BackupMonitoring({
     }, 900);
   }
 
-  if (!job) return <div className="empty-state"><div>DB</div><h2>任务准备中</h2><p>{error || "正在准备备份任务..."}</p></div>;
+  if (!job) {
+    return (
+      <div className="empty">
+        <div className="e-t">任务准备中</div>
+        <div className="e-s">{error || "正在准备备份任务..."}</div>
+      </div>
+    );
+  }
 
   const scheduled = job.scheduleMode === "scheduled" || job.status === "scheduled";
   const running = job.status === "running" || job.status === "pending";
-  const paused = job.schedulePaused && !running;
+  const paused = Boolean(job.schedulePaused && !running);
   const latestRunStatus = job.artifactVersions?.[0]?.status;
   const cancelled = !running && (job.status === "cancelled" || latestRunStatus === "cancelled");
   const failed = !running && (job.status === "failed" || latestRunStatus === "failed");
-  const elapsed = Math.max(1, (Date.now() - new Date(job.startedAt).getTime()) / 1000);
   const stageItems = job.destinationType === "restore" ? restoreStages : backupStages;
   const currentStage = stageIndex(job.stage, stageItems);
   const eventRuns = groupBackupEvents(job);
   const lastError = latestErrorEvent(job);
-  const hasExportableRecords = Boolean(job.artifactVersions?.length || job.events.some((event) => event.message.includes("定时备份已触发") || event.message.includes("手动触发定时备份")));
-  const sourceDatabaseNames = job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean);
-  const sourceScope = sourceDatabaseNames.length > 1 ? `${sourceDatabaseNames.length} 个数据库` : sourceDatabaseNames[0] || "未选择数据库";
-  const fullSourceSummary = `${job.sourceName} / ${sourceDatabaseLabel(job)} · 任务 ID ${job.id}`;
+  const hasExportableRecords = Boolean(
+    job.artifactVersions?.length ||
+      job.events.some((event) => event.message.includes("定时备份已触发") || event.message.includes("手动触发定时备份")),
+  );
+  const targets = scheduleTargets(job, storages);
+  const notification = scheduleNotification(job, recipients, loadingRecipients);
 
   async function toggleRun(run: BackupEventRun, collapsed: boolean) {
     setCollapsedRuns((current) => ({ ...current, [run.id]: !collapsed }));
@@ -199,83 +248,239 @@ export function BackupMonitoring({
 
   return (
     <div className="page-stack">
-      {error && <div className="error-banner">{error}</div>}
-      {(failed || cancelled) && <div className="error-banner detail-error"><strong>{cancelled ? "本次执行已取消" : job.error || "备份任务失败"}</strong>{!cancelled && lastError && <span>{lastError}</span>}</div>}
-      <div className="runtime-heading"><div><div><Badge tone={paused ? "gray" : migrationStatusTone(job.status)}>{paused ? "已暂停" : migrationStatusLabel(job.status)}</Badge><h2>{job.name}</h2></div><p className="runtime-source-summary" data-tooltip-content={fullSourceSummary}>{job.sourceName} / {sourceScope} · 任务 ID {job.id}</p></div><div className="runtime-actions"><Button variant="secondary" className="action-blue" onClick={() => onOpenArtifacts(job)}><Archive size={15} />备份产物</Button>{canShowRestorePanel(job) && <Button variant="secondary" className="action-green" onClick={() => onOpenRestore(job)}><DatabaseBackup size={15} />还原数据</Button>}{scheduled && <Button variant="secondary" className="action-indigo" disabled={triggering || running} onClick={triggerNow}><Play size={15} />{triggering ? "触发中..." : "立即触发"}</Button>}{scheduled && <Button variant="secondary" disabled={updatingSchedule} onClick={toggleSchedulePaused}>{job.schedulePaused ? <PlayCircle size={15} /> : <PauseCircle size={15} />}{updatingSchedule ? "处理中..." : job.schedulePaused ? "恢复调度" : "暂停调度"}</Button>}{scheduled && <Button variant="secondary" className="action-amber" disabled={running} onClick={() => setEditing(true)}><Pencil size={15} />编辑计划</Button>}{running && <Button variant="danger" disabled={cancelling} onClick={() => setCancelConfirmOpen(true)}><Square size={15} />停止任务</Button>}</div></div>
-      <Card className="overall-progress"><div><span>总体进度 · {stageLabel(job.stage)}</span><strong>{job.progress}%</strong></div><div className="large-progress"><i style={{ width: `${job.progress}%` }} /></div><footer><span>目标：{job.destination}</span><span>{job.artifactName ? `文件：${job.artifactName}` : "等待生成备份文件"}</span></footer></Card>
-      <div className="runtime-metrics"><RuntimeMetric icon={<Gauge />} label={scheduled ? "计划频率" : "当前阶段"} value={scheduled ? scheduleLabel(job) : stageLabel(job.stage)} detail={scheduled ? job.schedulePaused ? "自动调度已暂停" : "定时自动执行" : "导出与上传分阶段执行"} /><RuntimeMetric icon={<FileArchive />} label={scheduled ? "保留期限" : "备份文件"} value={scheduled ? retentionLabel(retentionDaysFromJob(job)) : job.artifactName || "待生成"} detail={scheduled ? "按保留期限自动清理" : formatBytes(job.artifactSize ?? 0)} long /><RuntimeMetric icon={<Clock3 />} label={scheduled ? "下次执行" : "运行时长"} value={scheduled ? job.schedulePaused ? "已暂停" : formatDateTime(job.nextRunAt) : formatDuration(elapsed * 1000)} detail={scheduled ? job.schedulePaused ? "恢复后重新计算执行时间" : "由后端调度器触发" : "从开始到现在"} /><RuntimeMetric icon={<AlertTriangle />} label="错误事件" value={String(job.events.filter((item) => item.level === "ERROR").length)} detail={cancelled ? "本次执行已取消" : failed ? scheduled ? "上次执行失败，计划仍有效" : "任务已停止" : scheduled ? job.schedulePaused ? "等待恢复调度" : "计划可执行" : "持续监控"} warning={failed} /></div>
-      {scheduled && <ScheduleInfoCard job={job} storages={storages} recipients={recipients} loadingRecipients={loadingRecipients} />}
-      <div className="monitor-grid single">
-        <Card className="phase-card"><h3>执行阶段</h3>{stageItems.map(([id,label],index) => <div className={`phase ${index < currentStage || job.status === "completed" ? "done" : index === currentStage && !failed && !cancelled ? "active" : ""}`} key={id}><span>{index < currentStage || job.status === "completed" ? <Check size={13} /> : (failed || cancelled) && index === currentStage ? <CircleX size={13}/> : index + 1}</span><strong>{label}</strong><small>{index < currentStage ? "完成" : index === currentStage ? cancelled ? "已取消" : failed ? "失败" : "进行中" : "等待中"}</small></div>)}</Card>
+      <div className="h-row">
+        {onBack ? (
+          <Button variant="secondary" className="sm" onClick={onBack}>
+            <ChevronLeft size={14} /> 返回列表
+          </Button>
+        ) : null}
+        <span className="tag mono-t">{job.id}</span>
+        <Badge tone={paused ? "gray" : migrationStatusTone(job.status)}>
+          <span className="pd" />
+          {paused ? "已暂停" : migrationStatusLabel(job.status)}
+        </Badge>
+        <span className="sp" />
+        <Button variant="secondary" onClick={() => onOpenArtifacts(job)}>
+          <Archive size={15} />
+          备份产物
+        </Button>
+        {canShowRestorePanel(job) ? (
+          <Button variant="secondary" onClick={() => onOpenRestore(job)}>
+            <DatabaseBackup size={15} />
+            还原数据
+          </Button>
+        ) : null}
+        {scheduled ? (
+          <>
+            <Button variant="secondary" disabled={triggering || running} onClick={triggerNow}>
+              <Play size={15} />
+              {triggering ? "触发中..." : "立即触发"}
+            </Button>
+            <Button variant="secondary" disabled={updatingSchedule} onClick={toggleSchedulePaused}>
+              {job.schedulePaused ? <PlayCircle size={15} /> : <PauseCircle size={15} />}
+              {updatingSchedule ? "处理中..." : job.schedulePaused ? "恢复调度" : "暂停调度"}
+            </Button>
+            <Button variant="secondary" disabled={running} onClick={() => setEditing(true)}>
+              <Pencil size={15} />
+              编辑计划
+            </Button>
+          </>
+        ) : null}
+        {running ? (
+          <Button variant="danger" disabled={cancelling} onClick={() => setCancelConfirmOpen(true)}>
+            <Square size={14} />
+            停止任务
+          </Button>
+        ) : null}
       </div>
-      <Card className="event-card"><div className="section-title compact"><div><h3>{scheduled ? "定时任务执行记录" : "实时事件"}</h3><p>{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</p></div>{scheduled && <Button variant="secondary" disabled={!hasExportableRecords || exportingRecords} onClick={exportRecords}><Download size={15} />{exportingRecords ? "导出中..." : "导出备份记录"}</Button>}</div>{eventRuns.map((run) => {
-        const collapsed = collapsedRuns[run.id] ?? scheduled;
-        const detailEvents = !collapsed ? detailedEventsForRun(detailedJob, run) : run.events;
-        const loadingThisRun = loadingRunId === run.id;
-        const runKindLabel = run.kind === "manual" ? "手动执行" : run.kind === "auto" ? "自动执行" : "";
-        const runTitle = runKindLabel ? run.title.replace(`${runKindLabel} · `, "") : run.title;
-        return <div className="backup-run" key={run.id}><button type="button" className="backup-run-head" onClick={() => toggleRun(run, collapsed)}>{collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}<div><strong>{runKindLabel && <span className={`run-kind-tag ${run.kind}`}>{runKindLabel}</span>}<span>{runTitle}</span></strong><small>{run.subtitle}</small></div><Badge tone={run.cancelled ? "gray" : run.failed ? "red" : run.completed ? "green" : "blue"}>{run.cancelled ? "已取消" : run.failed ? "失败" : run.completed ? "完成" : "执行中"}</Badge></button>{!collapsed && loadingThisRun && <div className="event-row event-loading"><time>--:--:--</time><Archive size={15}/><span>正在加载本次备份日志...</span><Badge tone="blue">加载中</Badge></div>}{!collapsed && !loadingThisRun && detailEvents.map((event,index)=><div className="event-row" key={`${run.id}-${event.time}-${index}`}><time>{new Date(event.time).toLocaleTimeString("zh-CN",{hour12:false})}</time><Archive size={15}/><span>{event.message}</span><Badge tone={event.level === "ERROR" ? "red" : event.level === "WARN" ? "orange" : "green"}>{event.level}</Badge></div>)}</div>;
-      })}</Card>
-      {editing && <ScheduleEditor job={job} connections={connections} storages={storages} onClose={() => setEditing(false)} onSave={saveSchedule} />}
-      {cancelConfirmOpen && <ConfirmDialog title="停止备份任务" description={scheduled ? "停止本次执行，后续定时调度保持原设置。" : "停止当前任务，未完成的备份不会继续执行。"} tone="warning" confirmText="确认停止" submitting={cancelling} onCancel={() => setCancelConfirmOpen(false)} onConfirm={cancel} details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]} />}
+
+      <div>
+        <h1 className="page-h">{job.name}</h1>
+        <div className="sec-sub">
+          {job.sourceName} / {sourceDatabaseLabel(job)} · 目标 {job.destination}
+        </div>
+      </div>
+
+      {error ? <div className="error-banner">{error}</div> : null}
+      {failed || cancelled ? (
+        <div className="attn">
+          <AlertTriangle size={17} style={{ color: "var(--danger)", flex: "none", marginTop: 2 }} />
+          <div>
+            <div className="a-t">{cancelled ? "本次执行已取消" : job.error || "备份任务失败"}</div>
+            {!cancelled && lastError ? <div className="a-s">{lastError}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
+      <Card className="pad">
+        <div className="h-row">
+          <span style={{ fontWeight: 600 }}>
+            {scheduled ? "调度概览" : "总体进度"} · {stageLabel(job.stage)}
+          </span>
+          <span className="sp" />
+          <span className="num" style={{ fontWeight: 700, fontSize: 16 }}>
+            {job.progress}%
+          </span>
+        </div>
+        <div className="progress" style={{ margin: "10px 0 12px" }}>
+          <i className={running ? "shimmer" : undefined} style={{ width: `${job.progress}%` }} />
+        </div>
+        <div className="chiprow">
+          <span className="tag">{scheduled ? scheduleLabel(job) : "一次性任务"}</span>
+          <span className="tag">保留 {retentionDaysFromJob(job)} 天</span>
+          {scheduled ? (
+            <span className="tag">下次执行：{job.schedulePaused ? "已暂停" : formatDateTime(job.nextRunAt)}</span>
+          ) : null}
+          <span className="tag">
+            产物：{job.artifactName || "待生成"}
+            {job.artifactSize ? `（${formatBytes(job.artifactSize)}）` : ""}
+          </span>
+        </div>
+      </Card>
+
+      <div className="ov-grid">
+        <Card className="pad">
+          <h3 className="sec-title" style={{ marginBottom: 10 }}>
+            {scheduled ? "任务配置" : "执行信息"}
+          </h3>
+          <div className="kv">
+            <span className="k">源端 / 数据库</span>
+            <span className="v">
+              {job.sourceName} · {sourceDatabaseLabel(job)}
+            </span>
+          </div>
+          <div className="kv">
+            <span className="k">备份目标</span>
+            <span className="v">{targets.map((t) => `${t.name}（${t.detail}）`).join(" · ")}</span>
+          </div>
+          <div className="kv">
+            <span className="k">保留策略</span>
+            <span className="v">{retentionDaysFromJob(job)} 天</span>
+          </div>
+          <div className="kv">
+            <span className="k">备份通知</span>
+            <span className="v">
+              {notification.value} · {notification.detail}
+            </span>
+          </div>
+          {job.backupMode === "mongo_oplog" ? (
+            <div className="kv">
+              <span className="k">全量基线周期</span>
+              <span className="v">每 {job.fullBackupIntervalDays ?? 7} 天</span>
+            </div>
+          ) : null}
+        </Card>
+
+        <Card className="pad">
+          <h3 className="sec-title" style={{ marginBottom: 10 }}>
+            执行阶段
+          </h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            {stageItems.map(([id, label], index) => {
+              const done = index < currentStage || job.status === "completed";
+              const active = index === currentStage && !failed && !cancelled;
+              return (
+                <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
+                  <span
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: "50%",
+                      display: "grid",
+                      placeItems: "center",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: done ? "var(--ok-soft)" : active ? "var(--indigo)" : "transparent",
+                      color: done ? "var(--ok)" : active ? "#fff" : "var(--faint)",
+                      border: done || active ? "none" : "1.5px solid var(--hair)",
+                    }}
+                  >
+                    {done ? <Check size={12} /> : index + 1}
+                  </span>
+                  <span style={{ fontWeight: active ? 650 : 500, color: done || active ? "var(--ink)" : "var(--muted)" }}>
+                    {label}
+                  </span>
+                  <span className="sp" />
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                    {done ? "完成" : active ? "进行中" : failed || cancelled ? "停止" : "等待中"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </div>
+
+      <Card style={{ overflow: "hidden" }}>
+        <div className="h-row" style={{ padding: "14px 18px", borderBottom: "1px solid var(--hair-2)" }}>
+          <div>
+            <h3 className="sec-title">{scheduled ? "定时任务执行记录" : "实时事件"}</h3>
+            <div className="sec-sub">{scheduled ? "按每次触发的具体任务查看事件。" : "查看备份过程中的关键日志。"}</div>
+          </div>
+          <span className="sp" />
+          {scheduled ? (
+            <Button variant="secondary" className="sm" disabled={!hasExportableRecords || exportingRecords} onClick={exportRecords}>
+              <Download size={14} />
+              {exportingRecords ? "导出中..." : "导出备份记录"}
+            </Button>
+          ) : null}
+        </div>
+
+        <div>
+          {eventRuns.map((run) => {
+            const collapsed = collapsedRuns[run.id] ?? scheduled;
+            const detailEvents = !collapsed ? detailedEventsForRun(detailedJob, run) : run.events;
+            const loadingThisRun = loadingRunId === run.id;
+            const runKindLabel = run.kind === "manual" ? "手动执行" : run.kind === "auto" ? "自动执行" : "";
+            const runTitle = runKindLabel ? run.title.replace(`${runKindLabel} · `, "") : run.title;
+
+            return (
+              <div className="run-group" key={run.id}>
+                <button type="button" className="run-group-head" onClick={() => void toggleRun(run, collapsed)}>
+                  {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                  {runKindLabel ? <span className="tag">{runKindLabel}</span> : null}
+                  <strong style={{ fontSize: 13.5 }}>{runTitle}</strong>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>{run.subtitle}</span>
+                  <span className="sp" />
+                  <Badge tone={run.cancelled ? "gray" : run.failed ? "red" : run.completed ? "green" : "blue"}>
+                    {run.cancelled ? "已取消" : run.failed ? "失败" : run.completed ? "完成" : "执行中"}
+                  </Badge>
+                </button>
+                {!collapsed ? (
+                  <div className="run-group-body">
+                    {loadingThisRun ? (
+                      <div style={{ padding: "8px 0", fontSize: 12.5, color: "var(--muted)" }}>正在加载本次备份日志...</div>
+                    ) : (
+                      detailEvents.map((event, index) => (
+                        <div className="evt" key={`${run.id}-${event.time}-${index}`}>
+                          <span className="et">{new Date(event.time).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+                          <span className={`ed2 ed-${event.level}`} />
+                          <span className="em">{event.message}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {editing ? <ScheduleEditor job={job} connections={connections} storages={storages} onClose={() => setEditing(false)} onSave={saveSchedule} /> : null}
+      {cancelConfirmOpen ? (
+        <ConfirmDialog
+          title="停止备份任务"
+          description={scheduled ? "停止本次执行，后续定时调度保持原设置。" : "停止当前任务，未完成的备份不会继续执行。"}
+          tone="warning"
+          confirmText="确认停止"
+          submitting={cancelling}
+          onCancel={() => setCancelConfirmOpen(false)}
+          onConfirm={cancel}
+          details={[`任务：${job.name}`, "已生成的历史备份产物不会被自动删除。"]}
+        />
+      ) : null}
     </div>
-  );
-}
-
-function RuntimeMetric({ icon, label, value, detail, warning = false, long = false }: { icon: React.ReactNode; label: string; value: string; detail: string; warning?: boolean; long?: boolean }) {
-  return <Card className={`runtime-metric ${long ? "long-text" : ""}`}><span className={warning ? "warning" : ""}>{icon}</span><div><small>{label}</small><strong>{value}</strong><em className={warning ? "warning" : ""}>{detail}</em></div></Card>;
-}
-
-function ScheduleInfoCard({
-  job,
-  storages,
-  recipients,
-  loadingRecipients,
-}: {
-  job: BackupJob;
-  storages: RemoteStorage[];
-  recipients: NotificationRecipient[];
-  loadingRecipients: boolean;
-}) {
-  const targets = scheduleTargets(job, storages);
-  const notification = scheduleNotification(job, recipients, loadingRecipients);
-  return (
-    <Card className="schedule-info-card">
-      <div className="section-title compact"><div><h3>任务配置</h3><p>定时任务的源端、目标存储和通知策略。</p></div></div>
-      <div className="schedule-info-grid">
-        <div className="schedule-info-item">
-          <span>源端 / 数据库</span>
-          <strong data-tooltip-content={`${job.sourceName}\n${sourceDatabaseLabel(job)}`}>{job.sourceName}</strong>
-          <small data-tooltip-content={sourceDatabaseLabel(job)}>{sourceDatabaseLabel(job)}</small>
-        </div>
-        <div className="schedule-info-item">
-          <span>执行计划</span>
-          <strong>{scheduleLabel(job)}</strong>
-          <small>{job.schedulePaused ? "调度已暂停" : `下次执行：${formatDateTime(job.nextRunAt)}`}</small>
-        </div>
-        <div className="schedule-info-item">
-          <span>保留策略</span>
-          <strong>{retentionLabel(retentionDaysFromJob(job))}</strong>
-          <small>到期自动清理历史备份</small>
-        </div>
-        <div className="schedule-info-item">
-          <span>备份通知</span>
-          <strong>{notification.value}</strong>
-          <small data-tooltip-content={notification.detail}>{notification.detail}</small>
-        </div>
-        <div className="schedule-info-item schedule-info-targets">
-          <span>目标存储</span>
-          <ul>
-            {targets.map((target) => (
-              <li key={`${target.id}-${target.detail}`}>
-                <strong data-tooltip-content={target.name}>{target.name}</strong>
-                <small data-tooltip-content={target.detail}>{target.detail}</small>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </Card>
   );
 }
 
@@ -309,11 +514,6 @@ function backupDestinationSupportsArtifacts(job: BackupJob) {
   return job.destinationType === "local" || job.destinationType === "object" || job.destinationType === "webdav" || job.destinationType === "one_drive" || job.destinationType === "multi";
 }
 
-function restoreUnavailableHint(job: BackupJob) {
-  if (job.status === "running" || job.status === "pending") return "任务正在执行，当前备份产物暂不可恢复。";
-  return "备份生成文件后才可以启动恢复。";
-}
-
 export function backupArtifacts(job: BackupJob): BackupArtifactItem[] {
   if (job.artifacts?.length) {
     return job.artifacts
@@ -329,12 +529,7 @@ export function backupArtifacts(job: BackupJob): BackupArtifactItem[] {
       .filter((artifact) => artifact.name);
   }
   if (!job.artifactName) return [];
-  return [{
-    database: job.sourceDatabase || "default",
-    name: job.artifactName,
-    size: job.artifactSize,
-    path: job.artifactPath,
-  }];
+  return [{ database: job.sourceDatabase || "default", name: job.artifactName, size: job.artifactSize, path: job.artifactPath }];
 }
 
 export function artifactVersionsForRestore(job: BackupJob): BackupArtifactVersionOption[] {
@@ -342,34 +537,38 @@ export function artifactVersionsForRestore(job: BackupJob): BackupArtifactVersio
     .filter((version) => version.artifacts?.some((artifact) => artifact.name || artifact.copies?.some((copy) => copy.name)))
     .map((version): BackupArtifactVersionOption => ({
       id: version.id,
-		label: `${version.backupMode === "incremental" ? "增量" : version.backupMode === "full" ? "全量" : "备份"} · ${formatDateTime(version.finishedAt ?? version.startedAt)}`,
+      label: `${version.backupMode === "incremental" ? "增量" : version.backupMode === "full" ? "全量" : "备份"} · ${formatDateTime(version.finishedAt ?? version.startedAt)}`,
       startedAt: version.startedAt,
       finishedAt: version.finishedAt,
       status: version.status,
-      artifacts: (version.artifacts ?? []).map((artifact) => {
-        const primaryCopy = artifact.copies?.find((copy) => copy.role === "primary" && copy.name) ?? artifact.copies?.find((copy) => copy.name);
-        return {
-          database: artifact.database || job.sourceDatabase || "default",
-          name: artifact.name || primaryCopy?.name || "",
-          size: artifact.size || primaryCopy?.size,
-          path: artifact.path || primaryCopy?.path,
-        };
-      }).filter((artifact) => artifact.name),
-		backupMode: version.backupMode,
+      artifacts: (version.artifacts ?? [])
+        .map((artifact) => {
+          const primaryCopy = artifact.copies?.find((copy) => copy.role === "primary" && copy.name) ?? artifact.copies?.find((copy) => copy.name);
+          return {
+            database: artifact.database || job.sourceDatabase || "default",
+            name: artifact.name || primaryCopy?.name || "",
+            size: artifact.size || primaryCopy?.size,
+            path: artifact.path || primaryCopy?.path,
+          };
+        })
+        .filter((artifact) => artifact.name),
+      backupMode: version.backupMode,
       current: false,
     }))
     .sort((left, right) => new Date(right.finishedAt ?? right.startedAt).getTime() - new Date(left.finishedAt ?? left.startedAt).getTime());
   if (versions.length) return versions;
   if (!canRestoreFromJob(job)) return [];
-  return [{
-    id: "current",
-    label: formatDateTime(job.finishedAt ?? job.lastRunAt ?? job.startedAt),
-    startedAt: job.startedAt,
-    finishedAt: job.finishedAt ?? job.lastRunAt,
-    status: "completed",
-    artifacts: backupArtifacts(job),
-    current: true,
-  }];
+  return [
+    {
+      id: "current",
+      label: formatDateTime(job.finishedAt ?? job.lastRunAt ?? job.startedAt),
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt ?? job.lastRunAt,
+      status: "completed",
+      artifacts: backupArtifacts(job),
+      current: true,
+    },
+  ];
 }
 
 export function totalArtifactSize(artifacts: BackupArtifactItem[]) {
@@ -385,25 +584,41 @@ export function storageTypeLabel(value: string) {
   return value || "备份目标";
 }
 
-export function RestoreConnectionSelect({ connectionId, connections, onChange }: { connectionId: string; connections: DatabaseConnection[]; onChange: (value: string) => void }) {
+export function RestoreConnectionSelect({
+  connectionId,
+  connections,
+  onChange,
+}: {
+  connectionId: string;
+  connections: DatabaseConnection[];
+  onChange: (value: string) => void;
+}) {
   const connection = connections.find((item) => item.id === connectionId) ?? connections[0];
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; minWidth: number }>({ left: 0, top: 0, minWidth: 220 });
+
+  const updatePos = useCallback(() => {
+    const tr = triggerRef.current;
+    if (!tr) return;
+    const r = tr.getBoundingClientRect();
+    setPos({ left: r.left, top: r.bottom + 6, minWidth: r.width });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) updatePos();
+  }, [open, updatePos]);
 
   useEffect(() => {
     if (!open) return;
     const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
+    return () => window.removeEventListener("mousedown", close);
   }, [open]);
 
   useEffect(() => {
@@ -412,37 +627,49 @@ export function RestoreConnectionSelect({ connectionId, connections, onChange }:
   }, [connectionId, connections, onChange]);
 
   return (
-    <div className="field select-field restore-connection-field" ref={rootRef}>
+    <div className="field">
       <span>目标连接</span>
-      <button type="button" className="select-trigger restore-connection-trigger" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span className="endpoint-instance-trigger-content">
-          {connection && <DatabaseTypeIcon type={connection.type} />}
-          {connection?.name ?? "请选择连接"}
-          {connection?.host ? ` · ${connection.host}` : ""}
-          {connection?.region && connection.region !== "内网" && <RegionFlag region={connection.region} />}
+      <button
+        ref={triggerRef}
+        type="button"
+        className="csel-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="csel-val">
+          {connection ? <DatabaseTypeIcon type={connection.type} /> : null}
+          <span className="csel-txt">{connection ? `${connection.name} · ${connection.host}` : "请选择连接"}</span>
+          {connection?.region && connection.region !== "内网" ? <RegionFlag region={connection.region} /> : null}
         </span>
-        <ChevronDown size={16} />
+        <span className="csel-chev">
+          <ChevronDown size={14} />
+        </span>
       </button>
-      {open && (
-        <div className="endpoint-instance-menu restore-connection-menu" role="listbox" aria-label="目标连接列表">
-          {connections.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`endpoint-instance-option ${item.id === connectionId ? "active" : ""}`}
-              onClick={() => { onChange(item.id); setOpen(false); }}
-            >
-              <div>
-                <strong>
+      {open
+        ? createPortal(
+            <div ref={menuRef} className="csel-list" role="listbox" style={{ left: pos.left, top: pos.top, minWidth: pos.minWidth }}>
+              {connections.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  className="csel-opt"
+                  aria-selected={item.id === connectionId}
+                  onClick={() => {
+                    onChange(item.id);
+                    setOpen(false);
+                  }}
+                >
                   <DatabaseTypeIcon type={item.type} />
-                  {item.name} · {item.host}
-                  {item.region && item.region !== "内网" && <RegionFlag region={item.region} />}
-                </strong>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
+                  <span className="csel-txt">
+                    {item.name} · {item.host}
+                  </span>
+                </button>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -468,15 +695,19 @@ function groupBackupEvents(job: BackupJob): BackupEventRun[] {
   const planEvents: BackupJob["events"] = [];
 
   if (!scheduled) {
-    return [{
-      id: "single-run",
-      title: "本次备份",
-      subtitle: events[0] ? new Date(events[0].time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "等待事件",
-      events: events.reverse(),
-      failed: events.some((event) => event.level === "ERROR"),
-      cancelled: job.status === "cancelled",
-      completed: events.some((event) => event.message.includes("备份任务完成")),
-    }];
+    return [
+      {
+        id: "single-run",
+        title: "本次备份",
+        subtitle: events[0]
+          ? new Date(events[0].time).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+          : "等待事件",
+        events: events.reverse(),
+        failed: events.some((event) => event.level === "ERROR"),
+        cancelled: job.status === "cancelled",
+        completed: events.some((event) => event.message.includes("备份任务完成")),
+      },
+    ];
   }
 
   events.forEach((event) => {
@@ -585,22 +816,14 @@ function scheduleTargets(job: BackupJob, storages: RemoteStorage[]) {
     ? [...job.backupTargets].sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
     : initialBackupTargets(job, storages);
   if (!targets.length) {
-    return [{
-      id: job.destination || "unknown",
-      name: job.destination || "未配置目标存储",
-      detail: storageTypeLabel(job.destinationType),
-    }];
+    return [{ id: job.destination || "unknown", name: job.destination || "未配置目标存储", detail: storageTypeLabel(job.destinationType) }];
   }
   return targets.map((target, index) => {
     const storage = storages.find((item) => item.id === target.storageId);
     const role = target.role === "secondary" ? "备份节点" : index === 0 ? "主节点" : "备份节点";
     const storageName = storage?.name ?? target.storageId;
     const storageMeta = storage ? storageLocation(storage) : "未找到存储配置";
-    return {
-      id: target.storageId,
-      name: storageName,
-      detail: `${role} · ${storageTypeLabel(storage?.type ?? job.destinationType)} · ${storageMeta}`,
-    };
+    return { id: target.storageId, name: storageName, detail: `${role} · ${storageTypeLabel(storage?.type ?? job.destinationType)} · ${storageMeta}` };
   });
 }
 
@@ -612,16 +835,12 @@ function scheduleNotification(job: BackupJob, recipients: NotificationRecipient[
   if (!job.notificationEnabled) return { value: "未开启", detail: "不会发送备份结果通知" };
   const trigger = notificationTriggerLabel(job.notificationTrigger ?? "all");
   if (loadingRecipients) return { value: trigger, detail: "正在加载通知接收者" };
-  const names = (job.notificationRecipientIds ?? [])
-    .map((id) => recipients.find((item) => item.id === id)?.name ?? id)
-    .filter(Boolean);
+  const names = (job.notificationRecipientIds ?? []).map((id) => recipients.find((item) => item.id === id)?.name ?? id).filter(Boolean);
   if (names.length) return { value: trigger, detail: names.join("、") };
   if (job.notificationTarget) return { value: trigger, detail: job.notificationTarget };
   return { value: trigger, detail: "未选择接收者" };
 }
 
-const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-const etcdClusterDatabase: DatabaseInfo = { name: "整个集群", sizeBytes: 0 };
 function ScheduleEditor({
   job,
   connections,
@@ -638,8 +857,13 @@ function ScheduleEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const { recipients, loadingRecipients } = useNotificationRecipients();
-  const writableStorages = storages.filter((item) => item.type === "object" || item.type === "webdav" || item.type === "local" || (item.type === "one_drive" && item.status === "connected"));
-  const initialSource = connections.find((item) => item.name === job.sourceName && item.type === job.sourceType) ?? connections.find((item) => item.name === job.sourceName) ?? connections[0];
+  const writableStorages = storages.filter(
+    (item) => item.type === "object" || item.type === "webdav" || item.type === "local" || (item.type === "one_drive" && item.status === "connected"),
+  );
+  const initialSource =
+    connections.find((item) => item.name === job.sourceName && item.type === job.sourceType) ??
+    connections.find((item) => item.name === job.sourceName) ??
+    connections[0];
   const initialTargets = initialBackupTargets(job, writableStorages);
   const [databases, setDatabases] = useState<DatabaseInfo[]>([]);
   const [databaseConnectionId, setDatabaseConnectionId] = useState("");
@@ -658,7 +882,7 @@ function ScheduleEditor({
     scheduleTime: job.scheduleTime ?? "02:00:00",
     scheduleWeekday: job.scheduleWeekday ?? 1,
     scheduleMonthDay: job.scheduleMonthDay ?? 1,
-    backupMode: job.backupMode as BackupConfig["backupMode"] ?? "full",
+    backupMode: (job.backupMode as BackupConfig["backupMode"]) ?? "full",
     fullBackupIntervalDays: job.fullBackupIntervalDays ?? 7,
     restoreDrillEnabled: job.restoreDrillEnabled ?? false,
     restoreDrillTargetId: job.restoreDrillTargetId ?? "",
@@ -667,10 +891,13 @@ function ScheduleEditor({
     notificationRecipientIds: job.notificationRecipientIds ?? [],
     notificationTrigger: job.notificationTrigger ?? "all",
   });
+
   const source = connections.find((item) => item.id === form.sourceId);
   const mongoRestoreDrillTargets = connections.filter((item) => item.type === "MongoDB" && item.id !== form.sourceId);
   const selectedTargetIds = selectedBackupTargetIds(form, writableStorages);
-  const primaryDestinationId = selectedTargetIds.includes(form.primaryDestinationId ?? "") ? form.primaryDestinationId ?? "" : selectedTargetIds[0] ?? "";
+  const primaryDestinationId = selectedTargetIds.includes(form.primaryDestinationId ?? "")
+    ? (form.primaryDestinationId ?? "")
+    : (selectedTargetIds[0] ?? "");
 
   useEffect(() => {
     if (!form.sourceId) return;
@@ -680,7 +907,11 @@ function ScheduleEditor({
       setDatabaseConnectionId(form.sourceId);
       setLoadingDatabases(false);
       setError("");
-      setForm((current) => current.sourceId === form.sourceId ? { ...current, sourceDatabase: etcdClusterDatabase.name, sourceDatabases: [etcdClusterDatabase.name] } : current);
+      setForm((current) =>
+        current.sourceId === form.sourceId
+          ? { ...current, sourceDatabase: etcdClusterDatabase.name, sourceDatabases: [etcdClusterDatabase.name] }
+          : current,
+      );
       return;
     }
     let cancelled = false;
@@ -695,7 +926,7 @@ function ScheduleEditor({
           if (current.sourceId !== form.sourceId) return current;
           const valid = new Set(items.map((item) => item.name));
           const kept = current.sourceDatabases.filter((name) => valid.has(name));
-          const nextDatabases = kept.length ? kept : (items[0]?.name ? [items[0].name] : []);
+          const nextDatabases = kept.length ? kept : items[0]?.name ? [items[0].name] : [];
           return { ...current, sourceDatabases: nextDatabases, sourceDatabase: nextDatabases.join(", ") };
         });
       })
@@ -705,7 +936,9 @@ function ScheduleEditor({
       .finally(() => {
         if (!cancelled) setLoadingDatabases(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [connections, form.sourceId]);
 
   async function submit(event: FormEvent) {
@@ -719,14 +952,14 @@ function ScheduleEditor({
       setError("请至少选择一个备份目标");
       return;
     }
-    if (form.notificationEnabled && !(form.notificationRecipientIds?.length)) {
+    if (form.notificationEnabled && !form.notificationRecipientIds?.length) {
       setError("请至少选择一个通知接收者，或关闭备份通知");
       return;
     }
-	if (form.backupMode === "mongo_oplog" && form.restoreDrillEnabled && !form.restoreDrillTargetId) {
-		setError("请为全量后恢复演练选择独立的目标副本集");
-		return;
-	}
+    if (form.backupMode === "mongo_oplog" && form.restoreDrillEnabled && !form.restoreDrillTargetId) {
+      setError("请为全量后恢复演练选择独立的目标副本集");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -746,94 +979,234 @@ function ScheduleEditor({
     }
   }
 
-  return (
-    <div className="modal-backdrop">
-      <form className="modal schedule-editor-modal" onSubmit={submit}>
-        <div className="modal-title">
-          <div><h3>编辑备份任务</h3><p>{job.sourceName} / {job.sourceDatabase}</p></div>
-          <button type="button" className="icon-button" aria-label="关闭编辑备份任务" onClick={onClose}><X size={17} /></button>
-        </div>
-        {error && <div className="error-banner">{error}</div>}
-        <div className="schedule-editor-section">
-          <label className="field"><span>任务名称</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-          <div className="schedule-editor-source-grid">
-            <div className="field schedule-editor-readonly-source">
-              <span>源端连接</span>
-              <div aria-readonly="true">{source ? `${source.name} · ${source.type}` : job.sourceName}</div>
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <form className="modal wide" role="dialog" aria-modal="true" onSubmit={submit} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-h">
+          <div style={{ flex: 1 }}>
+            <h3>编辑备份任务</h3>
+            <div className="ms">
+              {job.sourceName} / {job.sourceDatabase}
             </div>
-            {source?.type === "etcd" ? <div className="info-banner schedule-editor-etcd-scope">备份范围：整个集群</div> : <DatabaseMultiSelect type={source?.type} databases={databases} loading={loadingDatabases} selected={form.sourceDatabases} onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })} />}
           </div>
+          <button type="button" className="icon-btn ghost" aria-label="关闭编辑备份任务" onClick={onClose}>
+            <X size={17} />
+          </button>
         </div>
-        <div className="schedule-editor-section">
-          <div className="section-title compact"><div><h3>备份目标</h3><p>选择一个或多个远端存储，并指定恢复和下载优先使用的主节点。</p></div></div>
-          <BackupTargetSelector
-            storages={writableStorages}
-            selectedIds={selectedTargetIds}
-            primaryId={primaryDestinationId}
-            onChange={(nextIds, nextPrimaryId) => {
-              const targets = buildBackupTargets(nextIds, nextPrimaryId);
-              setForm({ ...form, destination: nextPrimaryId, primaryDestinationId: nextPrimaryId, backupTargets: targets, destinationType: targets.length > 1 ? "multi" : "storage" });
-            }}
-          />
-        </div>
-        <div className="schedule-editor-section">
-          <div className="section-title compact"><div><h3>执行计划</h3><p>调整定时频率、执行时间和备份保留期限。</p></div></div>
-        <div className="schedule-grid compact">
-          <SelectField label="频率" value={form.scheduleFrequency ?? "daily"} onChange={(scheduleFrequency) => setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })}><option value="hourly">每小时</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></SelectField>
-          <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
-          {form.scheduleFrequency === "weekly" && <SelectField label="每周" value={form.scheduleWeekday ?? 1} onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}>{weekdays.map((item, index) => <option key={item} value={index}>{item}</option>)}</SelectField>}
-          {form.scheduleFrequency === "monthly" && <SelectField label="每月" value={form.scheduleMonthDay ?? 1} onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}>{Array.from({ length: 28 }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day} 日</option>)}</SelectField>}
-          <RetentionDaysField value={form.retentionDays ?? 30} onChange={(retentionDays) => setForm({ ...form, retentionDays })} />
-        </div>
-        </div>
-		{form.backupMode === "mongo_oplog" && <div className="notification-panel modal-notification-panel"><button type="button" className="toggle-row" onClick={() => setForm({ ...form, restoreDrillEnabled: !form.restoreDrillEnabled })}><span className={`switch ${form.restoreDrillEnabled ? "on" : ""}`}><i /></span><div><strong>全量后恢复演练</strong><small>仅恢复到独立副本集，目标数据会被覆盖</small></div></button>{form.restoreDrillEnabled && <SelectField label="演练目标副本集" value={form.restoreDrillTargetId ?? ""} onChange={(restoreDrillTargetId) => setForm({ ...form, restoreDrillTargetId })}><option value="">选择独立 MongoDB 连接</option>{mongoRestoreDrillTargets.map((connection) => <option key={connection.id} value={connection.id}>{connection.name} · {connection.host}:{connection.port}</option>)}</SelectField>}</div>}
-        <div className="notification-panel modal-notification-panel">
-          <button type="button" className="toggle-row" onClick={() => setForm({ ...form, notificationEnabled: !form.notificationEnabled, notificationTrigger: form.notificationTrigger ?? "all" })}><span className={`switch ${form.notificationEnabled ? "on" : ""}`}><i /></span><div><strong>备份通知</strong><small>选择定时任务结束后的通知发送范围</small></div></button>
-          {form.notificationEnabled && (
-            <>
-              <NotificationTriggerSelector value={form.notificationTrigger ?? "all"} onChange={(notificationTrigger) => setForm({ ...form, notificationTrigger })} />
-              <div className="notification-recipient-field"><span>通知接收者</span><NotificationRecipientPicker recipients={recipients} loading={loadingRecipients} selected={form.notificationRecipientIds ?? []} onChange={(notificationRecipientIds) => setForm({ ...form, notificationRecipientIds })} /></div>
-            </>
+
+        <div className="modal-b">
+          {error ? (
+            <div className="error-banner" style={{ marginBottom: 12 }}>
+              {error}
+            </div>
+          ) : null}
+
+          <label className="field">
+            <span>任务名称</span>
+            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          </label>
+
+          {source?.type === "etcd" ? (
+            <div className="info-callout" style={{ marginBottom: 14 }}>
+              备份范围：整个集群
+            </div>
+          ) : (
+            <DatabaseMultiSelect
+              type={source?.type}
+              databases={databases}
+              loading={loadingDatabases}
+              selected={form.sourceDatabases}
+              onChange={(sourceDatabases) => setForm({ ...form, sourceDatabases, sourceDatabase: sourceDatabases.join(", ") })}
+            />
           )}
+
+          <div className="field">
+            <span>备份目标</span>
+            <BackupTargetSelector
+              storages={writableStorages}
+              selectedIds={selectedTargetIds}
+              primaryId={primaryDestinationId}
+              onChange={(nextIds, nextPrimaryId) => {
+                const targets = buildBackupTargets(nextIds, nextPrimaryId);
+                setForm({
+                  ...form,
+                  destination: nextPrimaryId,
+                  primaryDestinationId: nextPrimaryId,
+                  backupTargets: targets,
+                  destinationType: targets.length > 1 ? "multi" : "storage",
+                });
+              }}
+            />
+          </div>
+
+          <div className="grid2">
+            <SelectField
+              label="频率"
+              value={form.scheduleFrequency ?? "daily"}
+              onChange={(scheduleFrequency) =>
+                setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })
+              }
+            >
+              <option value="hourly">每小时</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+            </SelectField>
+            <TimeSelect value={form.scheduleTime ?? "02:00:00"} onChange={(scheduleTime) => setForm({ ...form, scheduleTime })} />
+            {form.scheduleFrequency === "weekly" ? (
+              <SelectField
+                label="每周"
+                value={form.scheduleWeekday ?? 1}
+                onChange={(scheduleWeekday) => setForm({ ...form, scheduleWeekday: Number(scheduleWeekday) })}
+              >
+                {weekdays.map((item, index) => (
+                  <option key={item} value={index}>
+                    {item}
+                  </option>
+                ))}
+              </SelectField>
+            ) : null}
+            {form.scheduleFrequency === "monthly" ? (
+              <SelectField
+                label="每月"
+                value={form.scheduleMonthDay ?? 1}
+                onChange={(scheduleMonthDay) => setForm({ ...form, scheduleMonthDay: Number(scheduleMonthDay) })}
+              >
+                {Array.from({ length: 28 }, (_, index) => index + 1).map((day) => (
+                  <option key={day} value={day}>
+                    {day} 日
+                  </option>
+                ))}
+              </SelectField>
+            ) : null}
+            <RetentionDaysField value={form.retentionDays ?? 30} onChange={(retentionDays) => setForm({ ...form, retentionDays })} />
+          </div>
+
+          {form.backupMode === "mongo_oplog" ? (
+            <div>
+              <button
+                type="button"
+                className="toggle-row"
+                onClick={() => setForm({ ...form, restoreDrillEnabled: !form.restoreDrillEnabled })}
+              >
+                <span className={`switch ${form.restoreDrillEnabled ? "on" : ""}`}>
+                  <i />
+                </span>
+                <div>
+                  <strong>全量后恢复演练</strong>
+                  <small>仅恢复到独立副本集，目标数据会被覆盖</small>
+                </div>
+              </button>
+              {form.restoreDrillEnabled ? (
+                <SelectField
+                  label="演练目标副本集"
+                  value={form.restoreDrillTargetId ?? ""}
+                  onChange={(restoreDrillTargetId) => setForm({ ...form, restoreDrillTargetId })}
+                >
+                  <option value="">选择独立 MongoDB 连接</option>
+                  {mongoRestoreDrillTargets.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                      {connection.name} · {connection.host}:{connection.port}
+                    </option>
+                  ))}
+                </SelectField>
+              ) : null}
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            className="toggle-row"
+            onClick={() =>
+              setForm({
+                ...form,
+                notificationEnabled: !form.notificationEnabled,
+                notificationTrigger: form.notificationTrigger ?? "all",
+              })
+            }
+          >
+            <span className={`switch ${form.notificationEnabled ? "on" : ""}`}>
+              <i />
+            </span>
+            <div>
+              <strong>备份通知</strong>
+              <small>选择定时任务结束后的通知发送范围</small>
+            </div>
+          </button>
+
+          {form.notificationEnabled ? (
+            <div className="card pad" style={{ background: "var(--surface-2)" }}>
+              <NotificationTriggerSelector
+                value={form.notificationTrigger ?? "all"}
+                onChange={(notificationTrigger) => setForm({ ...form, notificationTrigger })}
+              />
+              <div style={{ marginTop: 12 }}>
+                <span style={{ display: "block", fontSize: 13, fontWeight: 550, marginBottom: 6 }}>通知接收者</span>
+                <NotificationRecipientPicker
+                  recipients={recipients}
+                  loading={loadingRecipients}
+                  selected={form.notificationRecipientIds ?? []}
+                  onChange={(notificationRecipientIds) => setForm({ ...form, notificationRecipientIds })}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
-        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>取消</Button><Button disabled={saving} type="submit">{saving ? "保存中..." : "保存计划"}</Button></div>
+
+        <div className="modal-f">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            取消
+          </Button>
+          <Button disabled={saving} type="submit">
+            {saving ? "保存中..." : "保存计划"}
+          </Button>
+        </div>
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 function initialBackupTargets(job: BackupJob, storages: RemoteStorage[]) {
   const fallbackStorage = storages.find((storage) => {
     const destination = job.destination || "";
-    return destination.includes(storage.id) || destination.includes(storage.name) || (storage.bucket && destination.includes(storage.bucket)) || (storage.path && destination.includes(storage.path));
+    return (
+      destination.includes(storage.id) ||
+      destination.includes(storage.name) ||
+      (storage.bucket && destination.includes(storage.bucket)) ||
+      (storage.path && destination.includes(storage.path))
+    );
   });
-  const normalized = normalizeTargetSelection({
-    name: job.name,
-    sourceId: "",
-    sourceDatabase: job.sourceDatabase,
-    sourceDatabases: job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean),
-    destinationType: job.destinationType === "multi" ? "multi" : "storage",
-    destination: job.primaryDestinationId ?? fallbackStorage?.id ?? "",
-    primaryDestinationId: job.primaryDestinationId,
-    backupTargets: job.backupTargets?.length ? job.backupTargets : (fallbackStorage ? [{ storageId: fallbackStorage.id, role: "primary", order: 0 }] : undefined),
-    scheduleMode: "scheduled",
-  }, storages);
+  const normalized = normalizeTargetSelection(
+    {
+      name: job.name,
+      sourceId: "",
+      sourceDatabase: job.sourceDatabase,
+      sourceDatabases: job.sourceDatabase.split(",").map((item) => item.trim()).filter(Boolean),
+      destinationType: job.destinationType === "multi" ? "multi" : "storage",
+      destination: job.primaryDestinationId ?? fallbackStorage?.id ?? "",
+      primaryDestinationId: job.primaryDestinationId,
+      backupTargets: job.backupTargets?.length
+        ? job.backupTargets
+        : fallbackStorage
+          ? [{ storageId: fallbackStorage.id, role: "primary", order: 0 }]
+          : undefined,
+      scheduleMode: "scheduled",
+    },
+    storages,
+  );
   return normalized.backupTargets ?? [];
 }
 
 function scheduleLabel(job: BackupJob) {
-	if (job.scheduleFrequency === "hourly") return `每小时第 ${(job.scheduleTime ?? "02:00:00").slice(3)}`;
+  if (job.scheduleFrequency === "hourly") return `每小时第 ${(job.scheduleTime ?? "02:00:00").slice(3)}`;
   if (job.scheduleFrequency === "weekly") return `每周${weekdays[job.scheduleWeekday ?? 1]} ${job.scheduleTime}`;
   if (job.scheduleFrequency === "monthly") return `每月 ${job.scheduleMonthDay ?? 1} 日 ${job.scheduleTime}`;
   return `每天 ${job.scheduleTime ?? "02:00:00"}`;
 }
 
 function retentionDaysFromJob(job: BackupJob) {
-  return job.retentionDays ?? ((job.retentionMonths ?? 1) * 30);
-}
-
-function retentionLabel(days: number) {
-  return `${days} 天`;
+  return job.retentionDays ?? (job.retentionMonths ?? 1) * 30;
 }
 
 export function formatDateTime(value?: string) {
@@ -847,9 +1220,3 @@ export function formatBytes(value: number) {
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   return `${(value / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
 }
-
-function formatArtifactName(value: string) {
-  return value;
-}
-
-function formatDuration(value: number) { const seconds = Math.round(value / 1000); return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`; }

@@ -1,12 +1,14 @@
-import { Activity, ArrowRight, FileCheck2, Plus, Search, Star, Trash2 } from "lucide-react";
+import { Activity, Eye, FileCheck2, Plus, Search, Star, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { BridgeFlow } from "../components/BridgeFlow";
+import { ActionMenu, Badge, Button, ConfirmDialog, DatabaseLogo, DensitySwitch, useCollectionView } from "../components/UI";
+import { migrationStageLabel } from "../labels";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { DatabaseConnection, DatabaseType, MigrationJob } from "../types";
-import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon } from "../components/UI";
 
 export function MigrationList({
   title = "迁移任务",
-  description = "查看任务进度、结果和校验报告。",
+  description = "同类型实例之间迁移 · 查看任务进度、结果与校验报告。",
   migrations,
   connections,
   onCreate,
@@ -23,23 +25,35 @@ export function MigrationList({
   onDelete: (job: MigrationJob) => Promise<void>;
   onToggleFavorite: (job: MigrationJob) => Promise<void>;
 }) {
+  const { prefs, updatePref } = useCollectionView();
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("全部");
   const [deleteTarget, setDeleteTarget] = useState<MigrationJob | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
   const [favoritingId, setFavoritingId] = useState("");
+
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    const matching = !keyword ? migrations : migrations.filter((item) =>
-      `${item.name} ${item.sourceDatabase} ${item.targetDatabase} ${item.sourceName} ${item.targetName}`
-        .toLowerCase()
-        .includes(keyword),
-    );
-    return [...matching].sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
-  }, [migrations, query]);
+    return migrations
+      .filter((item) => {
+        if (statusFilter !== "全部" && migrationStatusLabel(item.status) !== statusFilter) return false;
+        if (
+          keyword &&
+          !`${item.name} ${item.id} ${item.sourceDatabase} ${item.targetDatabase} ${item.sourceName} ${item.targetName}`
+            .toLowerCase()
+            .includes(keyword)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
+  }, [migrations, query, statusFilter]);
 
   const running = migrations.filter((item) => item.status === "running" || item.status === "pending").length;
   const completed = migrations.filter((item) => item.status === "completed").length;
+  const failed = migrations.filter((item) => item.status === "failed").length;
 
   async function toggleFavorite(job: MigrationJob) {
     setFavoritingId(job.id);
@@ -55,96 +69,208 @@ export function MigrationList({
 
   return (
     <div className="page-stack">
-      <div className="page-heading">
-        <div><h2>{title}</h2><p>{description}</p></div>
-        <Button onClick={onCreate}><Plus size={17} />新建迁移</Button>
-      </div>
-
-      <div className="task-summary-grid">
-        <TaskSummary title="全部任务" value={migrations.length} detail="任务记录已保存" />
-        <TaskSummary title="进行中" value={running} detail="可查看实时进度" tone="blue" />
-        <TaskSummary title="已完成" value={completed} detail="可查看校验报告" tone="green" />
-      </div>
-
-      <Card className="task-table-card">
-        <div className="section-title compact">
-          <div><h3>任务列表</h3><p>任务结束后可继续查看结果和报告。</p></div>
-          <label className="search-box small"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索任务或数据库" /></label>
+      <div className="h-row">
+        <div>
+          <h1 className="page-h">{title}</h1>
+          <div className="sec-sub">{description}</div>
         </div>
-        {filtered.length ? (
-          <div className="task-table migration-list-table">
-            <div className="table-row table-head"><span aria-hidden="true" /><span>任务名称</span><span>源端 / 目标端</span><span>开始时间</span><span>进度</span><span>状态</span><span>操作</span></div>
-            {filtered.map((job) => {
-              const deleteDisabled = job.status === "running" || job.status === "pending";
-              return (
-              <button className="table-row task-row-button" key={job.id} onClick={() => onOpen(job)}>
-                <div className="task-table-desktop">
-                  <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite task-favorite-cell ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
-                  <strong className="task-name" data-tooltip-content={displayTaskName(job)}>{displayTaskName(job)}</strong>
-                  <MigrationRoute job={job} connections={connections} />
-                  <span className="task-meta task-started-at">{formatDate(job.startedAt)}</span>
-                  <div className="table-progress"><div><i style={{ width: `${job.progress}%` }} /></div><small>{job.progress}%</small></div>
-                  <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
-                  <span className="row-actions">
-                    <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
-                    <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
-                  </span>
-                </div>
-                <div className="task-mobile-card">
-                  <div className="task-mobile-head">
-                    <span className="task-mobile-icon"><Activity size={18} /></span>
-                    <div className="task-mobile-copy">
-                      <strong data-tooltip-content={displayTaskName(job)}>{displayTaskName(job)}</strong>
-                      <MigrationRoute job={job} connections={connections} mobile />
-                    </div>
+        <span className="sp" />
+        <Button variant="primary" onClick={onCreate}>
+          <Plus size={15} />
+          新建迁移
+        </Button>
+      </div>
+
+      <div className="h-row">
+        <span className="sfield">
+          <span className="sfield-ic">
+            <Search size={14} />
+          </span>
+          <input
+            className="inp"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索任务名、编号、源 / 目标…"
+            style={{ width: 250 }}
+          />
+        </span>
+
+        <span className="chiprow">
+          {[
+            ["全部", migrations.length],
+            ["进行中", running],
+            ["已完成", completed],
+            ["已失败", failed],
+            ["已取消", migrations.filter((m) => m.status === "cancelled").length],
+          ].map(([label, count]) => (
+            <button
+              key={String(label)}
+              type="button"
+              className={`fchip ${statusFilter === label ? "on" : ""}`}
+              onClick={() => setStatusFilter(String(label))}
+            >
+              {label} <span className="num" style={{ opacity: 0.72 }}>{count}</span>
+            </button>
+          ))}
+        </span>
+
+        <span className="sp" />
+        <DensitySwitch value={prefs.mig} onChange={(v) => updatePref("mig", v as "comfortable" | "compact")} />
+      </div>
+
+      {error ? <div className="error-banner">{error}</div> : null}
+
+      {filtered.length ? (
+        <div className={`ledger ${prefs.mig}`}>
+          {filtered.map((job) => {
+            const active = job.status === "running" || job.status === "pending";
+            const dbType: DatabaseType =
+              connections.find((c) => c.name === job.sourceName)?.type ??
+              connections.find((c) => c.name === job.targetName)?.type ??
+              "PostgreSQL";
+
+            return (
+              <div
+                key={job.id}
+                className="lrow"
+                style={{ alignItems: "flex-start" }}
+                onClick={() => onOpen(job)}
+              >
+                <DatabaseLogo type={dbType} name={job.sourceName} size="sm" />
+                <div className="lr-main">
+                  <div className="lr-t">
+                    <span>{displayTaskName(job)}</span>
+                    <Badge tone={migrationStatusTone(job.status)}>
+                      <span className="pd" />
+                      {migrationStatusLabel(job.status)}
+                    </Badge>
+                    <span className="tag mono-t">{job.id}</span>
                   </div>
-                  <div className="task-mobile-details">
-                    <div className="task-mobile-row">
-                      <span>开始时间</span>
-                      <strong>{formatDate(job.startedAt)}</strong>
-                    </div>
-                    <div className="task-mobile-row">
-                      <span>进度</span>
-                      <strong>{job.progress}%</strong>
-                    </div>
+
+                  <div className="mig-bridge" style={{ margin: "9px 0 7px", maxWidth: 560 }}>
+                    <BridgeFlow
+                      sourceName={job.sourceName}
+                      sourceDatabase={job.sourceDatabase}
+                      targetName={job.targetName}
+                      targetDatabase={job.targetDatabase}
+                      type={dbType}
+                      status={job.status}
+                      stage={job.stage}
+                      progress={job.progress}
+                      mini
+                      showStats={false}
+                    />
                   </div>
-                  <div className="task-mobile-progress">
-                    <i style={{ width: `${job.progress}%` }} />
-                  </div>
-                  <div className="task-mobile-foot">
-                    <span className="task-mobile-leading">
-                      <span role="button" tabIndex={favoritingId === job.id ? -1 : 0} aria-disabled={favoritingId === job.id} aria-label={job.favorite ? "取消收藏" : "收藏并置顶"} data-tooltip-mode="always" data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"} className={`row-favorite ${job.favorite ? "active" : ""} ${favoritingId === job.id ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (favoritingId !== job.id) void toggleFavorite(job); } }}><Star size={15} fill={job.favorite ? "currentColor" : "none"} /></span>
-                      <Badge tone={migrationStatusTone(job.status)}>{migrationStatusLabel(job.status)}</Badge>
+
+                  <div className="lr-s">
+                    <span>阶段：{migrationStageLabel(job.stage)}</span>
+                    <span className="num">
+                      {formatNumber(job.rowsCopied)} / {formatNumber(job.rowsTotal)}
                     </span>
-                    <span className="row-actions">
-                      <span className="row-action">{job.status === "running" || job.status === "pending" ? <Activity size={14} /> : <FileCheck2 size={14} />}{job.status === "running" || job.status === "pending" ? "查看进度" : "查看结果"}<ArrowRight size={14} /></span>
-                      <span role="button" tabIndex={deleteDisabled ? -1 : 0} aria-disabled={deleteDisabled} data-tooltip-content={deleteDisabled ? "任务执行中，请先停止" : "删除任务"} className={`row-delete ${deleteDisabled ? "disabled" : ""}`} onClick={(event) => { event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); if (!deleteDisabled) setDeleteTarget(job); } }}><Trash2 size={14} />删除</span>
+                    <span>
+                      {job.tablesDone} / {job.tablesTotal} 项
                     </span>
+                    <span>{formatDate(job.startedAt)}</span>
                   </div>
+
+                  {job.status === "running" ? (
+                    <div className="progress" style={{ marginTop: 8, maxWidth: 520 }}>
+                      <i className="shimmer" style={{ width: `${job.progress}%` }} />
+                    </div>
+                  ) : null}
+
+                  {job.status === "failed" && job.error ? (
+                    <div className="diff-callout" style={{ marginTop: 8 }}>
+                      <span>{job.error}</span>
+                    </div>
+                  ) : null}
                 </div>
-              </button>
-            );})}
+
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div style={{ textAlign: "right", marginRight: 6 }}>
+                    <div className="num" style={{ fontWeight: 600 }}>
+                      {job.progress}%
+                    </div>
+                    <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{active ? "实时监控" : "校验报告"}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className={`star-btn ${job.favorite ? "on" : ""}`}
+                    aria-label={job.favorite ? "取消收藏" : "收藏并置顶"}
+                    data-tooltip-mode="always"
+                    data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"}
+                    disabled={favoritingId === job.id}
+                    onClick={() => void toggleFavorite(job)}
+                  >
+                    <Star size={16} fill={job.favorite ? "currentColor" : "none"} />
+                  </button>
+                  <ActionMenu
+                    ariaLabel={`${displayTaskName(job)} 更多操作`}
+                    items={[
+                      {
+                        key: "open",
+                        label: active ? "查看实时进度" : "查看校验报告",
+                        icon: active ? <Activity size={14} /> : <FileCheck2 size={14} />,
+                        onClick: () => onOpen(job),
+                      },
+                      {
+                        key: "detail",
+                        label: "打开详情页",
+                        icon: <Eye size={14} />,
+                        onClick: () => onOpen(job),
+                      },
+                      {
+                        key: "del",
+                        label: "删除任务",
+                        icon: <Trash2 size={14} />,
+                        danger: true,
+                        disabled: active,
+                        dividerBefore: true,
+                        tooltip: active ? "任务执行中，请先停止" : "删除任务",
+                        onClick: () => setDeleteTarget(job),
+                      },
+                    ]}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty">
+          <div className="e-t">{migrations.length ? "未找到匹配任务" : "暂无迁移任务"}</div>
+          <div className="e-s">
+            {migrations.length ? "换个关键词或状态筛选再试。" : "创建迁移任务后，运行状态和校验报告会显示在这里。"}
           </div>
-        ) : (
-          <div className="inline-empty">
-            <Activity size={22} />
-            <div><strong>{migrations.length ? "未找到匹配任务" : "暂无迁移任务"}</strong><span>{migrations.length ? "换个关键词再试。" : "创建迁移任务后，运行状态和校验报告会显示在这里。"}</span></div>
-          </div>
-        )}
-      </Card>
-      {error && <div className="error-banner">{error}</div>}
-      {deleteTarget && <ConfirmDialog title="删除迁移任务" description="这是中危操作，会删除任务记录和校验结果记录。" tone="warning" confirmText="确认删除" submitting={deleting} onCancel={() => setDeleteTarget(null)} onConfirm={async () => {
-        setDeleting(true);
-        setError("");
-        try {
-          await onDelete(deleteTarget);
-          setDeleteTarget(null);
-        } catch (reason) {
-          setError(reason instanceof Error ? reason.message : "删除迁移任务失败");
-        } finally {
-          setDeleting(false);
-        }
-      }} details={[`任务：${displayTaskName(deleteTarget)}`, `状态：${migrationStatusLabel(deleteTarget.status)}`]} />}
+        </div>
+      )}
+
+      {deleteTarget ? (
+        <ConfirmDialog
+          title="删除迁移任务"
+          description="这是中危操作，会删除任务记录和校验结果记录。"
+          tone="warning"
+          confirmText="确认删除"
+          submitting={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={async () => {
+            setDeleting(true);
+            setError("");
+            try {
+              await onDelete(deleteTarget);
+              setDeleteTarget(null);
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : "删除迁移任务失败");
+            } finally {
+              setDeleting(false);
+            }
+          }}
+          details={[`任务：${displayTaskName(deleteTarget)}`, `状态：${migrationStatusLabel(deleteTarget.status)}`]}
+        />
+      ) : null}
     </div>
   );
 }
@@ -154,35 +280,8 @@ function displayTaskName(job: MigrationJob) {
   return job.name && job.name !== databaseRoute ? job.name : `${job.sourceName} 到 ${job.targetName}迁移`;
 }
 
-function MigrationRoute({ job, connections, mobile = false }: { job: MigrationJob; connections: DatabaseConnection[]; mobile?: boolean }) {
-  const sourceType = migrationConnectionType(job.sourceName, connections);
-  const targetType = migrationConnectionType(job.targetName, connections) ?? sourceType;
-  return (
-    <div className={mobile ? "migration-mobile-route" : "migration-route-pair"}>
-      <MigrationEndpoint type={sourceType} name={job.sourceName} database={job.sourceDatabase} />
-      <span className="migration-route-arrow" aria-hidden="true">→</span>
-      <MigrationEndpoint type={targetType} name={job.targetName} database={job.targetDatabase} />
-    </div>
-  );
-}
-
-function MigrationEndpoint({ type, name, database }: { type: DatabaseType | null; name: string; database: string }) {
-  const meta = type ? `${type} · ${database}` : database;
-  return (
-    <div className="migration-route-endpoint" data-tooltip-content={`${name}\n${meta}`}>
-      {type ? <DatabaseTypeIcon type={type} /> : <span className="migration-route-icon-placeholder" aria-hidden="true">DB</span>}
-      <strong data-tooltip-content={name}>{name}</strong>
-      <small data-tooltip-content={meta}>{meta}</small>
-    </div>
-  );
-}
-
-function migrationConnectionType(name: string, connections: DatabaseConnection[]): DatabaseType | null {
-  return connections.find((connection) => connection.name === name)?.type ?? null;
-}
-
-function TaskSummary({ title, value, detail, tone = "gray" }: { title: string; value: number; detail: string; tone?: "gray" | "blue" | "green" }) {
-  return <Card className={`task-summary-card ${tone}`}><span>{title}</span><strong>{value}</strong><small>{detail}</small></Card>;
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
 }
 
 function formatDate(value: string) {
