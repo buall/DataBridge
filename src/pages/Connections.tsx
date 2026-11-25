@@ -20,10 +20,7 @@ type ConnectionFormState = {
 };
 
 type EditConnectionFormState = Omit<ConnectionFormState, "type">;
-type DuplicateConnectionFormState = Omit<ConnectionFormState, "type" | "password" | "tlsConfig"> & {
-  password: string;
-  tlsConfig: ConnectionTLSConfig;
-};
+type DuplicateConnectionFormState = Omit<ConnectionFormState, "type" | "mongoMode" | "mongoSeeds">;
 
 type ConnectionFormErrors = Partial<Record<"type" | "name" | "host" | "port" | "username" | "password" | "sslMode", string>>;
 
@@ -237,8 +234,6 @@ export function Connections({
         password: "",
         sslMode: connection.sslMode,
         tlsConfig: emptyTLSConfig(),
-        mongoMode: connection.type === "MongoDB" && (connection.endpoints?.length ?? 0) > 0 ? "replica_set" : "direct",
-        mongoSeeds: connection.endpoints?.join("\n") ?? "",
       },
       submitting: false,
       error: "",
