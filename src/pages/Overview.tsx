@@ -320,11 +320,14 @@ export function Overview({
               {connections.slice(0, 5).map((connection) => (
                 <div
                   key={connection.id}
-                  className="kv"
-                  style={{ alignItems: "center", cursor: "pointer", gap: 10 }}
+                  className="kv ov-lat-row"
                   onClick={onConnections}
                 >
-                  <span className="k" style={{ color: "var(--ink)", fontWeight: 550, flex: 1, minWidth: 0 }}>
+                  <span
+                    className="k"
+                    data-tooltip-content={connection.name}
+                    style={{ color: "var(--ink)", fontWeight: 550, minWidth: 0 }}
+                  >
                     <DatabaseLogo type={connection.type} name={connection.name} size="sm" />
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {connection.name}
@@ -334,18 +337,12 @@ export function Overview({
                     ) : null}
                   </span>
                   <span
-                    className="v"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      flex: "none",
-                      whiteSpace: "nowrap",
-                    }}
+                    className="mono ov-lat-host"
+                    data-tooltip-content={`${connection.host}:${connection.port}`}
                   >
-                    <span className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
-                      {connection.host}:{connection.port}
-                    </span>
+                    {connection.host}:{connection.port}
+                  </span>
+                  <span className="ov-lat-col">
                     {connection.status === "connected" ? (
                       <span className="tag lat-tag">
                         <LatencyIndicator latency={connection.latency} />

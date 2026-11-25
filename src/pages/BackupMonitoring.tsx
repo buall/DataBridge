@@ -438,7 +438,9 @@ export function BackupMonitoring({
               <div className="run-group" key={run.id}>
                 <button type="button" className="run-group-head" onClick={() => void toggleRun(run, collapsed)}>
                   {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-                  {runKindLabel ? <span className="tag">{runKindLabel}</span> : null}
+                  {runKindLabel ? (
+                    <Badge tone={run.kind === "manual" ? "indigo" : "gray"}>{runKindLabel}</Badge>
+                  ) : null}
                   <strong style={{ fontSize: 13.5 }}>{runTitle}</strong>
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>{run.subtitle}</span>
                   <span className="sp" />
