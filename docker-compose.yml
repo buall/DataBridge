@@ -4,7 +4,7 @@ services:
     container_name: databridge
     restart: unless-stopped
     ports:
-      - "${DATABRIDGE_PORT:-8081}:8081"
+      - "${DATABRIDGE_BIND_ADDRESS:-0.0.0.0}:${DATABRIDGE_PORT:-8081}:8081"
     environment:
       DATABRIDGE_ADDR: ":8081"
       DATABRIDGE_DB_PATH: /data/databridge.db
@@ -14,6 +14,9 @@ services:
       DATABRIDGE_AUTH_USER: ${DATABRIDGE_AUTH_USER:-admin}
       DATABRIDGE_AUTH_PASSWORD: ${DATABRIDGE_AUTH_PASSWORD:?set DATABRIDGE_AUTH_PASSWORD before exposing DataBridge}
       DATABRIDGE_SESSION_SECRET: ${DATABRIDGE_SESSION_SECRET:?set DATABRIDGE_SESSION_SECRET before exposing DataBridge}
+      DATABRIDGE_COOKIE_SECURE: "${DATABRIDGE_COOKIE_SECURE:-false}"
+      DATABRIDGE_PUBLIC_URL: ${DATABRIDGE_PUBLIC_URL:-}
+      DATABRIDGE_CORS_ORIGIN: ${DATABRIDGE_CORS_ORIGIN:-}
       DATABRIDGE_PG_JOBS: ${DATABRIDGE_PG_JOBS:-4}
     volumes:
       - databridge-data:/data

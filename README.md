@@ -362,6 +362,17 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 
 未设置 `DATABRIDGE_AUTH_PASSWORD` 时，服务只允许本机回环地址访问业务 API，方便本地开发，但不适合公网部署。
 
+## 部署方式
+
+| 方式 | 适用场景 | 部署入口 |
+| --- | --- | --- |
+| Docker Run | 快速启动单个容器，手动管理运行参数 | [Docker Run 部署](#docker-run-部署) |
+| Docker Compose | 单机长期运行，通过配置文件管理和升级 | [Docker Compose 部署](#docker-compose-部署)、[完整指南](docs/docker-compose-deployment.md) |
+| Kubernetes | 在已有 Kubernetes 集群中运行 | [Kubernetes 部署](#kubernetes-部署) |
+| 裸机 / 虚拟机 | 不使用容器，使用 systemd 托管 | [手动部署指南](docs/manual-deployment.md) |
+
+容器镜像同时提供控制台、API 和数据库客户端工具，无需另外部署前端或元数据数据库。源数据库、目标数据库和备份存储仍需提前准备。当前采用 SQLite 和本地任务执行，按单实例部署。
+
 ## Docker 镜像
 
 项目提供多阶段 `Dockerfile`，运行镜像包含：
@@ -373,6 +384,8 @@ DataBridge 的控制台和业务 API 已加入登录保护。生产或公网部�
 - MongoDB Database Tools：`mongodump`、`mongorestore`、`mongoexport`、`mongoimport`、`mongostat`、`mongotop`
 - Neo4j Cypher Shell：`cypher-shell`
 - Java 21 运行时：`temurin-21-jre`
+- etcd 客户端：`etcdctl`
+- 对象存储客户端：`mc`
 
 Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 export 过程。`cypher-shell` 需要 Java 运行时，Dockerfile 会显式安装 Temurin 21 JRE 和 Cypher Shell 客户端包，不安装 Neo4j Server。
 
@@ -380,47 +393,6 @@ Neo4j 备份、恢复和迁移要求 Neo4j 服务端已安装 APOC 并启用 exp
 
 ```bash
 docker build -t databridge:local .
-```
-
-运行容器：
-
-```bash
-export DATABRIDGE_AUTH_PASSWORD='替换为高强度密码'
-export DATABRIDGE_SESSION_SECRET="$(openssl rand -base64 32)"
-docker compose up -d
-```
-
-或直接运行镜像：
-
-```bash
-docker run --rm \
-  -p 8081:8081 \
-  -v databridge-data:/data \
-  -e DATABRIDGE_AUTH_USER=admin \
-  -e DATABRIDGE_AUTH_PASSWORD="$DATABRIDGE_AUTH_PASSWORD" \
-  -e DATABRIDGE_SESSION_SECRET="$DATABRIDGE_SESSION_SECRET" \
-  -e DATABRIDGE_PG_JOBS=4 \
-  hkccr.ccs.tencentyun.com/buall/databridge:latest
-```
-
-打开：
-
-[http://127.0.0.1:8081](http://127.0.0.1:8081)
-
-容器内默认持久化路径：
-
-- SQLite 数据库：`/data/databridge.db`
-- 凭证密钥：`/data/databridge.key`
-
-请务必挂载 `/data` volume。删除该 volume 会导致已保存连接和加密凭证密钥丢失。
-
-可通过环境变量调整镜像、端口和 PostgreSQL 并行任务数：
-
-```bash
-DATABRIDGE_IMAGE=hkccr.ccs.tencentyun.com/buall/databridge:latest \
-DATABRIDGE_PORT=8081 \
-DATABRIDGE_PG_JOBS=8 \
-docker compose up -d
 ```
 
 构建并推送 amd64/arm64 多架构镜像：
@@ -437,21 +409,114 @@ MongoDB Database Tools 版本可以通过 build arg 调整：
 
 ```bash
 docker build \
-  --build-arg PG_MAJOR=18 \
   --build-arg MONGO_TOOLS_VERSION=100.17.0 \
   -t databridge:local .
 ```
+
+## Docker Run 部署
+
+准备登录密码和固定的会话签名密钥，然后拉取并启动镜像：
+
+```bash
+export DATABRIDGE_AUTH_PASSWORD='替换为高强度密码'
+export DATABRIDGE_SESSION_SECRET="$(openssl rand -base64 32)"
+docker pull hkccr.ccs.tencentyun.com/buall/databridge:latest
+docker run -d \
+  --name databridge \
+  --restart unless-stopped \
+  -p 8081:8081 \
+  -v databridge-data:/data \
+  -e DATABRIDGE_AUTH_USER=admin \
+  -e DATABRIDGE_AUTH_PASSWORD="$DATABRIDGE_AUTH_PASSWORD" \
+  -e DATABRIDGE_SESSION_SECRET="$DATABRIDGE_SESSION_SECRET" \
+  -e DATABRIDGE_PG_JOBS=4 \
+  hkccr.ccs.tencentyun.com/buall/databridge:latest
+```
+
+请保管生成的会话密钥，在重建容器时继续使用。自行构建镜像后，可将最后一行替换为 `databridge:local`。
+
+验证启动并查看日志：
+
+```bash
+docker logs --tail=100 databridge
+curl -fsS http://127.0.0.1:8081/api/healthz
+```
+
+健康接口预期返回 `{"status":"ok"}`。本机打开以下地址并使用配置的账号密码登录；远程访问时将 `127.0.0.1` 替换为服务器地址，并放行对应端口：
+
+[http://127.0.0.1:8081](http://127.0.0.1:8081)
+
+容器内默认持久化路径：
+
+- SQLite 数据库：`/data/databridge.db`
+- 凭证密钥：`/data/databridge.key`
+
+请务必挂载 `/data` volume，并一起备份数据库和密钥。本地备份产物建议保存到 `/data/backups`；删除数据卷会导致其中的状态和文件丢失。
+
+停止和重新启动容器：
+
+```bash
+docker stop databridge
+docker start databridge
+```
+
+修改环境变量或升级镜像时，需要先备份数据、等待任务结束，再执行 `docker stop databridge` 和 `docker rm databridge`，然后使用原数据卷重新运行启动命令。删除容器会保留上述命名卷。
+
+## Docker Compose 部署
+
+仓库提供 [docker-compose.yml](docker-compose.yml) 和 [.env.example](.env.example)，包含持久化卷、自动重启和健康检查配置。首次部署时在仓库根目录执行：
+
+```bash
+cp .env.example .env
+chmod 600 .env
+openssl rand -hex 24
+openssl rand -base64 32
+```
+
+编辑 `.env`，将上面分别生成的登录密码、会话签名密钥填入 `DATABRIDGE_AUTH_PASSWORD` 和 `DATABRIDGE_SESSION_SECRET`，再启动：
+
+```bash
+docker compose config --quiet
+docker compose pull databridge
+docker compose up -d
+docker compose ps
+curl -fsS http://127.0.0.1:8081/api/healthz
+```
+
+默认访问地址为 `http://服务器地址:8081`。修改 `.env` 后执行 `docker compose up -d` 应用变更。Docker Run 和 Compose 默认都使用容器名 `databridge`、宿主机端口 `8081`，请选择一种方式运行；切换方式时还需确认使用正确的数据卷。
+
+配置项说明、本地构建、数据库网络、HTTPS、数据卷、备份恢复、升级回退及常见问题见 [Docker Compose 完整部署指南](docs/docker-compose-deployment.md)。
 
 ## Kubernetes 部署
 
 基础清单见 [deploy/kubernetes](deploy/kubernetes)，包含 Namespace、Secret、PVC、Deployment、Service 和 Ingress 示例；命名空间在 `kustomization.yaml` 的 `namespace` 字段中统一配置。
 
-部署前请先替换 Secret、镜像地址、Ingress 域名和存储配置：
+集群需要可用的存储供应器；使用 Ingress 时还需要对应的控制器。部署前编辑 `deploy/kubernetes/databridge.yaml`：
+
+- 将 Secret 中的 `change-me` 和 `change-me-session-secret` 替换为实际密码与会话密钥，可分别通过 `openssl rand -hex 24`、`openssl rand -base64 32` 生成；包含真实凭证的清单不应提交到仓库。
+- 设置镜像版本；私有镜像仓库按需配置 `imagePullSecrets`。
+- 根据集群调整 PVC 的 `storageClassName` 和容量，默认申请 `10Gi`，未指定存储类时使用集群默认值。
+- 修改 Ingress 的域名、`ingressClassName` 和 TLS 配置。通过 HTTPS 访问时，将 Deployment 中的 `DATABRIDGE_COOKIE_SECURE` 设为 `true`；使用 OneDrive 时另加 `DATABRIDGE_PUBLIC_URL` 环境变量。
+
+保持 `replicas: 1` 和 `Recreate` 更新策略，以配合 SQLite、本地任务和单个持久化卷。检查渲染结果并部署：
 
 ```bash
+kubectl kustomize deploy/kubernetes
 kubectl apply -k deploy/kubernetes
 kubectl -n databridge rollout status deployment/databridge
+kubectl -n databridge get pods,pvc,svc,ingress
+kubectl -n databridge logs deployment/databridge --tail=100
 ```
+
+渲染结果包含 Secret，不要公开完整输出。尚未配置 Ingress 时，可临时转发端口验证：
+
+```bash
+kubectl -n databridge port-forward service/databridge 8081:8081
+```
+
+在另一个终端执行 `curl -fsS http://127.0.0.1:8081/api/healthz`，并通过浏览器访问本地 `8081` 端口。HTTPS Cookie 配置开启后，登录验证应通过 HTTPS 域名进行。
+
+升级前等待任务结束，并备份 PVC 中的 SQLite、凭证密钥和本地备份文件；修改镜像版本后重新 `kubectl apply -k deploy/kubernetes`，等待 rollout 完成。PVC 为 `Pending` 时检查存储类和可用容量；Pod 启动失败时检查事件、日志、镜像拉取权限及卷权限。删除 PVC 可能同时删除底层存储中的数据，应先确认已完成备份。
 
 ## 手动部署
 
