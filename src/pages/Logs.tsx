@@ -115,13 +115,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         </div>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))",
-          gap: 12,
-        }}
-      >
+      <div className="log-summary-grid">
         <LogSummary title="迁移任务" value={migrations.length} detail="已保存任务" />
         <LogSummary
           title="事件总数"
@@ -138,8 +132,8 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         />
       </div>
 
-      <div className="h-row" style={{ gap: 8 }}>
-        <div className="sfield" style={{ flex: "1 1 240px", maxWidth: 320 }}>
+      <div className="h-row log-filters" style={{ gap: 8 }}>
+        <div className="sfield log-search">
           <Search size={14} className="sfield-ic" />
           <input
             className="inp"
@@ -176,7 +170,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
           </button>
         </div>
         <div className="sp" />
-        <div style={{ width: 150 }}>
+        <div className="log-level-select">
           <SelectField
             label=""
             aria-label="日志级别筛选"
@@ -204,13 +198,10 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
               <div className="ledger">
                 {group.items.map((entry, index) => (
                   <div className="lrow" key={`${entry.jobId}-${entry.time}-${index}`}>
-                    <time
-                      className="mono num"
-                      style={{ fontSize: 12, color: "var(--muted)", width: 68, flexShrink: 0, paddingTop: 2 }}
-                    >
+                    <time className="mono num log-time">
                       {formatClockTime(entry.time)}
                     </time>
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0, paddingTop: 1 }}>
+                    <div className="log-badges">
                       <span className="log-col log-col-level">
                         <Badge tone={levelTone(entry.level)}>{entry.level}</Badge>
                       </span>

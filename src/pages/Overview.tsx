@@ -512,7 +512,7 @@ export function Overview({
                         </span>
                       </div>
                     </div>
-                    <div style={{ textAlign: "right", flex: "none" }}>
+                    <div className="lr-actions" style={{ textAlign: "right", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
                       <div className="num" style={{ fontWeight: 600 }}>
                         {job.artifactSize ? formatBytes(job.artifactSize) : `${job.progress}%`}
                       </div>
@@ -587,7 +587,7 @@ export function Overview({
                         </div>
                       ) : null}
                     </div>
-                    <div style={{ textAlign: "right", flex: "none" }}>
+                    <div className="lr-actions" style={{ textAlign: "right", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
                       <div className="num" style={{ fontWeight: 600 }}>
                         {task.status === "running" ? `${task.progress}%` : formatNumber(task.rowsCopied)}
                       </div>

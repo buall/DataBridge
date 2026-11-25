@@ -418,25 +418,16 @@ export function Settings() {
                   />
                 </label>
 
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    paddingTop: 6,
-                    borderTop: "1px solid var(--hair)",
-                  }}
-                >
-                  <span style={{ fontSize: 12.5, color: "var(--muted)" }}>
-                    {smtp.passwordSet ? "已保存 SMTP 密码" : "尚未保存 SMTP 密码"}
-                  </span>
-                  {smtpSaved ? (
-                    <Badge tone="green">
-                      <CheckCircle2 size={12} />
-                      已保存
-                    </Badge>
-                  ) : null}
-                  <div className="sp" />
+                <div className="form-actions">
+                  <div className="fa-meta">
+                    <span>{smtp.passwordSet ? "已保存 SMTP 密码" : "尚未保存 SMTP 密码"}</span>
+                    {smtpSaved ? (
+                      <Badge tone="green">
+                        <CheckCircle2 size={12} />
+                        已保存
+                      </Badge>
+                    ) : null}
+                  </div>
                   <Button disabled={savingSMTP} type="submit">
                     <Save size={14} />
                     {savingSMTP ? "保存中..." : "保存邮件配置"}
@@ -475,22 +466,15 @@ export function Settings() {
                   <strong>{`${notificationSettings.messageTitle?.trim() || "DataBridge"} 备份成功`}</strong>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    paddingTop: 6,
-                    borderTop: "1px solid var(--hair)",
-                  }}
-                >
+                <div className="form-actions">
                   {notificationSettingsSaved ? (
-                    <Badge tone="green">
-                      <CheckCircle2 size={12} />
-                      已保存
-                    </Badge>
+                    <div className="fa-meta">
+                      <Badge tone="green">
+                        <CheckCircle2 size={12} />
+                        已保存
+                      </Badge>
+                    </div>
                   ) : null}
-                  <div className="sp" />
                   <Button disabled={savingNotificationSettings} type="submit">
                     <Save size={14} />
                     {savingNotificationSettings ? "保存中..." : "保存默认标题"}

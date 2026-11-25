@@ -693,19 +693,21 @@ export function Storages({
                     .join(" · ") || "未配置路径"}
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={storage.favorite ? `取消收藏 ${storage.name}` : `收藏 ${storage.name}`}
-                data-tooltip-mode="always"
-                data-tooltip-content={storage.favorite ? "取消收藏" : "收藏并置顶"}
-                disabled={favoritingId === storage.id}
-                onClick={() => void toggleFavorite(storage)}
-                style={{ color: storage.favorite ? "#F59E0B" : "var(--muted)" }}
-              >
-                <Star size={15} fill={storage.favorite ? "currentColor" : "none"} />
-              </Button>
-              <ActionMenu ariaLabel={`${storage.name} 更多操作`} items={storageMenuItems(storage)} />
+              <div className="lr-actions" onClick={(event) => event.stopPropagation()}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={storage.favorite ? `取消收藏 ${storage.name}` : `收藏 ${storage.name}`}
+                  data-tooltip-mode="always"
+                  data-tooltip-content={storage.favorite ? "取消收藏" : "收藏并置顶"}
+                  disabled={favoritingId === storage.id}
+                  onClick={() => void toggleFavorite(storage)}
+                  style={{ color: storage.favorite ? "#F59E0B" : "var(--muted)" }}
+                >
+                  <Star size={15} fill={storage.favorite ? "currentColor" : "none"} />
+                </Button>
+                <ActionMenu ariaLabel={`${storage.name} 更多操作`} items={storageMenuItems(storage)} />
+              </div>
             </div>
           ))}
         </div>

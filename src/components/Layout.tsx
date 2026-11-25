@@ -4,6 +4,7 @@ import {
   Database,
   LayoutDashboard,
   LogOut,
+  Menu,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -14,7 +15,7 @@ import {
   Sun,
   type LucideIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { migrationStageLabel } from "../labels";
 import type { AppView, BackupJob, DatabaseConnection, MigrationJob, RemoteStorage } from "../types";
 import { BridgeLogo, type ThemeMode } from "./UI";
@@ -77,6 +78,18 @@ export function Layout({
       return false;
     }
   });
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMobileOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
+
+  const effectiveCollapsed = collapsed && !mobileOpen;
 
   function toggleSidebar() {
     setCollapsed((prev) => {
@@ -111,12 +124,18 @@ export function Layout({
     <>
       <div className="app">
         <div className="workspace">
-          <aside className={`atlas ${collapsed ? "collapsed" : ""}`} aria-label="侧边导航">
-            <div className="brand" title={collapsed ? "DataBridge" : undefined}>
+          {mobileOpen ? (
+            <div className="atlas-scrim" aria-hidden="true" onClick={() => setMobileOpen(false)} />
+          ) : null}
+          <aside
+            className={`atlas ${effectiveCollapsed ? "collapsed" : ""} ${mobileOpen ? "mobile-open" : ""}`}
+            aria-label="侧边导航"
+          >
+            <div className="brand" title={effectiveCollapsed ? "DataBridge" : undefined}>
               <span className="glyph">
                 <BridgeLogo size={34} />
               </span>
-              {!collapsed ? (
+              {!effectiveCollapsed ? (
                 <div>
                   <div className="bname">DataBridge</div>
                   <div className="bsub">数据备份与迁移</div>
@@ -124,12 +143,12 @@ export function Layout({
               ) : null}
             </div>
 
-            {!collapsed ? <div className="sec-label">工作空间</div> : null}
+            {!effectiveCollapsed ? <div className="sec-label">工作空间</div> : null}
             <nav aria-label="主导航">
               {mainNav.map(({ id, label, icon: Icon }) => {
                 const isActive = activeView === id;
                 const count = counts[id];
-                const collapsedTip = collapsed
+                const collapsedTip = effectiveCollapsed
                   ? id === "backups" && failedBackups > 0
                     ? `${label}（${failedBackups} 个最近执行失败）`
                     : count != null
@@ -137,34 +156,37 @@ export function Layout({
                       : label
                   : undefined;
                 return (
-                  <a
-                    key={id}
-                    href={paths[id]}
-                    className={`navrow ${isActive ? "active" : ""}`}
-                    aria-current={isActive ? "page" : undefined}
-                    aria-label={label}
-                    data-tooltip-content={collapsedTip}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      onNavigate(id);
-                    }}
-                  >
-                    <Icon size={17} />
-                    {!collapsed ? <span>{label}</span> : null}
-                    {id === "backups" && failedBackups > 0 ? (
-                      <span
-                        className="dot"
-                        data-tooltip-content={collapsed ? undefined : `${failedBackups} 个备份任务最近执行失败`}
-                      />
-                    ) : !collapsed && count != null ? (
-                      <span className="cnt">{count}</span>
-                    ) : null}
-                  </a>
+                  <Fragment key={id}>
+                    {id === "logs" ? <div className="nav-sep" role="separator" /> : null}
+                    <a
+                      href={paths[id]}
+                      className={`navrow ${isActive ? "active" : ""}`}
+                      aria-current={isActive ? "page" : undefined}
+                      aria-label={label}
+                      data-tooltip-content={collapsedTip}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setMobileOpen(false);
+                        onNavigate(id);
+                      }}
+                    >
+                      <Icon size={16} strokeWidth={1.85} />
+                      {!effectiveCollapsed ? <span>{label}</span> : null}
+                      {id === "backups" && failedBackups > 0 ? (
+                        <span
+                          className="dot"
+                          data-tooltip-content={effectiveCollapsed ? undefined : `${failedBackups} 个备份任务最近执行失败`}
+                        />
+                      ) : !effectiveCollapsed && count != null ? (
+                        <span className="cnt">{count}</span>
+                      ) : null}
+                    </a>
+                  </Fragment>
                 );
               })}
             </nav>
 
-            {!collapsed && runningMigrations.length > 0 ? (
+            {!effectiveCollapsed && runningMigrations.length > 0 ? (
               <div className="live-strip">
                 <h4>
                   <span className="pulse" />
@@ -175,7 +197,10 @@ export function Layout({
                     key={job.id}
                     type="button"
                     className="live-item"
-                    onClick={() => onOpenMigration(job)}
+                    onClick={() => {
+                      setMobileOpen(false);
+                      onOpenMigration(job);
+                    }}
                   >
                     <div className="li-name">
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -196,24 +221,31 @@ export function Layout({
 
             <div className="atlas-foot">
               <div className="user-chip">
-                {!collapsed ? (
+                {!effectiveCollapsed ? (
                   <>
                     <span className="avatar">{(username.trim().slice(0, 2) || "DB").toUpperCase()}</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="un">{username || "admin"}</div>
-                      <div className="ur">{authConfigured ? "密码认证已开启" : "本机免密模式"}</div>
                     </div>
                   </>
                 ) : null}
                 <button
                   type="button"
-                  className="icon-btn ghost"
-                  aria-label={collapsed ? "展开左侧菜单" : "收起左侧菜单"}
-                  aria-expanded={!collapsed}
-                  data-tooltip-content={collapsed ? "展开左侧菜单" : "收起左侧菜单"}
+                  className="icon-btn ghost mobile-close-btn"
+                  aria-label="关闭菜单"
+                  onClick={() => setMobileOpen(false)}
+                >
+                  <PanelLeftClose size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn ghost desktop-collapse-btn"
+                  aria-label={effectiveCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
+                  aria-expanded={!effectiveCollapsed}
+                  data-tooltip-content={effectiveCollapsed ? "展开左侧菜单" : "收起左侧菜单"}
                   onClick={toggleSidebar}
                 >
-                  {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+                  {effectiveCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
                 </button>
               </div>
             </div>
@@ -221,6 +253,16 @@ export function Layout({
 
           <main className="main">
             <header className="cmdbar">
+              <button
+                type="button"
+                className="icon-btn mobile-menu-btn"
+                aria-label="打开导航菜单"
+                aria-expanded={mobileOpen}
+                onClick={() => setMobileOpen(true)}
+              >
+                <Menu size={17} />
+              </button>
+
               <div className="page-t">
                 {crumb ? <span className="crumb">{crumb} / </span> : null}
                 {title}
@@ -263,22 +305,6 @@ export function Layout({
           </main>
         </div>
       </div>
-
-      <nav className="mobile-nav" aria-label="移动端导航">
-        {mainNav
-          .filter((item) => item.id !== "storages")
-          .map(({ id, shortLabel, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              className={activeView === id ? "on" : ""}
-              onClick={() => onNavigate(id)}
-            >
-              <Icon size={19} />
-              <span>{shortLabel}</span>
-            </button>
-          ))}
-      </nav>
     </>
   );
 }

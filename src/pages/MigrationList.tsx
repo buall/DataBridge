@@ -187,7 +187,7 @@ export function MigrationList({
                 </div>
 
                 <div
-                  style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}
+                  className="lr-actions"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <div style={{ textAlign: "right", marginRight: 6 }}>

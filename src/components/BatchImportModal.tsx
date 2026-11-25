@@ -186,14 +186,14 @@ export function BatchImportModal({
                 {file ? (
                   <>
                     <div className="e-t">{file.name}</div>
-                    <div className="e-s" style={{ marginBottom: 12 }}>
+                    <div className="e-s">
                       {formatFileSize(file.size)} · 已准备校验
                     </div>
                   </>
                 ) : (
                   <>
                     <div className="e-t">拖入 Excel 文件，或点击选择</div>
-                    <div className="e-s" style={{ marginBottom: 12 }}>
+                    <div className="e-s">
                       仅支持系统模板生成的 .xlsx 文件，最大 6 MB
                     </div>
                   </>
