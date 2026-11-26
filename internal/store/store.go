@@ -970,6 +970,9 @@ func NewID() string { return newID() }
 func (s *Store) initialize() error {
 	if _, err := s.db.Exec(`
 		PRAGMA journal_mode = WAL;
+		PRAGMA synchronous = NORMAL;
+		PRAGMA busy_timeout = 5000;
+		PRAGMA temp_store = MEMORY;
 		PRAGMA foreign_keys = ON;
 		CREATE TABLE IF NOT EXISTS connections (
 			id TEXT PRIMARY KEY,
