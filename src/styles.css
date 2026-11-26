@@ -1397,19 +1397,33 @@ h1, h2, h3, h4, p { margin: 0; }
 .ver-picker {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-top: 6px;
+  margin-top: 8px;
 }
 .ver-picker-sel {
   flex: 1 1 320px;
   min-width: 0;
 }
+.ver-picker-sel .field {
+  margin-bottom: 0;
+}
 .ver-picker-nav {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: none;
+}
+.ver-picker-nav .button {
+  height: 38px;
+  min-height: 38px;
+}
+.ver-picker-nav .tag {
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: var(--r-ctl);
 }
 
 .evt { display: flex; gap: 11px; padding: 7px 0; font-size: 13px; align-items: flex-start; }
@@ -1443,6 +1457,7 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 .log-search { flex: 1 1 240px; max-width: 320px; }
 .log-level-select { width: 150px; flex: none; }
+.log-level-select .field { margin-bottom: 0; }
 .log-stream .lrow { padding: 12px 18px; line-height: 1.55; align-items: flex-start; cursor: default; }
 .log-stream .log-time { font-size: 12px; color: var(--muted); width: 68px; flex-shrink: 0; padding-top: 2px; }
 .log-stream .log-badges { display: flex; gap: 6px; flex-shrink: 0; padding-top: 1px; }

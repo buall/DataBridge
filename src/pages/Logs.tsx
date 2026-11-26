@@ -172,8 +172,9 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
         <div className="sp" />
         <div className="log-level-select">
           <SelectField
-            label=""
-            aria-label="日志级别筛选"
+            inline
+            width="100%"
+            ariaLabel="日志级别筛选"
             value={level}
             onChange={(next) => setLevel(next as LevelFilter)}
           >

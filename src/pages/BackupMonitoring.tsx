@@ -1222,3 +1222,88 @@ export function formatBytes(value: number) {
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   return `${(value / 1024 ** index).toFixed(index > 2 ? 1 : 0)} ${units[index]}`;
 }
+
+/**
+ * Renders backup version choices as cards for <= 5 versions and switches to a searchable-style dropdown for > 5 versions.
+ */
+export function BackupVersionSelector({
+  versions,
+  selectedId,
+  onSelect,
+}: {
+  versions: ReturnType<typeof artifactVersionsForRestore>;
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  if (!versions.length) return null;
+
+  if (versions.length > 5) {
+    const currentIdx = versions.findIndex((v) => v.id === selectedId);
+    const prevVersion = currentIdx > 0 ? versions[currentIdx - 1] : null;
+    const nextVersion = currentIdx >= 0 && currentIdx < versions.length - 1 ? versions[currentIdx + 1] : null;
+    return (
+      <div className="ver-picker">
+        <div className="ver-picker-sel">
+          <SelectField ariaLabel="选择备份版本" value={selectedId} onChange={onSelect}>
+            {versions.map((version, idx) => (
+              <option key={version.id} value={version.id}>
+                {`${version.current ? "最新" : `V${versions.length - idx}`} · ${version.label}（${version.artifacts.length} 个库 · ${formatBytes(totalArtifactSize(version.artifacts))}）`}
+              </option>
+            ))}
+          </SelectField>
+        </div>
+        <div className="ver-picker-nav">
+          <Button
+            variant="secondary"
+            disabled={!prevVersion}
+            data-tooltip-content="切换到较新版本"
+            onClick={() => prevVersion && onSelect(prevVersion.id)}
+          >
+            <ChevronLeft size={14} />
+            较新
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={!nextVersion}
+            data-tooltip-content="切换到较早版本"
+            onClick={() => nextVersion && onSelect(nextVersion.id)}
+          >
+            较早
+            <ChevronRight size={14} />
+          </Button>
+          <span className="tag">共 {versions.length} 个版本</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chain" role="listbox" aria-label="备份版本">
+      {versions.map((version, idx) => {
+        const isSelected = version.id === selectedId;
+        return (
+          <button
+            type="button"
+            key={version.id}
+            className={[
+              "chain-node",
+              version.current ? "anchor" : "",
+              isSelected ? "sel" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            role="option"
+            aria-selected={isSelected}
+            onClick={() => onSelect(version.id)}
+          >
+            <span className="cn-dot">{version.current ? "最新" : `V${versions.length - idx}`}</span>
+            <span className="cn-t">{version.label}</span>
+            <span className="cn-s">
+              {version.artifacts.length} 个库 · {formatBytes(totalArtifactSize(version.artifacts))}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

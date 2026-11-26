@@ -6,6 +6,7 @@ import type { BackupJob, DatabaseConnection, RestoreBackupConfig, RestorePrechec
 import {
   artifactVersionsForRestore,
   backupArtifacts,
+  BackupVersionSelector,
   formatBytes,
   RestoreConnectionSelect,
   storageTypeLabel,
@@ -206,38 +207,14 @@ export function BackupRestore({
           <Badge tone="gray">{storageTypeLabel(job.destinationType)}</Badge>
         </div>
 
-        {versions.length > 0 ? (
-          <div className="chain" role="listbox" aria-label="备份版本">
-            {versions.map((version, idx) => {
-              const isSelected = version.id === selectedVersion?.id;
-              return (
-                <button
-                  type="button"
-                  key={version.id}
-                  className={[
-                    "chain-node",
-                    version.current ? "anchor" : "",
-                    isSelected ? "sel" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  role="option"
-                  aria-selected={isSelected}
-                  onClick={() => {
-                    setVersionId(version.id);
-                    setPrecheck(null);
-                  }}
-                >
-                  <span className="cn-dot">{version.current ? "最新" : `V${versions.length - idx}`}</span>
-                  <span className="cn-t">{version.label}</span>
-                  <span className="cn-s">
-                    {version.artifacts.length} 个库 · {formatBytes(totalArtifactSize(version.artifacts))}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
+        <BackupVersionSelector
+          versions={versions}
+          selectedId={selectedVersion?.id ?? ""}
+          onSelect={(id) => {
+            setVersionId(id);
+            setPrecheck(null);
+          }}
+        />
 
         <div
           className="info-callout"
