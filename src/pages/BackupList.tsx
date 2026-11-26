@@ -185,7 +185,7 @@ export function BackupList({
       {error ? <div className="error-banner">{error}</div> : null}
 
       {filtered.length ? (
-        <div className={`ledger ${prefs.bkp}`}>
+        <div className={`ledger card-list ${prefs.bkp}`}>
           {filtered.map((job) => {
             const failedLastRun = hasFailedLastRun(job);
             const deleteDisabled = job.status === "running" || job.status === "pending";
@@ -248,14 +248,13 @@ export function BackupList({
               <div
                 key={job.id}
                 className="lrow"
-                style={{ alignItems: "flex-start" }}
                 onClick={() => onOpen(job)}
               >
                 {dbType ? (
-                  <DatabaseLogo type={dbType} name={job.sourceName} size="sm" />
+                  <DatabaseLogo type={dbType} name={job.sourceName} />
                 ) : (
-                  <span className="tglyph sm">
-                    <Archive size={16} />
+                  <span className="tglyph">
+                    <Archive size={18} />
                   </span>
                 )}
                 <div className="lr-main">
@@ -295,26 +294,27 @@ export function BackupList({
                   className="lr-actions"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  <div style={{ textAlign: "right", marginRight: 6 }}>
-                    <div className="num" style={{ fontWeight: 600 }}>
-                      {job.artifactSize ? formatBytes(job.artifactSize) : `${job.progress}%`}
-                    </div>
-                    <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
-                      {job.retentionDays ? `保留 ${job.retentionDays} 天` : "备份任务"}
-                    </div>
+                  <div className="lr-act-btns">
+                    <button
+                      type="button"
+                      className={`star-btn ${job.favorite ? "on" : ""}`}
+                      aria-label={job.favorite ? "取消收藏" : "收藏并置顶"}
+                      data-tooltip-mode="always"
+                      data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"}
+                      disabled={favoritingId === job.id}
+                      onClick={() => void toggleFavorite(job)}
+                    >
+                      <Star size={16} fill={job.favorite ? "currentColor" : "none"} />
+                    </button>
+                    <ActionMenu ariaLabel={`${job.name} 更多操作`} items={menuItems} />
                   </div>
-                  <button
-                    type="button"
-                    className={`star-btn ${job.favorite ? "on" : ""}`}
-                    aria-label={job.favorite ? "取消收藏" : "收藏并置顶"}
-                    data-tooltip-mode="always"
-                    data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"}
-                    disabled={favoritingId === job.id}
-                    onClick={() => void toggleFavorite(job)}
-                  >
-                    <Star size={16} fill={job.favorite ? "currentColor" : "none"} />
-                  </button>
-                  <ActionMenu ariaLabel={`${job.name} 更多操作`} items={menuItems} />
+                  <div className="lr-act-meta">
+                    <span className="num" style={{ fontWeight: 600, color: "var(--ink-2)" }}>
+                      {job.artifactSize ? formatBytes(job.artifactSize) : `${job.progress}%`}
+                    </span>
+                    <span>·</span>
+                    <span>{job.retentionDays ? `保留 ${job.retentionDays} 天` : "备份任务"}</span>
+                  </div>
                 </div>
               </div>
             );

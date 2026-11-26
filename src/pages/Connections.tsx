@@ -523,10 +523,9 @@ export function Connections({
     }
   }
 
-  async function copyAddress(connection: DatabaseConnection) {
+  async function copyConnectionField(key: string, value: string) {
     setActionError("");
     setManualCopyValue("");
-    const value = `${connection.host}:${connection.port}`;
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(value);
@@ -538,8 +537,8 @@ export function Connections({
           return;
         }
       }
-      setCopied(connection.id);
-      window.setTimeout(() => setCopied(null), 1400);
+      setCopied(key);
+      window.setTimeout(() => setCopied((prev) => (prev === key ? null : prev)), 1400);
     } catch {
       const copiedOk = fallbackCopyText(value);
       if (!copiedOk) {
@@ -547,8 +546,8 @@ export function Connections({
         setActionError(`当前浏览器不支持自动复制，请手动复制：${value}`);
         return;
       }
-      setCopied(connection.id);
-      window.setTimeout(() => setCopied(null), 1400);
+      setCopied(key);
+      window.setTimeout(() => setCopied((prev) => (prev === key ? null : prev)), 1400);
     }
   }
 
@@ -734,7 +733,9 @@ export function Connections({
                   className={`node-row ${isSelected ? "sel" : ""}`}
                   onClick={() => setInspectedId(isSelected ? null : connection.id)}
                 >
-                  <DatabaseLogo type={connection.type} name={connection.name} />
+                  <span data-tooltip-content={connection.type} style={{ flex: "none" }}>
+                    <DatabaseLogo type={connection.type} name={connection.name} />
+                  </span>
                   <div className="node-main">
                     <div className="node-name">
                       <span>{connection.name}</span>
@@ -754,6 +755,22 @@ export function Connections({
                           {mongoBackupReadinessLabel(connection)}
                         </span>
                       ) : null}
+                      {scheduledBackups.length > 0 ? (
+                        <span
+                          className="tag"
+                          style={{
+                            borderColor: "var(--indigo-soft)",
+                            background: "var(--indigo-faint)",
+                            color: "var(--indigo-ink)",
+                          }}
+                          data-tooltip-content={scheduledBackups
+                            .map((job) => `${job.name} · ${job.schedulePaused ? "已暂停 · " : ""}${scheduleLabel(job)}`)
+                            .join("\n")}
+                        >
+                          <CalendarClock size={12} />
+                          {scheduledBackups.length} 个定时任务
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="node-meta">
@@ -762,7 +779,7 @@ export function Connections({
                         className="copy-host"
                         onClick={(event) => {
                           event.stopPropagation();
-                          void copyAddress(connection);
+                          void copyConnectionField(`${connection.id}:host`, `${connection.host}:${connection.port}`);
                         }}
                         aria-label={`复制 ${connection.host}:${connection.port}`}
                         data-tooltip-content="点击复制主机地址"
@@ -770,9 +787,29 @@ export function Connections({
                         <span>
                           {connection.host}:{connection.port}
                         </span>
-                        {copied === connection.id ? <Check size={12} style={{ color: "var(--ok)" }} /> : <Copy size={12} />}
+                        {copied === `${connection.id}:host` ? <Check size={12} style={{ color: "var(--ok)" }} /> : <Copy size={12} />}
                       </button>
-                      <span>{connection.type}</span>
+                      {connection.username ? (
+                        <button
+                          type="button"
+                          className="copy-host"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void copyConnectionField(`${connection.id}:user`, connection.username);
+                          }}
+                          aria-label={`复制用户名 ${connection.username}`}
+                          data-tooltip-content="点击复制用户名"
+                        >
+                          <span>{connection.username}</span>
+                          {copied === `${connection.id}:user` ? (
+                            <Check size={12} style={{ color: "var(--ok)" }} />
+                          ) : (
+                            <Copy size={12} />
+                          )}
+                        </button>
+                      ) : (
+                        <span>未启用鉴权</span>
+                      )}
                       {connection.status === "connected" ? (
                         <LatencyIndicator latency={connection.latency} />
                       ) : (
@@ -802,28 +839,11 @@ export function Connections({
                       {connection.note ? <span>{connection.note}</span> : null}
                     </div>
 
-                    <div className="dbchips">
-                      <span className="dbchip">用户 {connection.username || "未启用鉴权"}</span>
-                      {connection.type === "etcd" ? (
+                    {connection.type === "etcd" ? (
+                      <div className="dbchips">
                         <span className="dbchip">{connection.endpoints?.length ?? 0} 个已发现端点</span>
-                      ) : null}
-                      {scheduledBackups.length > 0 ? (
-                        <span
-                          className="dbchip"
-                          style={{
-                            borderColor: "var(--indigo-soft)",
-                            background: "var(--indigo-faint)",
-                            color: "var(--indigo-ink)",
-                          }}
-                          data-tooltip-content={scheduledBackups
-                            .map((job) => `${job.name} · ${job.schedulePaused ? "已暂停 · " : ""}${scheduleLabel(job)}`)
-                            .join("\n")}
-                        >
-                          <CalendarClock size={12} />
-                          {scheduledBackups.length} 个定时任务
-                        </span>
-                      ) : null}
-                    </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="node-side" onClick={(event) => event.stopPropagation()}>

@@ -121,7 +121,7 @@ export function MigrationList({
       {error ? <div className="error-banner">{error}</div> : null}
 
       {filtered.length ? (
-        <div className={`ledger ${prefs.mig}`}>
+        <div className={`ledger card-list ${prefs.mig}`}>
           {filtered.map((job) => {
             const active = job.status === "running" || job.status === "pending";
             const dbType: DatabaseType =
@@ -133,10 +133,9 @@ export function MigrationList({
               <div
                 key={job.id}
                 className="lrow"
-                style={{ alignItems: "flex-start" }}
                 onClick={() => onOpen(job)}
               >
-                <DatabaseLogo type={dbType} name={job.sourceName} size="sm" />
+                <DatabaseLogo type={dbType} name={job.sourceName} />
                 <div className="lr-main">
                   <div className="lr-t">
                     <span>{displayTaskName(job)}</span>
@@ -190,50 +189,53 @@ export function MigrationList({
                   className="lr-actions"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  <div style={{ textAlign: "right", marginRight: 6 }}>
-                    <div className="num" style={{ fontWeight: 600 }}>
-                      {job.progress}%
-                    </div>
-                    <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{active ? "实时监控" : "校验报告"}</div>
+                  <div className="lr-act-btns">
+                    <button
+                      type="button"
+                      className={`star-btn ${job.favorite ? "on" : ""}`}
+                      aria-label={job.favorite ? "取消收藏" : "收藏并置顶"}
+                      data-tooltip-mode="always"
+                      data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"}
+                      disabled={favoritingId === job.id}
+                      onClick={() => void toggleFavorite(job)}
+                    >
+                      <Star size={16} fill={job.favorite ? "currentColor" : "none"} />
+                    </button>
+                    <ActionMenu
+                      ariaLabel={`${displayTaskName(job)} 更多操作`}
+                      items={[
+                        {
+                          key: "open",
+                          label: active ? "查看实时进度" : "查看校验报告",
+                          icon: active ? <Activity size={14} /> : <FileCheck2 size={14} />,
+                          onClick: () => onOpen(job),
+                        },
+                        {
+                          key: "detail",
+                          label: "打开详情页",
+                          icon: <Eye size={14} />,
+                          onClick: () => onOpen(job),
+                        },
+                        {
+                          key: "del",
+                          label: "删除任务",
+                          icon: <Trash2 size={14} />,
+                          danger: true,
+                          disabled: active,
+                          dividerBefore: true,
+                          tooltip: active ? "任务执行中，请先停止" : "删除任务",
+                          onClick: () => setDeleteTarget(job),
+                        },
+                      ]}
+                    />
                   </div>
-                  <button
-                    type="button"
-                    className={`star-btn ${job.favorite ? "on" : ""}`}
-                    aria-label={job.favorite ? "取消收藏" : "收藏并置顶"}
-                    data-tooltip-mode="always"
-                    data-tooltip-content={job.favorite ? "取消收藏" : "收藏并置顶"}
-                    disabled={favoritingId === job.id}
-                    onClick={() => void toggleFavorite(job)}
-                  >
-                    <Star size={16} fill={job.favorite ? "currentColor" : "none"} />
-                  </button>
-                  <ActionMenu
-                    ariaLabel={`${displayTaskName(job)} 更多操作`}
-                    items={[
-                      {
-                        key: "open",
-                        label: active ? "查看实时进度" : "查看校验报告",
-                        icon: active ? <Activity size={14} /> : <FileCheck2 size={14} />,
-                        onClick: () => onOpen(job),
-                      },
-                      {
-                        key: "detail",
-                        label: "打开详情页",
-                        icon: <Eye size={14} />,
-                        onClick: () => onOpen(job),
-                      },
-                      {
-                        key: "del",
-                        label: "删除任务",
-                        icon: <Trash2 size={14} />,
-                        danger: true,
-                        disabled: active,
-                        dividerBefore: true,
-                        tooltip: active ? "任务执行中，请先停止" : "删除任务",
-                        onClick: () => setDeleteTarget(job),
-                      },
-                    ]}
-                  />
+                  <div className="lr-act-meta">
+                    <span className="num" style={{ fontWeight: 600, color: "var(--ink-2)" }}>
+                      {job.progress}%
+                    </span>
+                    <span>·</span>
+                    <span>{active ? "实时监控" : "校验报告"}</span>
+                  </div>
                 </div>
               </div>
             );

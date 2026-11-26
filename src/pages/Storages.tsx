@@ -657,21 +657,15 @@ export function Storages({
           ))}
         </div>
       ) : (
-        <div className="ledger">
+        <div className="ledger card-list">
           {filteredStorages.map((storage) => (
             <div className="lrow" key={storage.id}>
               <span
+                className="tglyph"
                 style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 9,
                   background: "var(--surface)",
                   border: "1px solid var(--hair)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
                   color: "var(--indigo-ink)",
-                  flexShrink: 0,
                 }}
               >
                 <StorageIcon type={storage.type} />
@@ -777,7 +771,7 @@ export function Storages({
                   {viewingBuckets ? (
                     <div className="info-callout">正在获取 Bucket 列表...</div>
                   ) : viewBucketOptions.length ? (
-                    <div className="ledger">
+                    <div className="ledger card-list">
                       {viewBucketOptions.map((bucket) => (
                         <div className="lrow" key={bucket}>
                           <div className="lr-main">
@@ -859,7 +853,7 @@ export function Storages({
                   {viewingWebDAV ? (
                     <div className="info-callout">正在读取 WebDAV 目录...</div>
                   ) : webDAVEntries.length ? (
-                    <div className="ledger">
+                    <div className="ledger card-list">
                       {webDAVEntries.map((entry) => (
                         <div className="lrow" key={entry.path}>
                           <FolderOpen size={16} style={{ color: "var(--muted)", flexShrink: 0 }} />

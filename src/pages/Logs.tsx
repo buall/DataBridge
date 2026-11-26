@@ -189,7 +189,7 @@ export function Logs({ migrations, auditLogs = [] }: { migrations: MigrationJob[
       {filtered.length ? (
         <div className="log-stream">
           {groupedByDay.map((group) => (
-            <div key={group.day} style={{ display: "grid", gap: 8 }}>
+            <div key={group.day} style={{ display: "grid", gap: 12 }}>
               <div className="log-date">
                 <span>{group.label}</span>
                 <span className="num" style={{ marginLeft: 8, color: "var(--faint)" }}>

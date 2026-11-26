@@ -926,9 +926,13 @@ h1, h2, h3, h4, p { margin: 0; }
   min-width: 32px;
   display: grid;
   place-items: center;
+  transition: color .15s ease, background .15s ease, transform .12s ease;
 }
-.star-btn:hover { color: var(--warn); }
-.star-btn.on { color: var(--warn); }
+.star-btn:hover { color: #F59E0B; background: rgba(245, 158, 11, .1); }
+.star-btn.on { color: #F59E0B; }
+[data-theme="dark"] .star-btn:hover,
+[data-theme="dark"] .star-btn.on { color: #FBBF24; }
+.star-btn:active { transform: scale(.92); }
 
 /* ============ Portal Select (csel) & ActionMenu ============ */
 .csel { position: relative; display: block; width: 100%; }
@@ -1065,13 +1069,13 @@ h1, h2, h3, h4, p { margin: 0; }
   margin-bottom: 10px;
   cursor: pointer;
   transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
-  align-items: flex-start;
+  align-items: center;
 }
 .node-row:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); border-color: var(--faint); }
 .node-row.sel { border-color: var(--indigo); box-shadow: 0 0 0 1px var(--indigo); }
 .node-main { flex: 1; min-width: 0; }
-.node-name { font-size: 15px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.node-meta { font-size: 12.5px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px; align-items: center; }
+.node-name { font-size: 15px; font-weight: 650; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 26px; }
+.node-meta { font-size: 12.5px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; align-items: center; min-height: 20px; }
 .copy-host {
   display: inline-flex;
   align-items: center;
@@ -1145,7 +1149,11 @@ h1, h2, h3, h4, p { margin: 0; }
   align-items: center;
   gap: 5px;
 }
-.node-side { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; flex: none; }
+.node-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+.node-side > div:first-child { height: 26px; display: flex; align-items: center; }
+.node-side .star-btn,
+.node-side .icon-btn { min-height: 26px; height: 26px; min-width: 28px; width: 28px; }
+.node-side .node-date { min-height: 20px; display: inline-flex; align-items: center; line-height: 1; }
 .node-list.compact .node-row { padding: 9px 14px; margin-bottom: 6px; align-items: center; }
 .node-list.compact .node-row .tglyph { width: 32px !important; height: 32px !important; border-radius: 8px; }
 .node-list.compact .node-name { font-size: 14px; }
@@ -1174,6 +1182,61 @@ h1, h2, h3, h4, p { margin: 0; }
 .ledger.compact .lrow { padding: 8px 14px; }
 .ledger.compact .mig-bridge { display: none !important; }
 .ledger.compact .diff-callout { margin-top: 4px; padding: 6px 9px; }
+.ledger.card-list {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+.ledger.card-list .lrow {
+  border: 1px solid var(--hair);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  padding: 15px 18px;
+  margin-bottom: 10px;
+  align-items: center;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.ledger.card-list .lrow:last-child { border-bottom: 1px solid var(--hair); margin-bottom: 0; }
+.ledger.card-list .lrow:hover {
+  background: var(--surface);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--faint);
+}
+.ledger.card-list .lrow .lr-t { min-height: 26px; }
+.ledger.card-list .lrow .lr-s { margin-top: 6px; min-height: 20px; }
+.ledger.card-list .lr-actions {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.ledger.card-list .lr-act-btns {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.ledger.card-list .lr-act-btns .star-btn,
+.ledger.card-list .lr-act-btns .icon-btn {
+  min-height: 26px;
+  height: 26px;
+  min-width: 28px;
+  width: 28px;
+}
+.ledger.card-list .lr-act-meta {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1;
+}
+.ledger.card-list.compact .lrow { padding: 9px 14px; margin-bottom: 6px; }
+.ledger.card-list.compact .lrow .tglyph { width: 32px !important; height: 32px !important; border-radius: 8px; }
+.ledger.card-list.compact .lr-actions { flex-direction: row; align-items: center; gap: 10px; }
+.ledger.card-list.compact .lr-act-meta { display: none; }
 
 /* Type glyphs & icons */
 .tglyph {
@@ -1458,6 +1521,10 @@ h1, h2, h3, h4, p { margin: 0; }
 .log-search { flex: 1 1 240px; max-width: 320px; }
 .log-level-select { width: 150px; flex: none; }
 .log-level-select .field { margin-bottom: 0; }
+.log-stream {
+  display: grid;
+  gap: 12px;
+}
 .log-stream .lrow { padding: 12px 18px; line-height: 1.55; align-items: flex-start; cursor: default; }
 .log-stream .log-time { font-size: 12px; color: var(--muted); width: 68px; flex-shrink: 0; padding-top: 2px; }
 .log-stream .log-badges { display: flex; gap: 6px; flex-shrink: 0; padding-top: 1px; }
@@ -1469,13 +1536,16 @@ h1, h2, h3, h4, p { margin: 0; }
 .log-stream .log-col-cat { width: 64px; }
 .log-stream .log-col-status { width: 80px; }
 .log-date {
-  padding: 8px 18px;
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: var(--r-ctl);
   font-size: 12px;
-  font-weight: 650;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--ink-2);
   background: var(--surface-2);
-  border-bottom: 1px solid var(--hair-2);
-  letter-spacing: .03em;
+  border: 1px solid var(--hair-2);
+  letter-spacing: .02em;
 }
 
 .run-group { border-bottom: 1px solid var(--hair-2); }
@@ -1802,7 +1872,6 @@ pre.codebox {
   .log-filters .log-search { flex: 1 1 100%; max-width: none; }
   .log-filters .sp { display: none; }
   .log-filters .log-level-select { width: 100%; }
-  .log-date { padding: 8px 14px; }
   .log-stream .lrow {
     flex-wrap: wrap;
     padding: 12px 14px;
@@ -1826,6 +1895,13 @@ pre.codebox {
   .ledger .lrow:has(.lr-actions) > .lr-actions { order: 2; margin-left: auto; }
   .ledger .lrow:has(.lr-actions) > .lr-main { order: 3; flex: 1 0 100%; width: 100%; }
   .ledger .lrow:has(.lr-actions) .lr-s { gap: 6px 10px; margin-top: 6px; }
+  .ledger.card-list .lrow .lr-actions {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  .ledger.card-list .lrow .lr-act-btns { order: 2; }
+  .ledger.card-list .lrow .lr-act-meta { order: 1; }
   .node-row {
     flex-wrap: wrap;
     padding: 14px;
