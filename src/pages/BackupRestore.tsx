@@ -333,6 +333,13 @@ export function BackupRestore({
             }}
           />
 
+          {targetConnection?.environment === "prod" ? (
+            <div className="warn-callout" style={{ marginBottom: 14 }}>
+              <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+              <span>当前恢复目标“{targetConnection.name}”标记为生产环境，恢复操作将写入目标数据库，请谨慎核对后执行。</span>
+            </div>
+          ) : null}
+
           {showVersionComparison ? (
             <div
               className={crossMajorVersionRisk ? "warn-callout" : "info-callout"}

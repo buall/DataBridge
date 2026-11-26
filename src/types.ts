@@ -1,5 +1,6 @@
 export type DatabaseType = "PostgreSQL" | "MySQL" | "MongoDB" | "Neo4j" | "etcd" | "Redis";
 export type ConnectionStatus = "connected" | "warning" | "untested";
+export type ConnectionEnvironment = "prod" | "staging" | "test" | "dev" | "";
 export type AppView = "overview" | "connections" | "storages" | "migrations" | "backups" | "logs" | "settings";
 export type MigrationStage = "list" | "wizard" | "running" | "report" | "restore";
 
@@ -7,6 +8,9 @@ export interface DatabaseConnection {
   id: string;
   name: string;
   note?: string;
+  project?: string;
+  environment?: ConnectionEnvironment;
+  tags?: string[];
   type: DatabaseType;
   host: string;
   port: number;
@@ -40,6 +44,9 @@ export interface ConnectionInput {
   type: DatabaseType;
   name: string;
   note?: string;
+  project?: string;
+  environment?: ConnectionEnvironment;
+  tags?: string[];
   host: string;
   port: number;
   username: string;
@@ -61,6 +68,9 @@ export interface BatchImportConnectionPreview {
   row: number;
   key: string;
   name: string;
+  project?: string;
+  environment?: ConnectionEnvironment;
+  tags?: string[];
   type: string;
   host: string;
   port: number;
@@ -104,6 +114,9 @@ export interface BatchImportResult {
 export interface DuplicateConnectionInput {
   name: string;
   note?: string;
+  project?: string;
+  environment?: ConnectionEnvironment;
+  tags?: string[];
   host: string;
   port: number;
   username: string;

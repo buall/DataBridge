@@ -22,7 +22,8 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection, err := first.AddConnection(model.ConnectionInput{
-		Name: "source", Host: "db.example.internal", Port: 5432,
+		Name: "source", Project: "  电商核心  ", Environment: "prod", Tags: []string{"主库", " 核心 ", "主库"},
+		Host: "db.example.internal", Port: 5432,
 		Username: "migration", Password: "secret-password", SSLMode: "require",
 		Endpoints: []string{"https://etcd-1:2379", "https://etcd-2:2379"},
 	}, 15*time.Millisecond, "16.3")
@@ -73,6 +74,12 @@ func TestStorePersistsEncryptedConnectionAndMigration(t *testing.T) {
 	}
 	if len(loadedConnection.Endpoints) != 2 || loadedConnection.Endpoints[1] != "https://etcd-2:2379" {
 		t.Fatalf("endpoints = %#v", loadedConnection.Endpoints)
+	}
+	if loadedConnection.Project != "电商核心" || loadedConnection.Environment != "prod" {
+		t.Fatalf("project/environment = %q/%q", loadedConnection.Project, loadedConnection.Environment)
+	}
+	if len(loadedConnection.Tags) != 2 || loadedConnection.Tags[0] != "主库" || loadedConnection.Tags[1] != "核心" {
+		t.Fatalf("tags = %#v", loadedConnection.Tags)
 	}
 	loadedMigration, err := second.Migration(migration.ID)
 	if err != nil {

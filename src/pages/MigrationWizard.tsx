@@ -1,9 +1,10 @@
-import { ArrowLeft, ArrowRight, Box, Check, ChevronDown, Database, Search, Zap } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Box, Check, ChevronDown, Database, Search, Zap } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { BridgeFlow } from "../components/BridgeFlow";
 import { Badge, Button, Card, ConfirmDialog, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { connectionOptionMeta } from "../labels";
 import type { DatabaseConnection, DatabaseInfo, MigrationConfig, TableInfo } from "../types";
 
 const steps = ["连接与数据库", "选择数据表", "迁移配置", "确认执行"];
@@ -292,6 +293,12 @@ export function MigrationWizard({
           {source && !targetConnections.length ? (
             <div className="error-banner" style={{ marginTop: 10 }}>
               没有可用的同类型目标连接，请先添加另一个 {source.type} 连接。
+            </div>
+          ) : null}
+          {target?.environment === "prod" ? (
+            <div className="warn-callout" style={{ marginTop: 10 }}>
+              <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+              <span>当前迁移目标“{target.name}”标记为生产环境，请在执行前仔细核对目标数据库与覆盖策略。</span>
             </div>
           ) : null}
           {config.sourceId &&
@@ -763,7 +770,8 @@ function EndpointSelect({
                   >
                     <DatabaseTypeIcon type={item.type} />
                     <span className="csel-txt">
-                      {item.name} · {item.host}
+                      {item.name}
+                      {connectionOptionMeta(item)} · {item.host}
                     </span>
                     {item.region && item.region !== "内网" ? <RegionFlag region={item.region} /> : null}
                     {isSel ? (

@@ -18,7 +18,7 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { BatchImportModal } from "../components/BatchImportModal";
@@ -32,13 +32,16 @@ import {
   DensitySwitch,
   LatencyIndicator,
   RegionFlag,
+  requiredLabel,
   SelectField,
   useCollectionView,
   type ActionMenuItem,
 } from "../components/UI";
+import { connectionEnvironmentLabel, connectionEnvironmentTone, CONNECTION_ENVIRONMENT_OPTIONS } from "../labels";
 import type {
   BackupJob,
   BatchImportResult,
+  ConnectionEnvironment,
   ConnectionInput,
   ConnectionTLSConfig,
   DatabaseConnection,
@@ -52,6 +55,9 @@ type ConnectionFormState = {
   type: DatabaseType;
   name: string;
   note: string;
+  project: string;
+  environment: ConnectionEnvironment;
+  tags: string[];
   host: string;
   port: string;
   username: string;
@@ -153,6 +159,8 @@ export function Connections({
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("全部");
   const [statusFilter, setStatusFilter] = useState<string>("全部");
+  const [envFilter, setEnvFilter] = useState<string>("全部");
+  const [projectFilter, setProjectFilter] = useState<string>("全部");
   const [favOnly, setFavOnly] = useState(false);
 
   const [form, setForm] = useState<ConnectionFormState>(emptyConnectionForm("PostgreSQL"));
@@ -163,20 +171,41 @@ export function Connections({
 
   const scheduledBackupsByConnection = useMemo(() => groupScheduledBackupsByConnection(backups), [backups]);
 
+  const projectSuggestions = useMemo(
+    () =>
+      Array.from(new Set(connections.map((item) => item.project?.trim() ?? "").filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b, "zh-CN"),
+      ),
+    [connections],
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return connections
       .filter((item) => {
         if (typeFilter !== "全部" && item.type !== typeFilter) return false;
         if (statusFilter !== "全部" && connectionStatusLabel(item.status) !== statusFilter) return false;
+        if (envFilter !== "全部") {
+          if (envFilter === "__none__" && item.environment) return false;
+          if (envFilter !== "__none__" && item.environment !== envFilter) return false;
+        }
+        if (projectFilter !== "全部") {
+          if (projectFilter === "__none__" && item.project) return false;
+          if (projectFilter !== "__none__" && item.project !== projectFilter) return false;
+        }
         if (favOnly && !item.favorite) return false;
-        if (q && !`${item.name} ${item.note ?? ""} ${item.host} ${item.type} ${item.region ?? ""}`.toLowerCase().includes(q)) {
+        if (
+          q &&
+          !`${item.name} ${item.note ?? ""} ${item.project ?? ""} ${item.environment ?? ""} ${connectionEnvironmentLabel(item.environment)} ${(item.tags ?? []).join(" ")} ${item.host} ${item.type} ${item.region ?? ""}`
+            .toLowerCase()
+            .includes(q)
+        ) {
           return false;
         }
         return true;
       })
       .sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)));
-  }, [connections, favOnly, query, statusFilter, typeFilter]);
+  }, [connections, envFilter, favOnly, projectFilter, query, statusFilter, typeFilter]);
 
   const inspectedConnection = useMemo(
     () => (inspectedId ? connections.find((item) => item.id === inspectedId) ?? null : null),
@@ -353,6 +382,9 @@ export function Connections({
       form: {
         name: connection.name,
         note: connection.note ?? "",
+        project: connection.project ?? "",
+        environment: connection.environment ?? "",
+        tags: [...(connection.tags ?? [])],
         host: connection.host,
         port: String(connection.port),
         username: connection.username,
@@ -384,6 +416,9 @@ export function Connections({
           connections.map((item) => item.name),
         ),
         note: connection.note ?? "",
+        project: connection.project ?? "",
+        environment: connection.environment ?? "",
+        tags: [...(connection.tags ?? [])],
         host: connection.host,
         port: String(connection.port),
         username: connection.username,
@@ -609,7 +644,7 @@ export function Connections({
             className="inp"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索名称、备注、主机或地区…"
+            placeholder="搜索名称、项目、环境、标签或主机…"
             style={{ width: 250 }}
           />
         </span>
@@ -627,7 +662,27 @@ export function Connections({
           ))}
         </span>
 
-        <SelectField ariaLabel="连接状态筛选" value={statusFilter} onChange={setStatusFilter} inline width={132}>
+        <SelectField ariaLabel="连接环境筛选" value={envFilter} onChange={setEnvFilter} inline width={120}>
+          <option value="全部">全部环境</option>
+          {CONNECTION_ENVIRONMENT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {connectionEnvironmentLabel(opt.value)}
+            </option>
+          ))}
+          <option value="__none__">未设置</option>
+        </SelectField>
+
+        <SelectField ariaLabel="连接项目筛选" value={projectFilter} onChange={setProjectFilter} inline width={132}>
+          <option value="全部">全部项目</option>
+          {projectSuggestions.map((proj) => (
+            <option key={proj} value={proj}>
+              {proj}
+            </option>
+          ))}
+          <option value="__none__">未分配项目</option>
+        </SelectField>
+
+        <SelectField ariaLabel="连接状态筛选" value={statusFilter} onChange={setStatusFilter} inline width={124}>
           <option value="全部">全部状态</option>
           <option value="已连接">已连接</option>
           <option value="未验证">未验证</option>
@@ -739,6 +794,12 @@ export function Connections({
                   <div className="node-main">
                     <div className="node-name">
                       <span>{connection.name}</span>
+                      {connection.environment ? (
+                        <Badge tone={connectionEnvironmentTone(connection.environment)}>
+                          {connectionEnvironmentLabel(connection.environment)}
+                        </Badge>
+                      ) : null}
+                      {connection.project ? <span className="tag">项目: {connection.project}</span> : null}
                       <Badge tone={connectionStatusTone(connection.status)}>
                         <span className="pd" />
                         {connectionStatusLabel(connection.status)}
@@ -839,9 +900,21 @@ export function Connections({
                       {connection.note ? <span>{connection.note}</span> : null}
                     </div>
 
-                    {connection.type === "etcd" ? (
+                    {connection.type === "etcd" || (connection.tags && connection.tags.length > 0) ? (
                       <div className="dbchips">
-                        <span className="dbchip">{connection.endpoints?.length ?? 0} 个已发现端点</span>
+                        {connection.type === "etcd" ? (
+                          <span className="dbchip">{connection.endpoints?.length ?? 0} 个已发现端点</span>
+                        ) : null}
+                        {(connection.tags ?? []).slice(0, 3).map((tag) => (
+                          <span className="dbchip" key={tag}>
+                            # {tag}
+                          </span>
+                        ))}
+                        {(connection.tags?.length ?? 0) > 3 ? (
+                          <span className="dbchip" data-tooltip-content={(connection.tags ?? []).slice(3).join("、")}>
+                            +{(connection.tags?.length ?? 0) - 3}
+                          </span>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -911,6 +984,12 @@ export function Connections({
               </div>
 
               <div className="chiprow" style={{ marginBottom: 10 }}>
+                {inspectedConnection.environment ? (
+                  <Badge tone={connectionEnvironmentTone(inspectedConnection.environment)}>
+                    {connectionEnvironmentLabel(inspectedConnection.environment)}
+                  </Badge>
+                ) : null}
+                {inspectedConnection.project ? <span className="tag">项目: {inspectedConnection.project}</span> : null}
                 <Badge tone={connectionStatusTone(inspectedConnection.status)}>
                   <span className="pd" />
                   {connectionStatusLabel(inspectedConnection.status)}
@@ -943,6 +1022,18 @@ export function Connections({
                   {inspectedConnection.region || "未知"}
                 </span>
               </div>
+              {inspectedConnection.tags && inspectedConnection.tags.length > 0 ? (
+                <div className="kv">
+                  <span className="k">标签</span>
+                  <span className="v" style={{ display: "inline-flex", flexWrap: "wrap", gap: 4, justifyContent: "flex-end" }}>
+                    {inspectedConnection.tags.map((tag) => (
+                      <span className="dbchip" key={tag}>
+                        # {tag}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ) : null}
               {inspectedConnection.note ? (
                 <div className="kv">
                   <span className="k">备注</span>
@@ -1126,7 +1217,7 @@ export function Connections({
                 </div>
                 <div className="modal-b">
                   <label className="field">
-                    <span>数据库名称</span>
+                    <span>{requiredLabel("数据库名称")}</span>
                     <input
                       required
                       autoFocus
@@ -1188,7 +1279,7 @@ export function Connections({
                   ) : (
                     <>
                       <SelectField
-                        label="目标数据库"
+                        label={requiredLabel("目标数据库")}
                         value={seedDataModal.database}
                         onChange={(database) => setSeedDataModal({ ...seedDataModal, database, error: "", result: null })}
                       >
@@ -1309,7 +1400,7 @@ export function Connections({
                 <div className="modal-b">
                   <div className="grid2">
                     <label className="field">
-                      <span>连接名称</span>
+                      <span>{requiredLabel("连接名称")}</span>
                       <input
                         required
                         value={duplicateModal.form.name}
@@ -1322,7 +1413,7 @@ export function Connections({
                   </div>
                   <div className="field-row">
                     <label className="field">
-                      <span>主机地址</span>
+                      <span>{requiredLabel("主机地址")}</span>
                       <input
                         required
                         value={duplicateModal.form.host}
@@ -1330,7 +1421,7 @@ export function Connections({
                       />
                     </label>
                     <label className="field">
-                      <span>端口</span>
+                      <span>{requiredLabel("端口")}</span>
                       <input
                         required
                         type="number"
@@ -1341,7 +1432,7 @@ export function Connections({
                   </div>
                   <div className="grid2">
                     <label className="field">
-                      <span>用户名{duplicateModal.connection.type === "etcd" ? "（可选）" : ""}</span>
+                      <span>{duplicateModal.connection.type === "etcd" ? "用户名（可选）" : requiredLabel("用户名")}</span>
                       <input
                         required={duplicateModal.connection.type !== "etcd"}
                         value={duplicateModal.form.username}
@@ -1360,7 +1451,7 @@ export function Connections({
                   </div>
                   <EtcdTLSModeGuide enabled={duplicateModal.connection.type === "etcd"} />
                   <SelectField
-                    label={connectionSecurityConfig(duplicateModal.connection.type).label}
+                    label={requiredLabel(connectionSecurityConfig(duplicateModal.connection.type).label)}
                     value={duplicateModal.form.sslMode}
                     onChange={(sslMode) => updateDuplicateForm({ sslMode })}
                   >
@@ -1381,12 +1472,21 @@ export function Connections({
                       />
                     </>
                   ) : null}
+                  <ConnectionMetadataFields
+                    project={duplicateModal.form.project}
+                    environment={duplicateModal.form.environment}
+                    tags={duplicateModal.form.tags}
+                    projectSuggestions={projectSuggestions}
+                    onProjectChange={(project) => updateDuplicateForm({ project })}
+                    onEnvironmentChange={(environment) => updateDuplicateForm({ environment })}
+                    onTagsChange={(tags) => updateDuplicateForm({ tags })}
+                  />
                   <label className="field">
                     <span>备注</span>
                     <input
                       value={duplicateModal.form.note}
                       onChange={(e) => updateDuplicateForm({ note: e.target.value })}
-                      placeholder="可选，记录用途、环境或负责人"
+                      placeholder="可选，记录用途或负责人"
                     />
                   </label>
                   {duplicateModal.error ? <div className="error-banner">{duplicateModal.error}</div> : null}
@@ -1427,7 +1527,7 @@ export function Connections({
                 <div className="modal-b">
                   <div className="grid2">
                     <label className="field">
-                      <span>连接名称</span>
+                      <span>{requiredLabel("连接名称")}</span>
                       <input
                         required
                         value={editModal.form.name}
@@ -1440,7 +1540,7 @@ export function Connections({
                   </div>
                   <div className="field-row">
                     <label className="field">
-                      <span>主机地址</span>
+                      <span>{requiredLabel("主机地址")}</span>
                       <input
                         required
                         value={editModal.form.host}
@@ -1448,7 +1548,7 @@ export function Connections({
                       />
                     </label>
                     <label className="field">
-                      <span>端口</span>
+                      <span>{requiredLabel("端口")}</span>
                       <input
                         required
                         type="number"
@@ -1459,7 +1559,7 @@ export function Connections({
                   </div>
                   <div className="grid2">
                     <label className="field">
-                      <span>用户名{editModal.connection.type === "etcd" ? "（可选）" : ""}</span>
+                      <span>{editModal.connection.type === "etcd" ? "用户名（可选）" : requiredLabel("用户名")}</span>
                       <input
                         required={editModal.connection.type !== "etcd"}
                         value={editModal.form.username}
@@ -1486,7 +1586,7 @@ export function Connections({
                   ) : null}
                   <EtcdTLSModeGuide enabled={editModal.connection.type === "etcd"} />
                   <SelectField
-                    label={connectionSecurityConfig(editModal.connection.type).label}
+                    label={requiredLabel(connectionSecurityConfig(editModal.connection.type).label)}
                     value={editModal.form.sslMode}
                     onChange={(sslMode) => setEditModal({ ...editModal, form: { ...editModal.form, sslMode }, error: "" })}
                   >
@@ -1507,12 +1607,23 @@ export function Connections({
                       />
                     </>
                   ) : null}
+                  <ConnectionMetadataFields
+                    project={editModal.form.project}
+                    environment={editModal.form.environment}
+                    tags={editModal.form.tags}
+                    projectSuggestions={projectSuggestions}
+                    onProjectChange={(project) => setEditModal({ ...editModal, form: { ...editModal.form, project }, error: "" })}
+                    onEnvironmentChange={(environment) =>
+                      setEditModal({ ...editModal, form: { ...editModal.form, environment }, error: "" })
+                    }
+                    onTagsChange={(tags) => setEditModal({ ...editModal, form: { ...editModal.form, tags }, error: "" })}
+                  />
                   <label className="field">
                     <span>备注</span>
                     <input
                       value={editModal.form.note}
                       onChange={(e) => setEditModal({ ...editModal, form: { ...editModal.form, note: e.target.value }, error: "" })}
-                      placeholder="可选，记录用途、环境或负责人"
+                      placeholder="可选，记录用途或负责人"
                     />
                   </label>
                   {editModal.error ? <div className="error-banner">{editModal.error}</div> : null}
@@ -1713,9 +1824,7 @@ export function Connections({
                     ))}
                   </SelectField>
                   {formErrors.sslMode ? <div className="form-error">{formErrors.sslMode}</div> : null}
-                  <p className="field-hint" style={{ marginBottom: 12 }}>
-                    {formSecurityConfig.hint}
-                  </p>
+                  <p className="field-hint">{formSecurityConfig.hint}</p>
 
                   {form.sslMode === "verify-full" ? (
                     <>
@@ -1724,12 +1833,21 @@ export function Connections({
                     </>
                   ) : null}
 
+                  <ConnectionMetadataFields
+                    project={form.project}
+                    environment={form.environment}
+                    tags={form.tags}
+                    projectSuggestions={projectSuggestions}
+                    onProjectChange={(project) => updateFormField("project", project)}
+                    onEnvironmentChange={(environment) => updateFormField("environment", environment)}
+                    onTagsChange={(tags) => updateFormField("tags", tags)}
+                  />
                   <label className="field">
                     <span>备注</span>
                     <input
                       value={form.note}
                       onChange={(e) => setForm({ ...form, note: e.target.value })}
-                      placeholder="可选，记录用途、环境或负责人"
+                      placeholder="可选，记录用途或负责人"
                     />
                   </label>
                   {formError ? <div className="error-banner">{formError}</div> : null}
@@ -1925,17 +2043,6 @@ function connectionCompatibilityHint(type: DatabaseType) {
   }
 }
 
-function requiredLabel(label: string) {
-  return (
-    <>
-      <span className="required-mark" aria-hidden="true">
-        *{" "}
-      </span>
-      {label}
-    </>
-  );
-}
-
 function connectionSecurityConfig(type: DatabaseType) {
   switch (type) {
     case "PostgreSQL":
@@ -2025,6 +2132,9 @@ function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
     type,
     name: suggestConnectionName(type, "", defaultPort(type)),
     note: "",
+    project: "",
+    environment: "",
+    tags: [],
     host: "",
     port: defaultPort(type),
     username: "",
@@ -2034,6 +2144,131 @@ function emptyConnectionForm(type: DatabaseType): ConnectionFormState {
     mongoMode: "direct",
     mongoSeeds: "",
   };
+}
+
+function ConnectionMetadataFields({
+  project,
+  environment,
+  tags,
+  projectSuggestions,
+  onProjectChange,
+  onEnvironmentChange,
+  onTagsChange,
+}: {
+  project: string;
+  environment: ConnectionEnvironment;
+  tags: string[];
+  projectSuggestions: string[];
+  onProjectChange: (value: string) => void;
+  onEnvironmentChange: (value: ConnectionEnvironment) => void;
+  onTagsChange: (value: string[]) => void;
+}) {
+  const datalistId = useId();
+  const [tagInput, setTagInput] = useState("");
+
+  function commitTags(raw: string) {
+    const parts = raw
+      .split(/[,，\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (parts.length === 0) {
+      setTagInput("");
+      return;
+    }
+    const next = [...tags];
+    for (const part of parts) {
+      if (!next.includes(part)) {
+        next.push(part);
+      }
+    }
+    onTagsChange(next);
+    setTagInput("");
+  }
+
+  return (
+    <>
+      <div className="grid2">
+        <label className="field">
+          <span>所属项目</span>
+          <input
+            list={datalistId}
+            value={project}
+            onChange={(e) => onProjectChange(e.target.value)}
+            placeholder="可选，如 电商核心、支付中心"
+          />
+          <datalist id={datalistId}>
+            {projectSuggestions.map((item) => (
+              <option key={item} value={item} />
+            ))}
+          </datalist>
+        </label>
+        <SelectField
+          label="环境"
+          value={environment}
+          onChange={(value) => onEnvironmentChange(value as ConnectionEnvironment)}
+        >
+          <option value="">未设置</option>
+          {CONNECTION_ENVIRONMENT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </SelectField>
+      </div>
+      <div className="field">
+        <span>标签</span>
+        <div className="tag-input-box">
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="dbchip"
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, paddingRight: 4 }}
+            >
+              <span># {tag}</span>
+              <button
+                type="button"
+                aria-label={`移除标签 ${tag}`}
+                onClick={() => onTagsChange(tags.filter((item) => item !== tag))}
+                style={{
+                  border: "none",
+                  background: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                  color: "var(--muted)",
+                  display: "inline-flex",
+                }}
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+          <input
+            value={tagInput}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val.includes(",") || val.includes("，")) {
+                commitTags(val);
+              } else {
+                setTagInput(val);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commitTags(tagInput);
+              } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
+                onTagsChange(tags.slice(0, -1));
+              }
+            }}
+            onBlur={() => {
+              if (tagInput.trim()) commitTags(tagInput);
+            }}
+            placeholder={tags.length ? "继续输入并回车添加…" : "输入标签后按回车或逗号添加，如 主库、只读"}
+          />
+        </div>
+      </div>
+    </>
+  );
 }
 
 function connectionInputFromForm(form: ConnectionFormState): Omit<ConnectionInput, "port" | "validate"> {

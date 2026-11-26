@@ -27,16 +27,19 @@ type batchImportIssue struct {
 }
 
 type batchImportConnectionPreview struct {
-	Row      int      `json:"row"`
-	Key      string   `json:"key"`
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Host     string   `json:"host"`
-	Port     int      `json:"port"`
-	Username string   `json:"username"`
-	SSLMode  string   `json:"sslMode"`
-	Note     string   `json:"note,omitempty"`
-	Errors   []string `json:"errors"`
+	Row         int      `json:"row"`
+	Key         string   `json:"key"`
+	Name        string   `json:"name"`
+	Project     string   `json:"project,omitempty"`
+	Environment string   `json:"environment,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Type        string   `json:"type"`
+	Host        string   `json:"host"`
+	Port        int      `json:"port"`
+	Username    string   `json:"username"`
+	SSLMode     string   `json:"sslMode"`
+	Note        string   `json:"note,omitempty"`
+	Errors      []string `json:"errors"`
 }
 
 type batchImportSchedulePreview struct {
@@ -429,6 +432,14 @@ func (s *Server) parseBatchImport(fileName string, data []byte) (parsedBatchImpo
 		if !validImportSSLMode(connection.Input.Type, connection.Input.SSLMode) {
 			addConnectionError("SSL模式", "SSL 模式与数据库类型不匹配，请使用模板下拉选项")
 		}
+		if rawEnv := importCell(row, columns, "环境"); rawEnv != "" {
+			if normalizedEnv, ok := normalizeConnectionEnvironment(rawEnv); ok {
+				connection.Input.Environment = normalizedEnv
+				preview.Environment = normalizedEnv
+			} else {
+				addConnectionError("环境", "环境仅支持 prod、staging、test 或 dev（或 生产/预发/测试/开发）")
+			}
+		}
 		result.Connections = append(result.Connections, connection)
 		result.Preview.Connections = append(result.Preview.Connections, preview)
 	}
@@ -528,18 +539,24 @@ func parseImportConnection(rowNumber int, row []string, columns map[string]int) 
 	port, _ := parseImportInteger(importCell(row, columns, "端口"))
 	databaseType := normalizeDatabaseType(importCell(row, columns, "数据库类型"))
 	sslMode := strings.ToLower(importCell(row, columns, "SSL模式"))
+	tags := normalizeConnectionTags(splitImportList(importCell(row, columns, "标签")))
+	project := importCell(row, columns, "项目")
+	env, _ := normalizeConnectionEnvironment(importCell(row, columns, "环境"))
 	connection := batchImportConnection{
 		Row: rowNumber,
 		Key: importCell(row, columns, "连接标识"),
 		Input: model.ConnectionInput{
 			Name: importCell(row, columns, "连接名称"), Type: databaseType,
+			Project: project, Environment: env, Tags: tags,
 			Host: importCell(row, columns, "主机地址"), Port: port,
 			Username: importCell(row, columns, "用户名"), Password: importCell(row, columns, "密码"),
 			SSLMode: sslMode, Note: importCell(row, columns, "备注"),
 		},
 	}
 	preview := batchImportConnectionPreview{
-		Row: connection.Row, Key: connection.Key, Name: connection.Input.Name, Type: connection.Input.Type,
+		Row: connection.Row, Key: connection.Key, Name: connection.Input.Name,
+		Project: connection.Input.Project, Environment: connection.Input.Environment, Tags: append([]string(nil), connection.Input.Tags...),
+		Type: connection.Input.Type,
 		Host: connection.Input.Host, Port: connection.Input.Port, Username: connection.Input.Username,
 		SSLMode: connection.Input.SSLMode, Note: connection.Input.Note, Errors: []string{},
 	}

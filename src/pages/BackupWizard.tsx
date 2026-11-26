@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { api } from "../api";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
 import { Button, Card, DatabaseLogo, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { connectionOptionMeta } from "../labels";
 import type {
   BackupConfig,
   BackupNotificationTrigger,
@@ -980,7 +981,8 @@ function SourceConnectionSelect({
                 >
                   <DatabaseTypeIcon type={item.type} />
                   <span className="csel-txt">
-                    {item.name} · {item.host}
+                    {item.name}
+                    {connectionOptionMeta(item)} · {item.host}
                   </span>
                 </button>
               ))}

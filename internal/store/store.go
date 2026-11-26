@@ -345,7 +345,9 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 		status = "connected"
 	}
 	connection := model.Connection{
-		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note), Type: input.Type, Host: input.Host,
+		ID: newID(), Name: input.Name, Note: strings.TrimSpace(input.Note),
+		Project: strings.TrimSpace(input.Project), Environment: strings.TrimSpace(input.Environment), Tags: normalizeStringSlice(input.Tags),
+		Type: input.Type, Host: input.Host,
 		Port: input.Port, Username: input.Username, Password: input.Password,
 		SSLMode: input.SSLMode, TLSConfig: dbtls.Normalize(input.TLSConfig), Status: status,
 		Endpoints: append([]string(nil), input.Endpoints...),
@@ -361,9 +363,9 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 	}
 	_, err = s.db.Exec(`
 		INSERT INTO connections
-		(id, name, note, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		connection.ID, connection.Name, connection.Note, connection.Type, connection.Host, connection.Port,
+		(id, name, note, project, environment, tags_json, type, host, port, username, password_encrypted, ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		connection.ID, connection.Name, connection.Note, connection.Project, connection.Environment, marshalStrings(connection.Tags), connection.Type, connection.Host, connection.Port,
 		connection.Username, encrypted, connection.SSLMode, encryptedTLSConfig, marshalStrings(connection.Endpoints), nil, connection.Status,
 		connection.LatencyMS, connection.Version, connection.CreatedAt.Format(time.RFC3339Nano))
 	if err != nil {
@@ -374,7 +376,7 @@ func (s *Store) AddConnection(input model.ConnectionInput, latency time.Duration
 
 func (s *Store) Connections() ([]model.Connection, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, note, type, host, port, username, password_encrypted,
+		SELECT id, name, note, project, environment, tags_json, type, host, port, username, password_encrypted,
 		       ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at, favorite
 		FROM connections ORDER BY favorite DESC, created_at`)
 	if err != nil {
@@ -397,7 +399,7 @@ func (s *Store) Connections() ([]model.Connection, error) {
 
 func (s *Store) Connection(id string) (model.Connection, error) {
 	row := s.db.QueryRow(`
-		SELECT id, name, note, type, host, port, username, password_encrypted,
+		SELECT id, name, note, project, environment, tags_json, type, host, port, username, password_encrypted,
 		       ssl_mode, tls_config_encrypted, endpoints_json, mongo_backup_readiness_json, status, latency_ms, server_version, created_at, favorite
 		FROM connections WHERE id = ?`, id)
 	return s.scanConnection(row)
@@ -473,12 +475,15 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 		return model.Connection{}, err
 	}
 	note := strings.TrimSpace(input.Note)
+	project := strings.TrimSpace(input.Project)
+	environment := strings.TrimSpace(input.Environment)
+	tags := normalizeStringSlice(input.Tags)
 	status := "connected"
 	if _, err := s.db.Exec(`
 		UPDATE connections
-		SET name = ?, note = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, tls_config_encrypted = ?, endpoints_json = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
+		SET name = ?, note = ?, project = ?, environment = ?, tags_json = ?, host = ?, port = ?, username = ?, password_encrypted = ?, ssl_mode = ?, tls_config_encrypted = ?, endpoints_json = ?, status = ?, latency_ms = ?, server_version = ?, type = ?
 		WHERE id = ?`,
-		input.Name, note, input.Host, input.Port, input.Username, encrypted, input.SSLMode, encryptedTLSConfig, marshalStrings(endpoints), status, latency.Milliseconds(), version, current.Type, id); err != nil {
+		input.Name, note, project, environment, marshalStrings(tags), input.Host, input.Port, input.Username, encrypted, input.SSLMode, encryptedTLSConfig, marshalStrings(endpoints), status, latency.Milliseconds(), version, current.Type, id); err != nil {
 		return model.Connection{}, fmt.Errorf("update connection: %w", err)
 	}
 	updated, err := s.Connection(id)
@@ -486,6 +491,9 @@ func (s *Store) UpdateConnection(id string, input model.UpdateConnectionInput, l
 		return model.Connection{}, err
 	}
 	updated.Note = note
+	updated.Project = project
+	updated.Environment = environment
+	updated.Tags = tags
 	updated.Status = status
 	updated.LatencyMS = latency.Milliseconds()
 	updated.Version = version
@@ -967,6 +975,9 @@ func (s *Store) initialize() error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			note TEXT NOT NULL DEFAULT '',
+			project TEXT NOT NULL DEFAULT '',
+			environment TEXT NOT NULL DEFAULT '',
+			tags_json BLOB NOT NULL DEFAULT '[]',
 			type TEXT NOT NULL,
 			host TEXT NOT NULL,
 			port INTEGER NOT NULL,
@@ -1059,6 +1070,15 @@ func (s *Store) initialize() error {
 	if err := s.ensureConnectionFavoriteColumn(); err != nil {
 		return err
 	}
+	if err := s.ensureConnectionProjectColumn(); err != nil {
+		return err
+	}
+	if err := s.ensureConnectionEnvironmentColumn(); err != nil {
+		return err
+	}
+	if err := s.ensureConnectionTagsColumn(); err != nil {
+		return err
+	}
 	if err := s.ensureStorageFavoriteColumn(); err != nil {
 		return err
 	}
@@ -1129,6 +1149,56 @@ func (s *Store) ensureConnectionFavoriteColumn() error {
 		return fmt.Errorf("migrate connections.favorite: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) ensureConnectionProjectColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN project TEXT NOT NULL DEFAULT ''`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.project: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionEnvironmentColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN environment TEXT NOT NULL DEFAULT ''`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.environment: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureConnectionTagsColumn() error {
+	if _, err := s.db.Exec(`ALTER TABLE connections ADD COLUMN tags_json BLOB NOT NULL DEFAULT '[]'`); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return fmt.Errorf("migrate connections.tags_json: %w", err)
+	}
+	return nil
+}
+
+func normalizeStringSlice(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(items))
+	result := make([]string, 0, len(items))
+	for _, raw := range items {
+		value := strings.TrimSpace(raw)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func (s *Store) ensureStorageFavoriteColumn() error {
@@ -1229,15 +1299,21 @@ func (s *Store) scanConnection(row scanner) (model.Connection, error) {
 	var item model.Connection
 	var encrypted []byte
 	var encryptedTLSConfig []byte
-	var endpointsJSON, mongoBackupReadinessJSON []byte
+	var tagsJSON, endpointsJSON, mongoBackupReadinessJSON []byte
 	var createdAt string
-	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Type, &item.Host, &item.Port,
+	if err := row.Scan(&item.ID, &item.Name, &item.Note, &item.Project, &item.Environment, &tagsJSON, &item.Type, &item.Host, &item.Port,
 		&item.Username, &encrypted, &item.SSLMode, &encryptedTLSConfig, &endpointsJSON, &mongoBackupReadinessJSON, &item.Status, &item.LatencyMS,
 		&item.Version, &createdAt, &item.Favorite); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.Connection{}, ErrNotFound
 		}
 		return model.Connection{}, fmt.Errorf("scan connection: %w", err)
+	}
+	if len(tagsJSON) > 0 {
+		if err := json.Unmarshal(tagsJSON, &item.Tags); err != nil {
+			return model.Connection{}, fmt.Errorf("decode connection tags %s: %w", item.ID, err)
+		}
+		item.Tags = normalizeStringSlice(item.Tags)
 	}
 	password, err := s.decrypt(encrypted)
 	if err != nil {

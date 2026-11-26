@@ -764,6 +764,41 @@ h1, h2, h3, h4, p { margin: 0; }
 .inp::placeholder, .field input::placeholder, .field textarea::placeholder { color: var(--faint); opacity: 1; }
 .field input.invalid, .field textarea.invalid, .field.invalid input { border-color: var(--danger); }
 
+.tag-input-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 4px 10px;
+  border: 1px solid var(--ctl);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.tag-input-box:hover { border-color: var(--faint); }
+.tag-input-box:focus-within { border-color: var(--indigo); box-shadow: 0 0 0 3px var(--focus-ring); }
+.field .tag-input-box input {
+  flex: 1;
+  min-width: 140px;
+  width: auto;
+  height: 28px;
+  min-height: 0;
+  line-height: 28px;
+  font-size: 13.5px;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 2px;
+  box-shadow: none;
+}
+.field .tag-input-box input:focus {
+  border: none;
+  box-shadow: none;
+}
+
 .sfield { position: relative; display: inline-block; vertical-align: middle; }
 .sfield .sfield-ic {
   position: absolute;
@@ -782,6 +817,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .field { margin-bottom: 14px; display: block; }
 .field > span, .field > label { display: block; font-size: 13px; font-weight: 550; margin-bottom: 6px; color: var(--ink); }
 .field-hint, .field .hint { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.5; display: block; }
+.field + .field-hint { margin: -8px 0 14px; }
 .required-mark { color: var(--danger); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
 .field-row { display: grid; grid-template-columns: 1fr 120px; gap: 14px; }

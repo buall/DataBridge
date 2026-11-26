@@ -26,6 +26,17 @@ import type { DatabaseType } from "../types";
 
 type SelectOptionItem = { value: string; label: string; disabled?: boolean };
 
+export function requiredLabel(label: string) {
+  return (
+    <>
+      <span className="required-mark" aria-hidden="true">
+        *{" "}
+      </span>
+      {label}
+    </>
+  );
+}
+
 export type ThemeMode = "light" | "dark";
 
 export function useTheme() {

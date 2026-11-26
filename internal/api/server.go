@@ -271,7 +271,7 @@ func (s *Server) testConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
 		return
 	}
-	if !validateConnection(w, input) {
+	if !validateConnection(w, &input) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
@@ -298,7 +298,7 @@ func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
 		return
 	}
-	if !validateConnection(w, input) {
+	if !validateConnection(w, &input) {
 		return
 	}
 	shouldValidate := input.Validate == nil || *input.Validate
@@ -346,7 +346,7 @@ func (s *Server) updateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input model.UpdateConnectionInput
-	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, current.Type, input) {
+	if !decodeJSON(w, r, &input) || !validateConnectionUpdate(w, current.Type, &input) {
 		return
 	}
 	if input.Endpoints != nil {
@@ -439,7 +439,7 @@ func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input model.DuplicateConnectionInput
-	if !decodeJSON(w, r, &input) || !validateDuplicateConnection(w, current.Type, input) {
+	if !decodeJSON(w, r, &input) || !validateDuplicateConnection(w, current.Type, &input) {
 		return
 	}
 	password := current.Password
@@ -454,16 +454,19 @@ func (s *Server) duplicateConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	duplicate := model.ConnectionInput{
-		Type:      current.Type,
-		Name:      input.Name,
-		Note:      input.Note,
-		Host:      input.Host,
-		Port:      input.Port,
-		Username:  input.Username,
-		Password:  password,
-		SSLMode:   input.SSLMode,
-		TLSConfig: tlsConfig,
-		Endpoints: append([]string(nil), current.Endpoints...),
+		Type:        current.Type,
+		Name:        input.Name,
+		Note:        input.Note,
+		Project:     input.Project,
+		Environment: input.Environment,
+		Tags:        append([]string(nil), input.Tags...),
+		Host:        input.Host,
+		Port:        input.Port,
+		Username:    input.Username,
+		Password:    password,
+		SSLMode:     input.SSLMode,
+		TLSConfig:   tlsConfig,
+		Endpoints:   append([]string(nil), current.Endpoints...),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
@@ -5941,7 +5944,44 @@ func nonEmpty(value, fallback string) string {
 	return value
 }
 
-func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool {
+func normalizeConnectionEnvironment(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return "", true
+	case "prod", "production", "生产", "生产环境":
+		return "prod", true
+	case "staging", "stage", "pre", "预发", "预发环境", "预发布":
+		return "staging", true
+	case "test", "testing", "qa", "测试", "测试环境":
+		return "test", true
+	case "dev", "development", "开发", "开发环境":
+		return "dev", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeConnectionTags(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(items))
+	result := make([]string, 0, len(items))
+	for _, raw := range items {
+		tag := strings.TrimSpace(raw)
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		result = append(result, tag)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func validateConnection(w http.ResponseWriter, input *model.ConnectionInput) bool {
 	input.Type = normalizeDatabaseType(input.Type)
 	if input.Type == "" {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "请选择数据库类型")
@@ -5959,13 +5999,21 @@ func validateConnection(w http.ResponseWriter, input model.ConnectionInput) bool
 		writeError(w, http.StatusBadRequest, "invalid_connection", "端口号必须在 1 到 65535 之间")
 		return false
 	}
+	env, ok := normalizeConnectionEnvironment(input.Environment)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "环境仅支持 prod、staging、test 或 dev")
+		return false
+	}
+	input.Environment = env
+	input.Project = strings.TrimSpace(input.Project)
+	input.Tags = normalizeConnectionTags(input.Tags)
 	if !validateConnectionTLSConfig(w, input.Type, input.SSLMode, input.TLSConfig) {
 		return false
 	}
 	return true
 }
 
-func validateConnectionUpdate(w http.ResponseWriter, databaseType string, input model.UpdateConnectionInput) bool {
+func validateConnectionUpdate(w http.ResponseWriter, databaseType string, input *model.UpdateConnectionInput) bool {
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || (databaseType != "etcd" && strings.TrimSpace(input.Username) == "") {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称和主机地址不能为空")
 		return false
@@ -5977,10 +6025,18 @@ func validateConnectionUpdate(w http.ResponseWriter, databaseType string, input 
 		writeError(w, http.StatusBadRequest, "invalid_connection", "端口号必须在 1 到 65535 之间")
 		return false
 	}
+	env, ok := normalizeConnectionEnvironment(input.Environment)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "环境仅支持 prod、staging、test 或 dev")
+		return false
+	}
+	input.Environment = env
+	input.Project = strings.TrimSpace(input.Project)
+	input.Tags = normalizeConnectionTags(input.Tags)
 	return true
 }
 
-func validateDuplicateConnection(w http.ResponseWriter, databaseType string, input model.DuplicateConnectionInput) bool {
+func validateDuplicateConnection(w http.ResponseWriter, databaseType string, input *model.DuplicateConnectionInput) bool {
 	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Host) == "" || (databaseType != "etcd" && strings.TrimSpace(input.Username) == "") {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "连接名称和主机地址不能为空")
 		return false
@@ -5992,6 +6048,14 @@ func validateDuplicateConnection(w http.ResponseWriter, databaseType string, inp
 		writeError(w, http.StatusBadRequest, "invalid_connection", "端口号必须在 1 到 65535 之间")
 		return false
 	}
+	env, ok := normalizeConnectionEnvironment(input.Environment)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_connection", "环境仅支持 prod、staging、test 或 dev")
+		return false
+	}
+	input.Environment = env
+	input.Project = strings.TrimSpace(input.Project)
+	input.Tags = normalizeConnectionTags(input.Tags)
 	return true
 }
 

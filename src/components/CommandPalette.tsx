@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { migrationStageLabel } from "../labels";
+import { connectionEnvironmentLabel, connectionOptionMeta, migrationStageLabel } from "../labels";
 import { migrationStatusLabel } from "../status";
 import type { AppView, BackupJob, DatabaseConnection, MigrationJob } from "../types";
 import type { ThemeMode } from "./UI";
@@ -104,12 +104,17 @@ export function CommandPalette({
     });
 
     connections.forEach((conn) => {
-      if (!q || `${conn.name} ${conn.type} ${conn.host} ${conn.note ?? ""}`.toLowerCase().includes(q)) {
+      if (
+        !q ||
+        `${conn.name} ${conn.type} ${conn.host} ${conn.note ?? ""} ${conn.project ?? ""} ${conn.environment ?? ""} ${connectionEnvironmentLabel(conn.environment)} ${(conn.tags ?? []).join(" ")}`
+          .toLowerCase()
+          .includes(q)
+      ) {
         out.push({
           id: `conn-${conn.id}`,
           section: "数据库实例",
           label: conn.name,
-          sub: `${conn.type} · ${conn.host}:${conn.port}`,
+          sub: `${conn.type}${connectionOptionMeta(conn)} · ${conn.host}:${conn.port}`,
           icon: <Database size={16} />,
           run: () => onNavigate("connections"),
         });

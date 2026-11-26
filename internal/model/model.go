@@ -6,42 +6,51 @@ import (
 )
 
 type ConnectionInput struct {
-	Type      string              `json:"type"`
-	Name      string              `json:"name"`
-	Note      string              `json:"note,omitempty"`
-	Host      string              `json:"host"`
-	Port      int                 `json:"port"`
-	Username  string              `json:"username"`
-	Password  string              `json:"password"`
-	SSLMode   string              `json:"sslMode"`
-	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
-	Validate  *bool               `json:"validate,omitempty"`
-	Endpoints []string            `json:"endpoints,omitempty"`
-	Status    string              `json:"-"`
+	Type        string              `json:"type"`
+	Name        string              `json:"name"`
+	Note        string              `json:"note,omitempty"`
+	Project     string              `json:"project,omitempty"`
+	Environment string              `json:"environment,omitempty"`
+	Tags        []string            `json:"tags,omitempty"`
+	Host        string              `json:"host"`
+	Port        int                 `json:"port"`
+	Username    string              `json:"username"`
+	Password    string              `json:"password"`
+	SSLMode     string              `json:"sslMode"`
+	TLSConfig   ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Validate    *bool               `json:"validate,omitempty"`
+	Endpoints   []string            `json:"endpoints,omitempty"`
+	Status      string              `json:"-"`
 }
 
 type UpdateConnectionInput struct {
-	Type      string              `json:"type,omitempty"`
-	Name      string              `json:"name"`
-	Note      string              `json:"note,omitempty"`
-	Host      string              `json:"host"`
-	Port      int                 `json:"port"`
-	Username  string              `json:"username"`
-	Password  string              `json:"password,omitempty"`
-	SSLMode   string              `json:"sslMode"`
-	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
-	Endpoints []string            `json:"endpoints,omitempty"`
+	Type        string              `json:"type,omitempty"`
+	Name        string              `json:"name"`
+	Note        string              `json:"note,omitempty"`
+	Project     string              `json:"project,omitempty"`
+	Environment string              `json:"environment,omitempty"`
+	Tags        []string            `json:"tags,omitempty"`
+	Host        string              `json:"host"`
+	Port        int                 `json:"port"`
+	Username    string              `json:"username"`
+	Password    string              `json:"password,omitempty"`
+	SSLMode     string              `json:"sslMode"`
+	TLSConfig   ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Endpoints   []string            `json:"endpoints,omitempty"`
 }
 
 type DuplicateConnectionInput struct {
-	Name      string              `json:"name"`
-	Note      string              `json:"note,omitempty"`
-	Host      string              `json:"host"`
-	Port      int                 `json:"port"`
-	Username  string              `json:"username"`
-	SSLMode   string              `json:"sslMode"`
-	Password  string              `json:"password,omitempty"`
-	TLSConfig ConnectionTLSConfig `json:"tlsConfig,omitempty"`
+	Name        string              `json:"name"`
+	Note        string              `json:"note,omitempty"`
+	Project     string              `json:"project,omitempty"`
+	Environment string              `json:"environment,omitempty"`
+	Tags        []string            `json:"tags,omitempty"`
+	Host        string              `json:"host"`
+	Port        int                 `json:"port"`
+	Username    string              `json:"username"`
+	SSLMode     string              `json:"sslMode"`
+	Password    string              `json:"password,omitempty"`
+	TLSConfig   ConnectionTLSConfig `json:"tlsConfig,omitempty"`
 }
 
 type ConnectionTLSConfig struct {
@@ -58,6 +67,9 @@ type Connection struct {
 	ID                   string                `json:"id"`
 	Name                 string                `json:"name"`
 	Note                 string                `json:"note,omitempty"`
+	Project              string                `json:"project,omitempty"`
+	Environment          string                `json:"environment,omitempty"`
+	Tags                 []string              `json:"tags,omitempty"`
 	Type                 string                `json:"type"`
 	Host                 string                `json:"host"`
 	Port                 int                   `json:"port"`
