@@ -23,6 +23,7 @@ import {
   Card,
   ConfirmDialog,
   DensitySwitch,
+  requiredLabel,
   SelectField,
   useCollectionView,
 } from "../components/UI";
@@ -728,7 +729,7 @@ export function Storages({
                 </div>
                 <div className="modal-b">
                   <label className="field">
-                    <span>Bucket 名称</span>
+                    <span>{requiredLabel("Bucket 名称")}</span>
                     <input
                       required
                       autoFocus
@@ -911,7 +912,7 @@ export function Storages({
                   ) : null}
 
                   <SelectField
-                    label="存储类型"
+                    label={requiredLabel("存储类型")}
                     value={form.type}
                     onChange={(value) => changeType(value as RemoteStorageType)}
                   >
@@ -924,7 +925,7 @@ export function Storages({
 
                   <div className="grid2">
                     <label className="field">
-                      <span>名称</span>
+                      <span>{requiredLabel("名称")}</span>
                       <input
                         required
                         value={form.name}
@@ -933,7 +934,7 @@ export function Storages({
                       />
                     </label>
                     <label className="field">
-                      <span>服务商</span>
+                      <span>{requiredLabel("服务商")}</span>
                       <input
                         required
                         value={form.provider}
@@ -946,7 +947,7 @@ export function Storages({
                   {form.type === "object" ? (
                     <>
                       <label className="field">
-                        <span>Endpoint</span>
+                        <span>{requiredLabel("Endpoint")}</span>
                         <input
                           required
                           value={form.endpoint}
@@ -956,7 +957,7 @@ export function Storages({
                       </label>
                       <div className="grid2">
                         <label className="field">
-                          <span>Access Key</span>
+                          <span>{requiredLabel("Access Key")}</span>
                           <input
                             required
                             value={form.accessKey}
@@ -964,7 +965,7 @@ export function Storages({
                           />
                         </label>
                         <label className="field">
-                          <span>Secret Key</span>
+                          <span>{editTarget ? "Secret Key" : requiredLabel("Secret Key")}</span>
                           <input
                             type="password"
                             required={!editTarget}
@@ -980,7 +981,7 @@ export function Storages({
                       >
                         <div style={{ flex: 1, position: "relative" }}>
                           <label className="field" style={{ marginBottom: 0 }}>
-                            <span>Bucket</span>
+                            <span>{requiredLabel("Bucket")}</span>
                             <input
                               required
                               value={form.bucket}
@@ -1059,7 +1060,7 @@ export function Storages({
                   {form.type === "webdav" ? (
                     <>
                       <label className="field">
-                        <span>Endpoint</span>
+                        <span>{requiredLabel("Endpoint")}</span>
                         <input
                           required
                           value={form.endpoint}
@@ -1069,7 +1070,7 @@ export function Storages({
                       </label>
                       <div className="grid2">
                         <label className="field">
-                          <span>用户名</span>
+                          <span>{requiredLabel("用户名")}</span>
                           <input
                             required
                             value={form.accessKey}
@@ -1078,7 +1079,7 @@ export function Storages({
                           />
                         </label>
                         <label className="field">
-                          <span>密码 / 应用密码</span>
+                          <span>{editTarget ? "密码 / 应用密码" : requiredLabel("密码 / 应用密码")}</span>
                           <input
                             type="password"
                             required={!editTarget}
@@ -1166,7 +1167,7 @@ export function Storages({
                           </SelectField>
                           <div className="grid2">
                             <label className="field">
-                              <span>应用程序（客户端）ID</span>
+                              <span>{requiredLabel("应用程序（客户端）ID")}</span>
                               <input
                                 required
                                 value={form.accessKey}
@@ -1177,7 +1178,7 @@ export function Storages({
                               />
                             </label>
                             <label className="field">
-                              <span>客户端密钥</span>
+                              <span>{editTarget ? "客户端密钥" : requiredLabel("客户端密钥")}</span>
                               <input
                                 type="password"
                                 required={!editTarget}
@@ -1223,7 +1224,7 @@ export function Storages({
 
                   {form.type === "local" ? (
                     <label className="field">
-                      <span>本地目录</span>
+                      <span>{requiredLabel("本地目录")}</span>
                       <input
                         required
                         value={form.path}

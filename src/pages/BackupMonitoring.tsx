@@ -18,7 +18,7 @@ import { type FormEvent, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { NotificationRecipientPicker, useNotificationRecipients } from "../components/NotificationRecipientPicker";
-import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, SelectField } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog, DatabaseTypeIcon, RegionFlag, requiredLabel, SelectField } from "../components/UI";
 import { migrationStatusLabel, migrationStatusTone } from "../status";
 import type { BackupConfig, BackupJob, DatabaseConnection, DatabaseInfo, NotificationRecipient, RemoteStorage } from "../types";
 import {
@@ -1023,7 +1023,7 @@ function ScheduleEditor({
           )}
 
           <div className="field">
-            <span>备份目标</span>
+            <span>{requiredLabel("备份目标")}</span>
             <BackupTargetSelector
               storages={writableStorages}
               selectedIds={selectedTargetIds}
@@ -1043,7 +1043,7 @@ function ScheduleEditor({
 
           <div className="grid2">
             <SelectField
-              label="频率"
+              label={requiredLabel("频率")}
               value={form.scheduleFrequency ?? "daily"}
               onChange={(scheduleFrequency) =>
                 setForm({ ...form, scheduleFrequency: scheduleFrequency as BackupConfig["scheduleFrequency"] })

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
 import { NotificationRecipientTypeIcon } from "../components/NotificationRecipientTypeIcon";
-import { Badge, Button, Card, ConfirmDialog, SelectField } from "../components/UI";
+import { Badge, Button, Card, ConfirmDialog, requiredLabel, SelectField } from "../components/UI";
 import type {
   NotificationRecipient,
   NotificationRecipientInput,
@@ -506,7 +506,7 @@ export function Settings() {
 
                 <div className="modal-b">
                   <label className="field">
-                    <span>接收者名称</span>
+                    <span>{requiredLabel("接收者名称")}</span>
                     <input
                       required
                       value={recipientForm.name}
@@ -523,7 +523,7 @@ export function Settings() {
                     />
                   </label>
                   <SelectField
-                    label="接收者类型"
+                    label={requiredLabel("接收者类型")}
                     value={recipientForm.type}
                     onChange={(type) =>
                       setRecipientForm({
@@ -545,7 +545,7 @@ export function Settings() {
                   {recipientForm.type === "telegram" ? (
                     <div className="grid2">
                       <label className="field">
-                        <span>Bot Token</span>
+                        <span>{editing === "new" || recipientTypeChanged ? requiredLabel("Bot Token") : "Bot Token"}</span>
                         <input
                           required={editing === "new" || recipientTypeChanged}
                           type="password"
@@ -556,7 +556,7 @@ export function Settings() {
                         />
                       </label>
                       <label className="field">
-                        <span>Chat ID</span>
+                        <span>{editing === "new" || recipientTypeChanged ? requiredLabel("Chat ID") : "Chat ID"}</span>
                         <input
                           required={editing === "new" || recipientTypeChanged}
                           value={recipientForm.chatId ?? ""}
@@ -567,7 +567,13 @@ export function Settings() {
                     </div>
                   ) : (
                     <label className="field">
-                      <span>{recipientForm.type === "email" ? "收件邮箱" : "Webhook URL"}</span>
+                      <span>
+                        {editing === "new" || recipientTypeChanged
+                          ? requiredLabel(recipientForm.type === "email" ? "收件邮箱" : "Webhook URL")
+                          : recipientForm.type === "email"
+                            ? "收件邮箱"
+                            : "Webhook URL"}
+                      </span>
                       <input
                         required={editing === "new" || recipientTypeChanged}
                         type={recipientForm.type === "email" ? "email" : "url"}

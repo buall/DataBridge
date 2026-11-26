@@ -1,6 +1,6 @@
 import { AlertTriangle, LockKeyhole, LogIn, Moon, Sun } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { BridgeLogo, Button, useTheme } from "../components/UI";
+import { BridgeLogo, Button, requiredLabel, useTheme } from "../components/UI";
 
 interface LoginProps {
   configured: boolean;
@@ -88,12 +88,13 @@ export function Login({ configured, onLogin }: LoginProps) {
 
         <form onSubmit={submit}>
           <label className="field">
-            <span>用户名</span>
-            <input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
+            <span>{requiredLabel("用户名")}</span>
+            <input required autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} />
           </label>
           <label className="field">
-            <span>密码</span>
+            <span>{requiredLabel("密码")}</span>
             <input
+              required
               autoComplete="current-password"
               type="password"
               value={password}
