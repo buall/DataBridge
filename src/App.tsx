@@ -117,6 +117,7 @@ export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [authConfigured, setAuthConfigured] = useState(true);
+  const [authCaptchaRequired, setAuthCaptchaRequired] = useState(false);
   const [authUsername, setAuthUsername] = useState("admin");
   const [loadError, setLoadError] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -300,6 +301,7 @@ export default function App() {
       .then((session) => {
         setAuthenticated(session.authenticated);
         setAuthConfigured(session.configured);
+        setAuthCaptchaRequired(Boolean(session.captchaRequired));
         if (session.username) setAuthUsername(session.username);
       })
       .catch(() => setAuthenticated(false))
@@ -573,10 +575,11 @@ export default function App() {
       pushRoute(routes.backups);
     }
   }
-  async function login(username: string, password: string) {
-    const session = await api.login(username, password);
+  async function login(username: string, password: string, captchaId?: string, captchaCode?: string) {
+    const session = await api.login(username, password, captchaId, captchaCode);
     setAuthenticated(session.authenticated);
     setAuthConfigured(session.configured);
+    setAuthCaptchaRequired(false);
     setLoadError("");
   }
   async function logout() {
@@ -596,7 +599,7 @@ export default function App() {
     );
   }
   if (!authenticated) {
-    return <Login configured={authConfigured} onLogin={login} />;
+    return <Login configured={authConfigured} initialCaptchaRequired={authCaptchaRequired} onLogin={login} />;
   }
 
   let content: React.ReactNode;

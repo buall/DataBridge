@@ -29,6 +29,12 @@ export type AuthSession = {
   authenticated: boolean;
   username: string;
   configured: boolean;
+  captchaRequired?: boolean;
+};
+
+export type AuthCaptcha = {
+  id: string;
+  image: string;
 };
 
 export type MigrationsResponse = {
@@ -91,7 +97,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await response.json().catch(() => null);
     if (!response.ok) {
       const error = new Error(body?.message ?? `请求失败（${response.status}）`);
-      Object.assign(error, { status: response.status, code: body?.code });
+      Object.assign(error, { status: response.status, code: body?.code, captchaRequired: body?.captchaRequired });
       throw error;
     }
     return body as T;
@@ -123,7 +129,7 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
     const body = await response.json().catch(() => null);
     if (!response.ok) {
       const error = new Error(body?.message ?? `请求失败（${response.status}）`);
-      Object.assign(error, { status: response.status, code: body?.code });
+      Object.assign(error, { status: response.status, code: body?.code, captchaRequired: body?.captchaRequired });
       throw error;
     }
     return body as T;
@@ -153,8 +159,12 @@ function downloadFileName(disposition: string | null) {
 
 export const api = {
   session: () => request<AuthSession>("/auth/session"),
-  login: (username: string, password: string) =>
-    request<AuthSession>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  captcha: () => request<AuthCaptcha>("/auth/captcha"),
+  login: (username: string, password: string, captchaId?: string, captchaCode?: string) =>
+    request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password, captchaId, captchaCode }),
+    }),
   logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
   connections: () => request<DatabaseConnection[]>("/connections"),
   createConnection: (input: ConnectionInput) =>

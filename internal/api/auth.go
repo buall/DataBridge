@@ -54,6 +54,7 @@ func loadAuthConfig() authConfig {
 	if secret != "" {
 		cfg.sessionSecret = []byte(secret)
 	} else if cfg.passwordHash != nil {
+		log.Printf("auth: DATABRIDGE_SESSION_SECRET is not set; deriving session signing key from password hash (set DATABRIDGE_SESSION_SECRET in production)")
 		sum := sha256.Sum256(append([]byte("databridge-session:"), cfg.passwordHash...))
 		cfg.sessionSecret = sum[:]
 	}
