@@ -233,7 +233,7 @@ export function CommandPalette({
                   >
                     {item.icon}
                     <span>{item.label}</span>
-                    {item.sub ? <span className="ps">{item.sub}</span> : null}
+                    {item.sub ? <span className="ps" title={item.sub}>{item.sub}</span> : null}
                   </button>
                 </div>
               );
