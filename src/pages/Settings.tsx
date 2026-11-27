@@ -285,9 +285,9 @@ export function Settings() {
                   <div className="lrow" key={item.id}>
                     <span
                       style={{
-                        width: 34,
-                        height: 34,
-                        borderRadius: 9,
+                        width: 38,
+                        height: 38,
+                        borderRadius: 10,
                         background: "var(--surface)",
                         border: "1px solid var(--hair)",
                         display: "inline-flex",
@@ -296,7 +296,7 @@ export function Settings() {
                         flexShrink: 0,
                       }}
                     >
-                      <NotificationRecipientTypeIcon type={item.type} />
+                      <NotificationRecipientTypeIcon type={item.type} size={24} />
                     </span>
                     <div className="lr-main">
                       <div className="lr-t">
