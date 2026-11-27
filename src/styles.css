@@ -575,10 +575,27 @@ h1, h2, h3, h4, p { margin: 0; }
   display: grid;
   place-items: center;
   padding: 24px;
-  background: var(--bg);
   position: relative;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(81, 70, 200, 0.08), transparent 42%),
+    radial-gradient(circle at 88% 82%, rgba(14, 165, 233, 0.08), transparent 42%),
+    var(--bg);
+}
+[data-theme="dark"] .login-shell {
+  background:
+    radial-gradient(circle at 12% 18%, rgba(139, 130, 232, 0.11), transparent 44%),
+    radial-gradient(circle at 88% 82%, rgba(56, 189, 248, 0.09), transparent 44%),
+    var(--bg);
+}
+.login-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
 }
 .login-card {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 420px;
   background: var(--surface);
