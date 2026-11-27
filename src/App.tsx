@@ -17,6 +17,7 @@ import { Monitoring } from "./pages/Monitoring";
 import { Overview } from "./pages/Overview";
 import { Report } from "./pages/Report";
 import { Settings } from "./pages/Settings";
+import { StorageDocs, type StorageDocType } from "./pages/StorageDocs";
 import { Storages } from "./pages/Storages";
 import type {
   AppView,
@@ -107,6 +108,15 @@ function pathForBackupArtifacts(job: BackupJob) {
 }
 
 export default function App() {
+  const docPath = window.location.pathname.replace(/\/+$/, "");
+  if (docPath === "/docs/google-drive" || docPath === "/docs/onedrive") {
+    const docType: StorageDocType = docPath === "/docs/onedrive" ? "onedrive" : "google_drive";
+    return <StorageDocs docType={docType} />;
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromPath(window.location.pathname));
   const [navigationView, setNavigationView] = useState<AppView>(() => routeFromPath(window.location.pathname).view);
   const [connections, setConnections] = useState<DatabaseConnection[]>([]);

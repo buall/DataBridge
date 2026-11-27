@@ -423,7 +423,7 @@ func (s *Server) deleteExpiredBackupArtifacts(ctx context.Context, job *model.Ba
 	}
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	var objectStorage *model.RemoteStorage
-	if job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive" {
+	if job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive" || job.DestinationType == "google_drive" {
 		storage, err := s.backupArtifactStorage(*job)
 		if err != nil {
 			log.Printf("backup[%s] retention cleanup storage lookup failed: %v", job.ID, err)
@@ -540,6 +540,11 @@ func (s *Server) deleteExpiredBackupArtifact(ctx context.Context, job model.Back
 			return fmt.Errorf("未找到备份目标 OneDrive 存储")
 		}
 		return remotestorage.DeleteOneDrive(ctx, *objectStorage, artifact.Name)
+	case "google_drive":
+		if objectStorage == nil {
+			return fmt.Errorf("未找到备份目标 Google Drive 存储")
+		}
+		return remotestorage.DeleteGoogleDrive(ctx, *objectStorage, artifact.Name)
 	default:
 		return fmt.Errorf("该备份目标暂不支持清理备份文件")
 	}
@@ -610,6 +615,23 @@ func (s *Server) deleteExpiredBackupArtifactCopy(ctx context.Context, job model.
 			name = artifact.Name
 		}
 		return remotestorage.DeleteOneDrive(ctx, *storage, name)
+	case "google_drive":
+		storage := fallbackObjectStorage
+		if strings.TrimSpace(copy.StorageID) != "" {
+			loaded, err := s.store.Storage(copy.StorageID)
+			if err != nil {
+				return fmt.Errorf("%s：未找到备份目标 Google Drive 存储", backupCopyLabel(copy))
+			}
+			storage = &loaded
+		}
+		if storage == nil {
+			return fmt.Errorf("%s：未找到备份目标 Google Drive 存储", backupCopyLabel(copy))
+		}
+		name := copy.Name
+		if name == "" {
+			name = artifact.Name
+		}
+		return remotestorage.DeleteGoogleDrive(ctx, *storage, name)
 	default:
 		return fmt.Errorf("%s：该备份目标暂不支持清理备份文件", backupCopyLabel(copy))
 	}
@@ -1352,7 +1374,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 		if err != nil {
 			return nil, fmt.Errorf("未找到备份目标存储，请重新选择")
 		}
-		if storage.Type != "object" && storage.Type != "webdav" && storage.Type != "one_drive" && storage.Type != "local" {
+		if storage.Type != "object" && storage.Type != "webdav" && storage.Type != "one_drive" && storage.Type != "google_drive" && storage.Type != "local" {
 			return nil, fmt.Errorf("存储 %q 暂不支持备份写入", storage.Name)
 		}
 		targets[index].StorageID = storage.ID
@@ -1366,7 +1388,7 @@ func (s *Server) hydrateBackupTargets(request *model.BackupRequest) ([]model.Rem
 	if len(storages) == 1 {
 		storage := storages[0]
 		request.DestinationType = storage.Type
-		if storage.Type == "object" || storage.Type == "webdav" || storage.Type == "one_drive" {
+		if storage.Type == "object" || storage.Type == "webdav" || storage.Type == "one_drive" || storage.Type == "google_drive" {
 			request.Storage = &storage
 		}
 		return storages, nil
@@ -2784,6 +2806,20 @@ func (s *Server) restoreSource(job model.BackupJob) (restoreSource, error) {
 			return restoreSource{}, fmt.Errorf("未找到备份目标 OneDrive 存储")
 		}
 		return restoreSource{Type: "one_drive", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
+	case "google_drive":
+		request, err := s.backfillBackupRequest(job)
+		if err != nil {
+			return restoreSource{}, err
+		}
+		objectName := restoreArtifactObject(job)
+		if request.Destination == "" || objectName == "" {
+			return restoreSource{}, fmt.Errorf("未找到 Google Drive 备份位置")
+		}
+		storage, err := s.store.Storage(request.Destination)
+		if err != nil {
+			return restoreSource{}, fmt.Errorf("未找到备份目标 Google Drive 存储")
+		}
+		return restoreSource{Type: "google_drive", Object: objectName, Storage: &storage, Artifacts: backupArtifactMap(job), Copies: s.restoreCopyMap(job)}, nil
 	case "multi":
 		copies := s.restoreCopyMap(job)
 		if len(copies) == 0 {
@@ -2829,7 +2865,7 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			if path != "" {
 				result = append(result, restoreArtifactCopy{Type: "local", Path: path, Label: backupCopyLabel(copy)})
 			}
-		case "object", "webdav", "one_drive":
+		case "object", "webdav", "one_drive", "google_drive":
 			if strings.TrimSpace(copy.Name) == "" {
 				continue
 			}
@@ -2839,7 +2875,7 @@ func (s *Server) restoreCopiesForArtifact(job model.BackupJob, artifact model.Ba
 			}
 			result = append(result, restoreArtifactCopy{Type: copy.Type, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
 		default:
-			if (job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive") && strings.TrimSpace(copy.Name) != "" {
+			if (job.DestinationType == "object" || job.DestinationType == "webdav" || job.DestinationType == "one_drive" || job.DestinationType == "google_drive") && strings.TrimSpace(copy.Name) != "" {
 				storage, err := s.backupArtifactStorage(job)
 				if err == nil {
 					result = append(result, restoreArtifactCopy{Type: job.DestinationType, Object: copy.Name, Storage: &storage, Label: backupCopyLabel(copy)})
@@ -3149,7 +3185,7 @@ func (s *Server) prepareRestoreArtifact(ctx context.Context, source restoreSourc
 	if source.Type == "local" {
 		return source.Path, nil, nil
 	}
-	if (source.Type != "object" && source.Type != "webdav" && source.Type != "one_drive") || source.Storage == nil {
+	if (source.Type != "object" && source.Type != "webdav" && source.Type != "one_drive" && source.Type != "google_drive") || source.Storage == nil {
 		return "", nil, fmt.Errorf("unsupported restore source %q", source.Type)
 	}
 	tempDir, err := backup.MkdirTemp("databridge-restore-artifact-*")
@@ -3182,7 +3218,7 @@ func (s *Server) prepareRestoreArtifactFromCopies(ctx context.Context, copies []
 			} else {
 				failures = append(failures, fmt.Sprintf("%s：本地备份文件不可用", copy.Label))
 			}
-		case "object", "webdav", "one_drive":
+		case "object", "webdav", "one_drive", "google_drive":
 			if copy.Storage == nil || copy.Object == "" {
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
@@ -3247,7 +3283,7 @@ func (s *Server) downloadBackupArtifact(w http.ResponseWriter, r *http.Request) 
 		if _, err := io.Copy(w, file); err != nil {
 			log.Printf("backup artifact download failed: %v", err)
 		}
-	case "object", "webdav", "one_drive":
+	case "object", "webdav", "one_drive", "google_drive":
 		storage, err := s.backupArtifactStorage(item)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_artifact", err.Error())
@@ -3295,7 +3331,7 @@ func (s *Server) downloadBackupArtifactFromCopies(w http.ResponseWriter, r *http
 				log.Printf("backup artifact download failed: %v", err)
 			}
 			return
-		case "object", "webdav", "one_drive":
+		case "object", "webdav", "one_drive", "google_drive":
 			if copy.Storage == nil || copy.Object == "" {
 				failures = append(failures, fmt.Sprintf("%s：%s配置不完整", copy.Label, remoteStorageTypeLabel(copy.Type)))
 				continue
@@ -3330,6 +3366,9 @@ func downloadRemoteBackupArtifact(ctx context.Context, storageType string, stora
 	if storageType == "one_drive" {
 		return remotestorage.DownloadOneDrive(ctx, storage, objectName, targetPath)
 	}
+	if storageType == "google_drive" {
+		return remotestorage.DownloadGoogleDrive(ctx, storage, objectName, targetPath)
+	}
 	return remotestorage.DownloadObject(ctx, storage, objectName, targetPath)
 }
 
@@ -3339,6 +3378,9 @@ func remoteStorageTypeLabel(storageType string) string {
 	}
 	if storageType == "one_drive" {
 		return "OneDrive"
+	}
+	if storageType == "google_drive" {
+		return "Google Drive"
 	}
 	return "对象存储"
 }

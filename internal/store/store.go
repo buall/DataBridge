@@ -585,8 +585,11 @@ func (s *Store) UpdateStorage(id string, input model.UpdateStorageInput) (model.
 		return model.RemoteStorage{}, err
 	}
 	status := current.Status
-	if input.Type != "" && normalizeStorageType(input.Type) != current.Type {
-		status = storageStatusForInput(model.StorageInput{Type: input.Type, Verified: input.Verified})
+	nextType := normalizeStorageType(nonEmpty(input.Type, current.Type))
+	if (input.Type != "" && nextType != current.Type) ||
+		(input.AuthMode != "" && strings.TrimSpace(input.AuthMode) != current.AuthMode) ||
+		(input.SecretKey != "" && !input.Verified) {
+		status = storageStatusForInput(model.StorageInput{Type: nextType, AuthMode: nonEmpty(input.AuthMode, current.AuthMode), Verified: input.Verified})
 	} else if input.Verified {
 		status = "connected"
 	}
@@ -1389,7 +1392,12 @@ func normalizeStorageType(value string) string {
 
 func storageStatusForInput(input model.StorageInput) string {
 	switch normalizeStorageType(input.Type) {
-	case "google_drive", "one_drive":
+	case "google_drive":
+		if strings.EqualFold(strings.TrimSpace(input.AuthMode), "service_account") {
+			return "untested"
+		}
+		return "needs_auth"
+	case "one_drive":
 		return "needs_auth"
 	case "object":
 		if input.Verified {

@@ -1,9 +1,9 @@
 import {
+  BookOpen,
   Check,
   Cloud,
   Edit3,
   FolderOpen,
-  HardDrive,
   KeyRound,
   Plus,
   RefreshCw,
@@ -185,6 +185,26 @@ export function Storages({
     setShowForm(true);
   }
 
+  async function saveAndAuthorize() {
+    if (submitting) return;
+    setSubmitting(true);
+    setFormError("");
+    try {
+      const created = await api.createStorage(normalizeForm(form));
+      onAdd(created);
+      setEditTarget(created);
+      if (created.type === "one_drive") {
+        await authorizeOneDrive(created);
+      } else if (created.type === "google_drive") {
+        await authorizeGoogleDrive(created);
+      }
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "保存并启动授权失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -245,6 +265,18 @@ export function Storages({
       window.location.assign(result.url);
     } catch (reason) {
       setPageError(reason instanceof Error ? reason.message : "启动 OneDrive 授权失败");
+      setAuthorizing(null);
+    }
+  }
+
+  async function authorizeGoogleDrive(storage: RemoteStorage) {
+    setAuthorizing(storage.id);
+    setPageError("");
+    try {
+      const result = await api.authorizeGoogleDrive(storage.id);
+      window.location.assign(result.url);
+    } catch (reason) {
+      setPageError(reason instanceof Error ? reason.message : "启动 Google Drive 授权失败");
       setAuthorizing(null);
     }
   }
@@ -382,9 +414,11 @@ export function Storages({
       endpoint:
         type === "one_drive"
           ? "https://graph.microsoft.com/v1.0"
-          : type === "object" || type === "webdav"
-            ? current.endpoint
-            : "",
+          : type === "google_drive"
+            ? "https://www.googleapis.com"
+            : type === "object" || type === "webdav"
+              ? current.endpoint
+              : "",
       authMode: defaultAuthMode(type),
     }));
     setBucketOptions([]);
@@ -454,6 +488,29 @@ export function Storages({
         icon: <KeyRound size={14} />,
         disabled: authorizing === storage.id,
         onClick: () => void authorizeOneDrive(storage),
+      });
+      items.push({
+        key: "guide-onedrive",
+        label: "接入说明文档",
+        icon: <BookOpen size={14} />,
+        onClick: () => openStorageDoc("onedrive", storage.id),
+      });
+    }
+    if (storage.type === "google_drive") {
+      if ((storage.authMode ?? "oauth") !== "service_account") {
+        items.push({
+          key: "auth-google-drive",
+          label: authorizing === storage.id ? "跳转授权中..." : "开始授权",
+          icon: <KeyRound size={14} />,
+          disabled: authorizing === storage.id,
+          onClick: () => void authorizeGoogleDrive(storage),
+        });
+      }
+      items.push({
+        key: "guide-google-drive",
+        label: "接入说明文档",
+        icon: <BookOpen size={14} />,
+        onClick: () => openStorageDoc("google_drive", storage.id, storage.authMode),
       });
     }
     items.push({
@@ -664,6 +721,9 @@ export function Storages({
               <span
                 className="tglyph"
                 style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 10,
                   background: "var(--surface)",
                   border: "1px solid var(--hair)",
                   color: "var(--indigo-ink)",
@@ -1157,14 +1217,27 @@ export function Storages({
                     <>
                       {form.type === "one_drive" ? (
                         <>
-                          <SelectField
-                            label="Microsoft Graph 端点"
-                            value={form.endpoint ?? "https://graph.microsoft.com/v1.0"}
-                            onChange={(endpoint) => setForm({ ...form, endpoint, verified: false })}
-                          >
-                            <option value="https://graph.microsoft.com/v1.0">公有云（国际版）</option>
-                            <option value="https://microsoftgraph.chinacloudapi.cn/v1.0">世纪互联（中国区）</option>
-                          </SelectField>
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                            <div style={{ flex: 1 }}>
+                              <SelectField
+                                label="Microsoft Graph 端点"
+                                value={form.endpoint ?? "https://graph.microsoft.com/v1.0"}
+                                onChange={(endpoint) => setForm({ ...form, endpoint, verified: false })}
+                              >
+                                <option value="https://graph.microsoft.com/v1.0">公有云（国际版）</option>
+                                <option value="https://microsoftgraph.chinacloudapi.cn/v1.0">世纪互联（中国区）</option>
+                              </SelectField>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              style={{ height: 38, marginBottom: 14, whiteSpace: "nowrap" }}
+                              onClick={() => openStorageDoc("onedrive", editTarget?.id)}
+                            >
+                              <BookOpen size={14} />
+                              接入说明文档
+                            </Button>
+                          </div>
                           <div className="grid2">
                             <label className="field">
                               <span>{requiredLabel("应用程序（客户端）ID")}</span>
@@ -1190,23 +1263,77 @@ export function Storages({
                               />
                             </label>
                           </div>
-                          <div className="info-callout" style={{ marginBottom: 14, fontSize: 12 }}>
-                            在 Entra ID 应用中添加 Web 重定向 URI：
-                            <code className="mono" style={{ margin: "0 4px" }}>
-                              {window.location.origin}/api/storages/&lt;存储 ID&gt;/onedrive/callback
-                            </code>
-                            ，并授予委托权限 Files.ReadWrite.All、offline_access。
-                          </div>
                         </>
                       ) : (
-                        <SelectField
-                          label="授权方式"
-                          value={form.authMode ?? "oauth"}
-                          onChange={(authMode) => setForm({ ...form, authMode })}
-                        >
-                          <option value="oauth">OAuth 授权</option>
-                          <option value="service_account">服务账号</option>
-                        </SelectField>
+                        <>
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                            <div style={{ flex: 1 }}>
+                              <SelectField
+                                label="授权方式"
+                                value={form.authMode ?? "oauth"}
+                                onChange={(authMode) => setForm({ ...form, authMode, verified: false })}
+                              >
+                                <option value="oauth">OAuth 授权</option>
+                                <option value="service_account">服务账号</option>
+                              </SelectField>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              style={{ height: 38, marginBottom: 14, whiteSpace: "nowrap" }}
+                              onClick={() => openStorageDoc("google_drive", editTarget?.id, form.authMode)}
+                            >
+                              <BookOpen size={14} />
+                              接入说明文档
+                            </Button>
+                          </div>
+                          {(form.authMode ?? "oauth") === "service_account" ? (
+                            <label className="field">
+                              <span>{editTarget ? "服务账号 JSON 密钥" : requiredLabel("服务账号 JSON 密钥")}</span>
+                              <textarea
+                                rows={5}
+                                required={!editTarget}
+                                value={form.secretKey}
+                                onChange={(event) =>
+                                  setForm({ ...form, secretKey: event.target.value, verified: false })
+                                }
+                                placeholder={
+                                  editTarget
+                                    ? "留空则保持当前服务账号密钥"
+                                    : '粘贴 Google Cloud 服务账号 JSON 密钥（包含 client_email 和 private_key），并将目标 Google Drive 文件夹共享给该服务账号邮箱'
+                                }
+                              />
+                            </label>
+                          ) : (
+                            <>
+                              <div className="grid2">
+                                <label className="field">
+                                  <span>{requiredLabel("客户端 ID")}</span>
+                                  <input
+                                    required
+                                    value={form.accessKey}
+                                    onChange={(event) =>
+                                      setForm({ ...form, accessKey: event.target.value, verified: false })
+                                    }
+                                    placeholder="来自 Google Cloud OAuth 2.0 客户端"
+                                  />
+                                </label>
+                                <label className="field">
+                                  <span>{editTarget ? "客户端密钥" : requiredLabel("客户端密钥")}</span>
+                                  <input
+                                    type="password"
+                                    required={!editTarget}
+                                    value={form.secretKey}
+                                    onChange={(event) =>
+                                      setForm({ ...form, secretKey: event.target.value, verified: false })
+                                    }
+                                    placeholder={editTarget ? "留空则保持当前密钥" : "来自 Google Cloud 客户端密钥"}
+                                  />
+                                </label>
+                              </div>
+                            </>
+                          )}
+                        </>
                       )}
                       <label className="field">
                         <span>默认目录</span>
@@ -1215,9 +1342,6 @@ export function Storages({
                           onChange={(event) => setForm({ ...form, path: event.target.value })}
                           placeholder="DataBridge Backups"
                         />
-                        {form.type === "google_drive" ? (
-                          <span className="field-hint">Google Drive 授权暂未接入。</span>
-                        ) : null}
                       </label>
                     </>
                   ) : null}
@@ -1248,6 +1372,32 @@ export function Storages({
                   <Button type="button" variant="secondary" onClick={() => setShowForm(false)}>
                     取消
                   </Button>
+                  {form.type === "one_drive" ||
+                  (form.type === "google_drive" && (form.authMode ?? "oauth") !== "service_account") ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      disabled={(editTarget ? authorizing === editTarget.id : false) || submitting}
+                      onClick={() => {
+                        if (editTarget) {
+                          void (form.type === "one_drive"
+                            ? authorizeOneDrive(editTarget)
+                            : authorizeGoogleDrive(editTarget));
+                        } else {
+                          void saveAndAuthorize();
+                        }
+                      }}
+                    >
+                      <KeyRound size={14} />
+                      {editTarget
+                        ? authorizing === editTarget.id
+                          ? "跳转授权中..."
+                          : "开始授权"
+                        : submitting
+                          ? "保存并跳转中..."
+                          : "保存并授权"}
+                    </Button>
+                  ) : null}
                   <Button type="submit" disabled={submitting}>
                     {submitting ? "正在保存..." : "保存存储"}
                   </Button>
@@ -1277,6 +1427,19 @@ export function Storages({
   );
 }
 
+function openStorageDoc(type: "google_drive" | "onedrive", storageId?: string, authMode?: string) {
+  const basePath = type === "onedrive" ? "/docs/onedrive" : "/docs/google-drive";
+  const params = new URLSearchParams();
+  if (storageId) {
+    params.set("storageId", storageId);
+  }
+  if (type === "google_drive" && authMode === "service_account") {
+    params.set("tab", "service_account");
+  }
+  const query = params.toString();
+  window.open(query ? `${basePath}?${query}` : basePath, "_blank", "noopener,noreferrer");
+}
+
 function normalizeForm(form: StorageForm): RemoteStorageInput {
   return { ...form, name: form.name.trim(), provider: form.provider.trim() };
 }
@@ -1294,11 +1457,108 @@ function shouldAutoTestStorage(storage: RemoteStorage) {
   return storage.type === "object" || storage.type === "webdav";
 }
 
+function GoogleDriveLogo({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 87.3 78" aria-hidden="true">
+      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da" />
+      <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47" />
+      <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335" />
+      <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d" />
+      <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc" />
+      <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00" />
+    </svg>
+  );
+}
+
+function OneDriveLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0.8 6 23.4 13.2" aria-hidden="true">
+      <path
+        d="M10.1 8.5a5.6 5.6 0 0 1 9.6 2.3l-3.9 1.7-5.7-4Z"
+        fill="#0364b8"
+      />
+      <path
+        d="M5.7 10.6a4.4 4.4 0 0 1 4.4-2.1l5.7 4-6.7 6H5.9A4.4 4.4 0 0 1 5.7 10.6Z"
+        fill="#0078d4"
+      />
+      <path
+        d="M15.8 12.5 19.7 10.8a3.9 3.9 0 0 1 2.5 6.8l-6.4-5.1Z"
+        fill="#1490df"
+      />
+      <path
+        d="M9.1 18.5h9.6a3.9 3.9 0 0 0 3.5-2.2l-6.4-3.8-6.7 6Z"
+        fill="#28a8ea"
+      />
+    </svg>
+  );
+}
+
+function ObjectStorageLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M5 7.2 7.2 19.2c.2 1.1 2.3 2 4.8 2s4.6-.9 4.8-2L19 7.2H5Z"
+        fill="#ea580c"
+      />
+      <path
+        d="M12 7.2H5l2.2 12c.2 1.1 2.3 2 4.8 2V7.2Z"
+        fill="#f97316"
+      />
+      <ellipse cx="12" cy="7.2" rx="7" ry="2.6" fill="#fdba74" />
+      <ellipse cx="12" cy="7.2" rx="5.2" ry="1.6" fill="#c2410c" />
+      <path
+        d="M6.8 6.4c.5-2.1 2.6-3.6 5.2-3.6s4.7 1.5 5.2 3.6"
+        fill="none"
+        stroke="#9a3412"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function WebDAVLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M3.2 6.8A2.2 2.2 0 0 1 5.4 4.6h4.1l1.8 2h7.3a2.2 2.2 0 0 1 2.2 2.2v1.6H3.2V6.8Z"
+        fill="#4338ca"
+      />
+      <rect x="2.5" y="8.4" width="19" height="11.2" rx="2.4" fill="#6366f1" />
+      <path
+        d="M2.5 14.5h19v2.7a2.4 2.4 0 0 1-2.4 2.4H4.9a2.4 2.4 0 0 1-2.4-2.4v-2.7Z"
+        fill="#4f46e5"
+      />
+      <circle cx="8" cy="14" r="1.4" fill="#e0e7ff" />
+      <circle cx="12" cy="14" r="1.4" fill="#e0e7ff" />
+      <circle cx="16" cy="14" r="1.4" fill="#e0e7ff" />
+      <path d="M9.4 14h1.2M13.4 14h1.2" stroke="#c7d2fe" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function LocalStorageLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M3.2 6.6A2.2 2.2 0 0 1 5.4 4.4h4.2l1.8 2h7.2a2.2 2.2 0 0 1 2.2 2.2v2.2H3.2V6.6Z"
+        fill="#0f766e"
+      />
+      <rect x="2.5" y="8.4" width="19" height="11.2" rx="2.4" fill="#14b8a6" />
+      <rect x="5" y="13.8" width="14" height="3.4" rx="1.2" fill="#0f766e" />
+      <circle cx="16.4" cy="15.5" r="1" fill="#5eead4" />
+      <rect x="6.6" y="15" width="5.4" height="1" rx="0.5" fill="#99f6e4" />
+    </svg>
+  );
+}
+
 function StorageIcon({ type }: { type: RemoteStorageType }) {
-  if (type === "local") return <HardDrive size={17} />;
-  if (type === "object") return <Cloud size={17} />;
-  if (type === "webdav") return <FolderOpen size={17} />;
-  return <KeyRound size={17} />;
+  if (type === "local") return <LocalStorageLogo size={24} />;
+  if (type === "object") return <ObjectStorageLogo size={24} />;
+  if (type === "webdav") return <WebDAVLogo size={24} />;
+  if (type === "google_drive") return <GoogleDriveLogo size={24} />;
+  if (type === "one_drive") return <OneDriveLogo size={24} />;
+  return <KeyRound size={22} />;
 }
 
 function Summary({

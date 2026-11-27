@@ -201,8 +201,7 @@ func DeleteOneDrive(ctx context.Context, storage model.RemoteStorage, objectKey 
 		return err
 	}
 	client := oneDriveClient{storage: storage, token: token}
-	_, err = client.request(ctx, http.MethodDelete, client.itemPath(objectKey), nil, false)
-	return err
+	return client.delete(ctx, objectKey)
 }
 
 func oneDriveAccessToken(ctx context.Context, storage model.RemoteStorage) (OneDriveCredential, string, error) {
@@ -212,6 +211,9 @@ func oneDriveAccessToken(ctx context.Context, storage model.RemoteStorage) (OneD
 	}
 	if credential.AccessToken != "" && credential.ExpiresAt > time.Now().Add(2*time.Minute).Unix() {
 		return credential, credential.AccessToken, nil
+	}
+	if credential.RefreshToken == "" {
+		return credential, "", fmt.Errorf("onedrive storage is not authorized")
 	}
 	tokenURL, err := oneDriveOAuthEndpoint(storage.Endpoint, false)
 	if err != nil {

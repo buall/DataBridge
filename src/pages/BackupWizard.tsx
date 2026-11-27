@@ -34,7 +34,8 @@ export function BackupWizard({
           item.type === "object" ||
           item.type === "webdav" ||
           item.type === "local" ||
-          (item.type === "one_drive" && item.status === "connected"),
+          (item.type === "one_drive" && item.status === "connected") ||
+          (item.type === "google_drive" && item.status === "connected"),
       ),
     [storages],
   );
@@ -1081,6 +1082,7 @@ function storageTypeLabel(storage?: RemoteStorage) {
   if (storage.type === "object") return "对象存储";
   if (storage.type === "webdav") return "WebDAV";
   if (storage.type === "one_drive") return "OneDrive";
+  if (storage.type === "google_drive") return "Google Drive";
   if (storage.type === "local") return "本地目录";
   return storage.provider;
 }

@@ -345,20 +345,35 @@ func (s *Server) testStorage(w http.ResponseWriter, r *http.Request) {
 		} else {
 			message = "WebDAV 存储测试通过"
 		}
-	case "google_drive", "one_drive":
-		if item.Type == "one_drive" {
-			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-			defer cancel()
-			if err := remotestorage.TestOneDrive(ctx, item); err != nil {
+	case "google_drive":
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		if err := remotestorage.TestGoogleDrive(ctx, item); err != nil {
+			if strings.Contains(err.Error(), "not authorized") {
+				status = "needs_auth"
+				message = "该存储需要完成 OAuth 授权后才能测试"
+			} else {
 				status = "warning"
 				message = userFacingErrorMessage(errorContextRemoteStorage, err)
-				log.Printf("remote storage[%s] onedrive test failed: %v", item.ID, err)
-			} else {
-				message = "OneDrive 存储测试通过"
 			}
+			log.Printf("remote storage[%s] google drive test failed: %v", item.ID, err)
 		} else {
-			status = "needs_auth"
-			message = "该存储需要完成 OAuth 授权后才能测试"
+			message = "Google Drive 存储测试通过"
+		}
+	case "one_drive":
+		ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+		defer cancel()
+		if err := remotestorage.TestOneDrive(ctx, item); err != nil {
+			if strings.Contains(err.Error(), "not authorized") {
+				status = "needs_auth"
+				message = "该存储需要完成 OAuth 授权后才能测试"
+			} else {
+				status = "warning"
+				message = userFacingErrorMessage(errorContextRemoteStorage, err)
+			}
+			log.Printf("remote storage[%s] onedrive test failed: %v", item.ID, err)
+		} else {
+			message = "OneDrive 存储测试通过"
 		}
 	default:
 		status = "warning"
@@ -395,7 +410,7 @@ func (s *Server) authorizeOneDrive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.oauthMu.Lock()
-	s.oauth[state] = oneDriveOAuthState{StorageID: storage.ID, ExpiresAt: time.Now().Add(10 * time.Minute)}
+	s.oauth[state] = oauthState{StorageID: storage.ID, StorageType: "one_drive", ExpiresAt: time.Now().Add(10 * time.Minute)}
 	s.oauthMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL, "redirectUri": redirectURI})
 }
@@ -403,12 +418,12 @@ func (s *Server) authorizeOneDrive(w http.ResponseWriter, r *http.Request) {
 func (s *Server) oneDriveCallback(w http.ResponseWriter, r *http.Request) {
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	s.oauthMu.Lock()
-	oauthState, ok := s.oauth[state]
+	st, ok := s.oauth[state]
 	if ok {
 		delete(s.oauth, state)
 	}
 	s.oauthMu.Unlock()
-	if !ok || oauthState.ExpiresAt.Before(time.Now()) || oauthState.StorageID != r.PathValue("id") {
+	if !ok || st.ExpiresAt.Before(time.Now()) || st.StorageID != r.PathValue("id") || st.StorageType != "one_drive" {
 		http.Error(w, "OneDrive OAuth state is invalid or expired", http.StatusBadRequest)
 		return
 	}
@@ -421,7 +436,7 @@ func (s *Server) oneDriveCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "OneDrive OAuth code is missing", http.StatusBadRequest)
 		return
 	}
-	storage, err := s.store.Storage(oauthState.StorageID)
+	storage, err := s.store.Storage(st.StorageID)
 	if err != nil {
 		http.Error(w, "OneDrive storage not found", http.StatusNotFound)
 		return
@@ -453,15 +468,98 @@ func (s *Server) oneDriveRedirectURI(r *http.Request, storageID string) string {
 	return strings.TrimRight(s.publicBaseURL(r), "/") + "/api/storages/" + url.PathEscape(storageID) + "/onedrive/callback"
 }
 
+func (s *Server) authorizeGoogleDrive(w http.ResponseWriter, r *http.Request) {
+	storage, err := s.store.Storage(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "storage not found")
+		return
+	}
+	if storage.Type != "google_drive" {
+		writeError(w, http.StatusBadRequest, "invalid_storage", "只有 Google Drive 存储支持该 OAuth 授权")
+		return
+	}
+	stateBytes := make([]byte, 24)
+	if _, err := rand.Read(stateBytes); err != nil {
+		writeError(w, http.StatusInternalServerError, "oauth_error", "生成 OAuth 状态失败")
+		return
+	}
+	state := base64.RawURLEncoding.EncodeToString(stateBytes)
+	redirectURI := s.googleDriveRedirectURI(r, storage.ID)
+	authorizeURL, err := remotestorage.GoogleDriveAuthorizeURL(storage, redirectURI, state)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "oauth_error", err.Error())
+		return
+	}
+	s.oauthMu.Lock()
+	s.oauth[state] = oauthState{StorageID: storage.ID, StorageType: "google_drive", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	s.oauthMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]string{"url": authorizeURL, "redirectUri": redirectURI})
+}
+
+func (s *Server) googleDriveCallback(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	s.oauthMu.Lock()
+	st, ok := s.oauth[state]
+	if ok {
+		delete(s.oauth, state)
+	}
+	s.oauthMu.Unlock()
+	if !ok || st.ExpiresAt.Before(time.Now()) || st.StorageID != r.PathValue("id") || st.StorageType != "google_drive" {
+		http.Error(w, "Google Drive OAuth state is invalid or expired", http.StatusBadRequest)
+		return
+	}
+	if oauthError := strings.TrimSpace(r.URL.Query().Get("error")); oauthError != "" {
+		http.Error(w, "Google Drive OAuth failed: "+oauthError, http.StatusBadRequest)
+		return
+	}
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		http.Error(w, "Google Drive OAuth code is missing", http.StatusBadRequest)
+		return
+	}
+	storage, err := s.store.Storage(st.StorageID)
+	if err != nil {
+		http.Error(w, "Google Drive storage not found", http.StatusNotFound)
+		return
+	}
+	credential, err := remotestorage.GoogleDriveExchangeCode(r.Context(), storage, code, s.googleDriveRedirectURI(r, storage.ID))
+	if err != nil {
+		http.Error(w, "Google Drive OAuth failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	secret, err := remotestorage.EncodeGoogleDriveCredential(credential)
+	if err != nil {
+		http.Error(w, "save Google Drive credential failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, err = s.store.UpdateStorage(storage.ID, model.UpdateStorageInput{
+		Type: storage.Type, Name: storage.Name, Provider: storage.Provider, Endpoint: storage.Endpoint,
+		Bucket: storage.Bucket, Region: storage.Region, AccessKey: storage.AccessKey, SecretKey: secret,
+		Path: storage.Path, AuthMode: "oauth", Note: storage.Note, Verified: true,
+	})
+	if err != nil {
+		http.Error(w, "save Google Drive credential failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, strings.TrimRight(s.publicBaseURL(r), "/")+"/storages?google_drive=authorized", http.StatusFound)
+}
+
+func (s *Server) googleDriveRedirectURI(r *http.Request, storageID string) string {
+	return strings.TrimRight(s.publicBaseURL(r), "/") + "/api/storages/" + url.PathEscape(storageID) + "/google-drive/callback"
+}
+
 func (s *Server) publicBaseURL(r *http.Request) string {
 	if configured := strings.TrimSpace(os.Getenv("DATABRIDGE_PUBLIC_URL")); configured != "" {
 		return strings.TrimRight(configured, "/")
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
 	if proto == "" {
 		proto = "http"
 	}
-	host := r.Host
+	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
 	if host == "" {
 		host = "localhost:8081"
 	}
@@ -490,6 +588,21 @@ func validateStorage(w http.ResponseWriter, input model.StorageInput) bool {
 		writeError(w, http.StatusBadRequest, "invalid_storage", "OneDrive 需要填写 Graph 端点、应用程序 ID 和客户端密钥")
 		return false
 	}
+	if storageType == "google_drive" {
+		if strings.EqualFold(strings.TrimSpace(input.AuthMode), "service_account") {
+			if strings.TrimSpace(input.SecretKey) == "" {
+				writeError(w, http.StatusBadRequest, "invalid_storage", "Google Drive 服务账号模式需要填写服务账号 JSON 密钥")
+				return false
+			}
+			if _, err := remotestorage.ParseGoogleServiceAccountKey(input.SecretKey); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_storage", "Google Drive 服务账号 JSON 密钥格式无效："+err.Error())
+				return false
+			}
+		} else if strings.TrimSpace(input.AccessKey) == "" || strings.TrimSpace(input.SecretKey) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_storage", "Google Drive OAuth 模式需要填写客户端 ID 和客户端密钥")
+			return false
+		}
+	}
 	return true
 }
 
@@ -514,6 +627,19 @@ func validateStorageUpdate(w http.ResponseWriter, input model.UpdateStorageInput
 	if storageType == "one_drive" && (strings.TrimSpace(input.Endpoint) == "" || strings.TrimSpace(input.AccessKey) == "") {
 		writeError(w, http.StatusBadRequest, "invalid_storage", "OneDrive 需要填写 Graph 端点和应用程序 ID")
 		return false
+	}
+	if storageType == "google_drive" {
+		if strings.EqualFold(strings.TrimSpace(input.AuthMode), "service_account") {
+			if strings.TrimSpace(input.SecretKey) != "" {
+				if _, err := remotestorage.ParseGoogleServiceAccountKey(input.SecretKey); err != nil {
+					writeError(w, http.StatusBadRequest, "invalid_storage", "Google Drive 服务账号 JSON 密钥格式无效："+err.Error())
+					return false
+				}
+			}
+		} else if strings.TrimSpace(input.AccessKey) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_storage", "Google Drive OAuth 模式需要填写客户端 ID")
+			return false
+		}
 	}
 	return true
 }

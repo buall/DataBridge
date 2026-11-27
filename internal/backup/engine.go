@@ -540,8 +540,11 @@ func newDestination(request model.BackupRequest) (destination, error) {
 		return webDAVDestination{storage: *request.Storage}, nil
 	case "s3":
 		return s3Destination{endpoint: request.Destination}, nil
-	case "gdrive", "google-drive", "google drive":
-		return nil, fmt.Errorf("Google Drive destination is planned but not wired yet")
+	case "google_drive", "gdrive", "google-drive", "google drive":
+		if request.Storage == nil {
+			return nil, fmt.Errorf("google drive destination is not configured")
+		}
+		return googleDriveDestination{storage: *request.Storage}, nil
 	default:
 		return nil, fmt.Errorf("unsupported destination type %q", request.DestinationType)
 	}
@@ -568,6 +571,8 @@ func destinationForStorage(storage model.RemoteStorage, target model.BackupTarge
 		return webDAVDestination{storage: storage, target: target}, nil
 	case "one_drive":
 		return oneDriveDestination{storage: storage, target: target}, nil
+	case "google_drive":
+		return googleDriveDestination{storage: storage, target: target}, nil
 	case "local":
 		return localDestination{directory: storage.Path, storage: storage, target: target}, nil
 	default:
@@ -702,6 +707,21 @@ func (d oneDriveDestination) upload(ctx context.Context, filePath, objectKey str
 		return err
 	}
 	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到 OneDrive", d.storage), ArtifactName: remoteKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, remoteKey, size, "", "")})
+	return nil
+}
+
+type googleDriveDestination struct {
+	storage model.RemoteStorage
+	target  model.BackupTarget
+}
+
+func (d googleDriveDestination) upload(ctx context.Context, filePath, objectKey string, report Reporter) error {
+	remoteKey := path.Join(d.storage.Path, objectKey)
+	size, err := remotestorage.UploadGoogleDrive(ctx, d.storage, remoteKey, filePath)
+	if err != nil {
+		return err
+	}
+	report(Progress{Stage: "upload", EventLevel: "INFO", EventMessage: uploadEventMessage("备份已上传到 Google Drive", d.storage), ArtifactName: remoteKey, ArtifactSize: size, ArtifactCopy: artifactCopyForDestination(d.storage, d.target, remoteKey, size, "", "")})
 	return nil
 }
 

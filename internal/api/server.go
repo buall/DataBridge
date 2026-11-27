@@ -61,12 +61,13 @@ type Server struct {
 	captcha      *captchaManager
 	jobSem       chan struct{}
 	oauthMu      sync.Mutex
-	oauth        map[string]oneDriveOAuthState
+	oauth        map[string]oauthState
 }
 
-type oneDriveOAuthState struct {
-	StorageID string
-	ExpiresAt time.Time
+type oauthState struct {
+	StorageID   string
+	StorageType string
+	ExpiresAt   time.Time
 }
 
 var appLocation = mustLoadLocation("Asia/Shanghai")
@@ -106,7 +107,7 @@ func New(appStore *store.Store) http.Handler {
 		loginLimiter: newLoginRateLimiter(10, time.Minute),
 		captcha:      newCaptchaManager(),
 		jobSem:       make(chan struct{}, maxConcurrentJobs()),
-		oauth:        make(map[string]oneDriveOAuthState),
+		oauth:        make(map[string]oauthState),
 	}
 	server.reconcileScheduledBackupRuns()
 	server.startBackupScheduler()
@@ -119,6 +120,7 @@ func New(appStore *store.Store) http.Handler {
 	// OAuth providers redirect back without DataBridge's session context. The
 	// single-use, expiring state token protects this callback from CSRF.
 	mux.HandleFunc("GET /api/storages/{id}/onedrive/callback", server.oneDriveCallback)
+	mux.HandleFunc("GET /api/storages/{id}/google-drive/callback", server.googleDriveCallback)
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/connections", server.listConnections)
 	protected.HandleFunc("POST /api/imports/excel/preview", server.previewBatchImport)
@@ -149,6 +151,7 @@ func New(appStore *store.Store) http.Handler {
 	protected.HandleFunc("DELETE /api/storages/{id}", server.deleteStorage)
 	protected.HandleFunc("POST /api/storages/{id}/test", server.testStorage)
 	protected.HandleFunc("POST /api/storages/{id}/onedrive/authorize", server.authorizeOneDrive)
+	protected.HandleFunc("POST /api/storages/{id}/google-drive/authorize", server.authorizeGoogleDrive)
 	protected.HandleFunc("POST /api/migrations", server.createMigration)
 	protected.HandleFunc("GET /api/migrations/{id}", server.getMigration)
 	protected.HandleFunc("POST /api/migrations/{id}/cancel", server.cancelMigration)

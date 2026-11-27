@@ -237,6 +237,8 @@ export const api = {
     request<{ storage: RemoteStorage; message: string }>(`/storages/${storageId}/test`, { method: "POST" }),
   authorizeOneDrive: (storageId: string) =>
     request<{ url: string; redirectUri: string }>(`/storages/${storageId}/onedrive/authorize`, { method: "POST" }),
+  authorizeGoogleDrive: (storageId: string) =>
+    request<{ url: string; redirectUri: string }>(`/storages/${storageId}/google-drive/authorize`, { method: "POST" }),
   tables: (connectionId: string, database: string) =>
     request<TableInfo[]>(`/connections/${connectionId}/databases/${encodeURIComponent(database)}/tables`),
   createMigration: async (config: MigrationConfig) =>
